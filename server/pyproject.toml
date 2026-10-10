@@ -1,0 +1,26 @@
+[project]
+name = "reins2api"
+version = "0.1.0"
+description = "OpenCode Zen gateway: 3x3 protocol bridge + stream transcoding"
+requires-python = ">=3.13"
+dependencies = [
+    "curl-cffi>=0.16.0",
+    "loguru>=0.7.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# BLE001/S110/S112/TRY004：与 grok-rego 相同的刻意取舍——网关是尽力而为的容错系统，
+# 裸 except 与静默降级是设计的一部分（上游错误透传、落库失败不阻塞转发），不是疏漏。
+# DTZ005/DTZ007：遥测与日志一律北京时间 epoch/字符串，naive now() 只做 timestamp()，
+#   时区约定是项目级决策（README 已述）；DTZ007 来自照搬的 grok-rego logger 轮转逻辑。
+# B023：request_encode 的闭包在同一轮循环内同步调用，不存在跨轮捕获（误报）。
+ignore = ["BLE001", "S110", "S112", "TRY004", "E501", "DTZ005", "DTZ007", "B023"]
