@@ -131,12 +131,12 @@ fi
 # ── ③ 后台启动服务 ───────────────────────────────────────────────
 
 mkdir -p server/logs
-LOG_OUT="server/logs/serve.out.log"
-nohup uv run --directory server python main.py --serve "${PORT}" >"$LOG_OUT" 2>&1 &
+# 进程 stdout/stderr 丢进 /dev/null:日志由 loguru 全量写 server/logs/server.log,不再另开 serve.*.log。
+nohup uv run --directory server python main.py --serve "${PORT}" >/dev/null 2>&1 &
 SERVICE_PID=$!
 disown || true
 step "服务" "后台运行 · 启动器 PID ${SERVICE_PID}"
-dim "控制台副本: ${LOG_OUT}"
+dim "日志: server/logs/server.log"
 
 # ── ④ 健康检查 + 汇总卡片 ────────────────────────────────────────
 
@@ -151,9 +151,9 @@ for _ in $(seq 1 30); do
   fi
 done
 if [ "$READY" != 1 ]; then
-  dim "服务未就绪,最近输出:"
-  tail -15 "$LOG_OUT" 2>/dev/null | dim_pipe || true
-  die "启动失败" "请查看 ${LOG_OUT} 与 server/logs/"
+  dim "服务未就绪,最近日志:"
+  tail -15 server/logs/server.log 2>/dev/null | dim_pipe || true
+  die "启动失败" "请查看 server/logs/server.log"
 fi
 step "健康检查" "就绪 ($((SECONDS - T0))s)"
 

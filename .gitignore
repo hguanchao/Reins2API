@@ -6,6 +6,7 @@ __pycache__/
 *.db-shm
 server/logs/
 server/data/
+server/config.json
 docs/
 web/node_modules/
 web/dist/

@@ -9,11 +9,12 @@ import {
   Activity,
   ArrowRight,
   Boxes,
+  Check,
   CircleUserRound,
+  Copy,
   Cpu,
   Inbox,
   KeyRound,
-  Link2,
   Pause,
   Play,
   Plus,
@@ -166,9 +167,6 @@ const STATUS_LABEL: Record<string, string> = {
   paused: "暂停",
   disabled: "禁用",
 };
-
-/** OAuth 弹窗的固定窗口名：重试时复用同一标签页导航到新 state，不越积越多。 */
-const OAUTH_WINDOW_NAME = "workbuddy_oauth";
 
 export function WorkBuddyPage() {
   const [ops, setOps] = useState<WorkBuddyOps | null>(null);
@@ -714,7 +712,7 @@ const REALM_OPTIONS: Array<{ value: string; label: string; desc: string }> = [
   { value: "global", label: "global · 国际版", desc: "workbuddy.ai 域" },
 ];
 
-/** 添加账号：OAuth 设备码（浏览器授权，自动弹窗 + 轮询入池）。 */
+/** 添加账号：OAuth 设备码（浏览器授权，打开即生成链接 + 轮询入池）。 */
 function AddAccountDialog({
   open, onOpenChange, onAdded,
 }: {
@@ -724,11 +722,18 @@ function AddAccountDialog({
 }) {
   const [realm, setRealm] = useState("cn");
   const [authUrl, setAuthUrl] = useState("");
-  const [autoOpenBlocked, setAutoOpenBlocked] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [loginMessage, setLoginMessage] = useState("");
   const [loginDone, setLoginDone] = useState(false);
   const [pending, setPending] = useState(false);
   const pollTimer = useRef<number | null>(null);
+  const copyTimer = useRef<number | null>(null);
+  const realmRef = useRef(realm);
+  realmRef.current = realm;
+  const onAddedRef = useRef(onAdded);
+  onAddedRef.current = onAdded;
+  // 每次打开对话框只自动生成一次（StrictMode 下 effect 会双跑，用 ref 挡住）。
+  const autoStarted = useRef(false);
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current != null) {
@@ -737,28 +742,18 @@ function AddAccountDialog({
     }
   }, []);
 
-  useEffect(() => {
-    if (!open) {
-      stopPolling();
-      setAuthUrl("");
-      setAutoOpenBlocked(false);
-      setLoginMessage("");
-      setLoginDone(false);
-    }
-  }, [open, stopPolling]);
-
-  const beginOAuth = async () => {
+  const beginOAuth = useCallback(async (targetRealm: string) => {
+    stopPolling();
     setPending(true);
+    setAuthUrl("");
+    setCopied(false);
+    setLoginDone(false);
     setLoginMessage("");
     try {
-      const started = await startWorkBuddyLogin(realm);
+      const started = await startWorkBuddyLogin(targetRealm);
+      // 只给链接不自动打开：授权页靠浏览器 Cookie 判定身份，同一窗口会直接
+      // 复用当前已登录的账号，无法换号——由用户自己丢进无痕窗口打开。
       setAuthUrl(started.url);
-      // 尝试自动弹窗。URL 是 fetch 返回后才拿到的，window.open 处于异步回调中，
-      // 会被弹窗拦截器拦下（返回 null）——拦截时退回可点击链接形态，两条路都通。
-      // 固定窗口名：重试复用同一标签页导航到新 state（URL 每次全新，无缓存问题）。
-      const popup = window.open(started.url, OAUTH_WINDOW_NAME);
-      setAutoOpenBlocked(!popup);
-      stopPolling();
       pollTimer.current = window.setInterval(async () => {
         try {
           const result = await pollWorkBuddyLogin(started.state);
@@ -767,7 +762,7 @@ function AddAccountDialog({
             setLoginDone(true);
             setLoginMessage(`账号 ${result.nickname || result.uid} 已入池`);
             toast.success("登录成功，账号已入池");
-            await onAdded();
+            await onAddedRef.current();
           } else if (result.expired) {
             stopPolling();
             setLoginMessage(result.message || "会话已过期，请重新发起");
@@ -781,34 +776,78 @@ function AddAccountDialog({
     } finally {
       setPending(false);
     }
+  }, [stopPolling]);
+
+  // 打开即按当前域生成链接（无需再点按钮）；关闭时清空并停轮询。
+  useEffect(() => {
+    if (!open) {
+      autoStarted.current = false;
+      stopPolling();
+      setAuthUrl("");
+      setCopied(false);
+      setLoginMessage("");
+      setLoginDone(false);
+      setPending(false);
+      return;
+    }
+    if (autoStarted.current) return;
+    autoStarted.current = true;
+    void beginOAuth(realmRef.current);
+  }, [open, stopPolling, beginOAuth]);
+
+  // 组件卸载（离开页面）时清掉定时器，避免轮询在后台继续打接口。
+  useEffect(() => () => {
+    stopPolling();
+    if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+  }, [stopPolling]);
+
+  const copyAuthUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(authUrl);
+      setCopied(true);
+      toast.success("授权链接已复制");
+      if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("复制失败，请手动选中链接复制");
+    }
+  };
+
+  // 切换账号域 = 换一个新 state 重新生成链接；同域重复点击仅在失败时当重试。
+  const selectRealm = (value: string) => {
+    if (value === realm) {
+      if (!authUrl && !pending) void beginOAuth(value);
+      return;
+    }
+    setRealm(value);
+    void beginOAuth(value);
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="overflow-x-hidden sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>添加 WorkBuddy 账号</DialogTitle>
         </DialogHeader>
 
-        <div className="grid gap-3">
-          {/* 账号域：单选卡片。设备码会话与 realm 绑定，发起授权后锁定选择 */}
+        <div className="grid min-w-0 gap-3">
+          {/* 账号域：切换即换新 state 重新生成链接 */}
           <div className="grid grid-cols-2 gap-3" role="radiogroup" aria-label="账号域">
             {REALM_OPTIONS.map((option) => {
               const active = realm === option.value;
-              const locked = authUrl !== "";
               return (
                 <button
                   key={option.value}
                   type="button"
                   role="radio"
                   aria-checked={active}
-                  disabled={locked}
-                  onClick={() => setRealm(option.value)}
+                  disabled={pending}
+                  onClick={() => selectRealm(option.value)}
                   className={cn(
                     "cursor-pointer rounded-lg border p-3 text-left transition-colors outline-none",
                     "focus-visible:ring-2 focus-visible:ring-ring/50",
                     active ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50",
-                    locked && "cursor-not-allowed opacity-60",
+                    pending && "cursor-not-allowed opacity-60",
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -829,43 +868,108 @@ function AddAccountDialog({
             })}
           </div>
 
+          {pending && !authUrl ? (
+            <div className="text-muted-foreground flex items-center gap-2 py-0.5 text-xs">
+              <RefreshCw className="size-3.5 animate-spin" strokeWidth={1.6} aria-hidden />
+              正在获取授权链接…
+            </div>
+          ) : null}
+
           {authUrl ? (
-            <>
-              <div className="text-sm">
-                1. 在{autoOpenBlocked ? "打开的" : "弹出的"}授权页登录；2. 回到这里等待自动入池。
+            <div className="border-border bg-muted/20 grid min-w-0 gap-3 rounded-lg border p-3">
+              {/* 链接行：一体式复制字段（长链接自动换行，不撑破弹窗） */}
+              <div className="grid min-w-0 gap-1.5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-xs font-medium">授权链接</span>
+                  <span className="text-muted-foreground text-[11px]">10 分钟内有效</span>
+                </div>
+                <div className="border-border bg-background flex min-w-0 items-center gap-1 rounded-md border py-1 pr-1 pl-2.5">
+                  <code
+                    className="text-foreground/90 min-w-0 flex-1 font-mono text-[11px] leading-relaxed break-all"
+                    title={authUrl}
+                  >
+                    {authUrl}
+                  </code>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={copyAuthUrl}
+                  >
+                    {copied ? (
+                      <Check className="size-3.5" strokeWidth={1.75} />
+                    ) : (
+                      <Copy className="size-3.5" strokeWidth={1.75} />
+                    )}
+                    {copied ? "已复制" : "复制"}
+                  </Button>
+                </div>
               </div>
-              {autoOpenBlocked ? (
-                <div className="text-muted-foreground text-xs">
-                  弹窗被浏览器拦截，请点击下方链接手动打开。
-                </div>
-              ) : null}
-              {/* 点击同样走固定窗口名：误关弹窗后可一键重开（复用同一标签页）。 */}
-              <button
+
+              {/* 操作步骤 */}
+              <ol className="grid gap-1.5 text-xs">
+                <li className="flex gap-2">
+                  <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                    1
+                  </span>
+                  <span className="text-muted-foreground leading-relaxed">
+                    复制链接，在浏览器<b className="text-foreground font-medium">无痕 / 隐私窗口</b>打开
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                    2
+                  </span>
+                  <span className="text-muted-foreground leading-relaxed">
+                    登录要添加的账号，回到本页等待自动入池
+                  </span>
+                </li>
+              </ol>
+
+              {/* 换号警示：左侧色条强调，不再占一整块 */}
+              <div className="border-l-2 border-amber-500/50 pl-2.5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-500">
+                换号必须用无痕窗口：普通窗口会带上当前已登录的账号，直接完成授权。
+              </div>
+
+              {/* 状态条 */}
+              <div className="border-border flex items-center gap-2 border-t pt-3 text-xs">
+                {loginDone ? (
+                  <Check className="size-3.5 shrink-0 text-emerald-500" strokeWidth={2} />
+                ) : loginMessage ? (
+                  <span className="size-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden />
+                ) : (
+                  <RefreshCw
+                    className="text-muted-foreground size-3.5 shrink-0 animate-spin"
+                    strokeWidth={1.6}
+                    aria-hidden
+                  />
+                )}
+                <span className={cn("min-w-0", loginDone ? "text-emerald-500" : "text-muted-foreground")}>
+                  {loginMessage || "等待登录完成…"}
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          {!pending && !authUrl && loginMessage ? (
+            <div className="border-destructive/30 bg-destructive/5 text-destructive flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs">
+              <span className="min-w-0 break-all">{loginMessage}</span>
+              <Button
                 type="button"
-                onClick={() => window.open(authUrl, OAUTH_WINDOW_NAME)}
-                className="text-primary hover:text-primary/80 break-all text-left text-xs underline"
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => beginOAuth(realm)}
               >
-                {authUrl}
-              </button>
-              {loginMessage ? (
-                <div className={cn("text-xs", loginDone ? "text-emerald-500" : "text-muted-foreground")}>
-                  {loginDone ? "✓ " : "⏳ "}{loginMessage}
-                </div>
-              ) : (
-                <div className="text-muted-foreground text-xs">等待登录完成…</div>
-              )}
-            </>
+                <RefreshCw className="size-3.5" strokeWidth={1.75} /> 重试
+              </Button>
+            </div>
           ) : null}
         </div>
 
-        {/* 关闭在左，获取授权链接在右；发起授权后仅剩关闭 */}
-        <DialogFooter className="sm:justify-between">
+        <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
-          {!authUrl ? (
-            <Button onClick={beginOAuth} disabled={pending}>
-              <Link2 className="size-3.5" strokeWidth={1.75} /> 获取授权链接
-            </Button>
-          ) : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>

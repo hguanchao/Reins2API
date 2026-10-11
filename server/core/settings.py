@@ -17,7 +17,7 @@ HOST = "127.0.0.1"
 PORT = 8787
 
 # ── 出站代理默认值：direct | system | manual ──
-# 实际生效值存 data/config.json（管理面 /api/config 可改），文件缺失时回落到这里
+# 实际生效值存 server/config.json（管理面 /api/config 可改），文件缺失时回落到这里
 PROXY_MODE = "direct"
 PROXY_URL: str | None = None
 

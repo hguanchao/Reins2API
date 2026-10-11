@@ -1,4 +1,4 @@
-"""运行时配置：JSON 文件持久化（data/config.json），线程安全读写。
+"""运行时配置：JSON 文件持久化（server/config.json），线程安全读写。
 
 与 core.settings 的分工：settings 是写死的结构常量，本模块存会变的运行
 配置（出站代理等）。settings 里的 PROXY_MODE/PROXY_URL 作为默认值来源；
@@ -16,9 +16,9 @@ from copy import deepcopy
 from typing import Any
 
 from core.logger import logger
-from core.settings import DATA_DIR, PROXY_MODE, PROXY_URL
+from core.settings import BASE_DIR, PROXY_MODE, PROXY_URL
 
-CONFIG_PATH = DATA_DIR / "config.json"
+CONFIG_PATH = BASE_DIR / "config.json"
 
 PROXY_MODES = ("direct", "system", "manual")
 
@@ -81,7 +81,7 @@ def _load() -> dict[str, Any]:
 
 
 def _save(data: dict[str, Any]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = CONFIG_PATH.with_suffix(".json.tmp")
     tmp_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

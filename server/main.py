@@ -65,4 +65,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # 进程 stdout/stderr 已被启动脚本丢进空设备：致命错误必须落到 server.log，
+        # 否则启动失败会毫无线索。
+        logger.exception("[启动] 致命错误,进程退出")
+        raise

@@ -25,8 +25,8 @@
   min-height: 0;
 }
 .gw-grid-split {
-  /* 配置略窄、运行态略宽，贴近 usage 图/表比例 */
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.2fr);
+  /* 模型目录与 Token 用量左右等宽 */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 /* ── 工作区高度分配 ──
    大屏（2K/4K）下 KPI 条固定，中段（模型目录 | Token 用量）与最近请求平分剩余高度。

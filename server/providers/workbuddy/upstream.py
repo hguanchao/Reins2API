@@ -38,11 +38,7 @@ V3_CONFIG_PATH = "/v3/config"
 USER_RESOURCE_PATH = "/billing/meter/get-user-resource"
 USER_RESOURCE_PATH_V2 = "/v2/billing/meter/get-user-resource"
 
-# /v3/config 对 UA 敏感：必须能解析出 CodeBuddy 版本号，否则 400 code=12403；
-# 且不同 UA 下发不同模型集合——CN 用 IDE UA（现状），global 必须用 CLI UA
-# （IDE UA 在 global 只给别名/路由条目，真实 chat 目录在 CLI UA 里，实测 2026-10-11）。
-V3_CONFIG_UA_CN = "CodeBuddyIDE/4.12.0 CodeBuddy/4.12.0"
-V3_CONFIG_UA_GLOBAL = "CLI/2.63.2 CodeBuddy/2.63.2"
+# /v3/config 对 UA 敏感（UA 常量见 default_user_agent 之后定义）。
 V3_CONFIG_PRODUCT = "SaaS"
 
 
@@ -68,6 +64,16 @@ def default_user_agent(realm: str = "cn") -> str:
     """
     platform = "WorkBuddy AI" if realm == "global" else "WorkBuddy"
     return f"WorkBuddy/{WB_CLIENT_VERSION} {platform}/{WB_CLIENT_VERSION} CLI/{WB_CLI_VERSION}"
+
+
+# /v3/config 对 UA 敏感：必须能解析出 CodeBuddy 版本号，否则 400 code=12403；
+# 且不同 UA 下发不同模型集合（实测 2026-10-11）：
+#   - global 发完整桌面端 UA → 28 条（含 gpt-6-luna / gpt-6-sol / grok-4.7 等新模型）；
+#     只发裸 `CLI/<v> CodeBuddy/<v>` 会被上游降级成 22 条旧目录（缺 gpt-6-*），
+#     IDE UA 更是只剩别名/路由条目。故 global 直接复用 default_user_agent("global")。
+#   - CN 沿用 IDE UA（现状）。
+V3_CONFIG_UA_CN = "CodeBuddyIDE/4.12.0 CodeBuddy/4.12.0"
+V3_CONFIG_UA_GLOBAL = default_user_agent("global")
 
 
 # ── 按账号域（realm）分流 ────────────────────────────────────────

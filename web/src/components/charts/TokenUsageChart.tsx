@@ -9,7 +9,7 @@
  * 保证文字/圆点不变形);悬停按鼠标位置吸附最近时间桶,画竖向参考线并浮出
  * 该桶的 token/次数明细;请求次数数据点挂 title 原生提示。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Inbox } from "lucide-react";
 import {
   fetchProviderUsage,
@@ -108,10 +108,26 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
   /** 请求序号:轮询/切档并发下只采纳最新一次结果,旧响应晚到不覆盖新数据 */
   const seq = useRef(0);
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const plotRef = useRef<HTMLDivElement | null>(null);
   /** 绘图区实际像素尺寸（ResizeObserver 跟随容器）：viewBox == CSS 像素，
-   *  图表真实撑满面板高度，无 letterbox 死区，悬停坐标换算零缩放误差。 */
+   *  图表真实撑满面板高度，无 letterbox 死区，悬停坐标换算零缩放误差。
+   *  用回调 ref 而非 useEffect([])：绘图区只在有数据后才渲染，挂载时节点还不存在，
+   *  effect 里取 ref 只会拿到 null 并永久不监听，viewBox 卡在默认值 → 上下留白。 */
   const [plotSize, setPlotSize] = useState<{ w: number; h: number }>(DEFAULT_PLOT);
+  const roRef = useRef<ResizeObserver | null>(null);
+  const plotRef = useCallback((el: HTMLDivElement | null) => {
+    roRef.current?.disconnect();
+    roRef.current = null;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0].contentRect;
+      setPlotSize({
+        w: Math.max(1, Math.round(rect.width)),
+        h: Math.max(1, Math.round(rect.height)),
+      });
+    });
+    observer.observe(el);
+    roRef.current = observer;
+  }, []);
   /** 悬停吸附的时间桶下标 + 浮层定位:右半图向左展开(right 锚定),左半图向右展开(left 锚定) */
   const [hover, setHover] = useState<number | null>(null);
   const [tip, setTip] = useState<{ side: "left" | "right"; x: number; top: number } | null>(null);
@@ -138,20 +154,6 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
       clearInterval(timer);
     };
   }, [provider, range]);
-
-  useEffect(() => {
-    const el = plotRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0].contentRect;
-      setPlotSize({
-        w: Math.max(1, Math.round(rect.width)),
-        h: Math.max(1, Math.round(rect.height)),
-      });
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
 
   const series = summary?.series ?? [];
   const rangeLabel = RANGE_OPTIONS.find((opt) => opt.value === range)?.label ?? range;

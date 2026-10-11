@@ -199,15 +199,15 @@ if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyCon
 # ── ③ 后台启动服务 ───────────────────────────────────────────────
 
 New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot "server\logs") | Out-Null
-$outLog = Join-Path $PSScriptRoot "server\logs\serve.out.log"
-$errLog = Join-Path $PSScriptRoot "server\logs\serve.err.log"
+$serverLog = Join-Path $PSScriptRoot "server\logs\server.log"
 $uvExe = (Get-Command uv).Source
+# 进程 stdout/stderr 丢进空设备:日志由 loguru 全量写 server.log,不再另开 serve.err/serve.out。
 $proc = Start-Process -FilePath $uvExe `
   -ArgumentList @("run", "--directory", "server", "python", "main.py", "--serve", "$Port") `
   -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru `
-  -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+  -RedirectStandardOutput "NUL" -RedirectStandardError "\\.\NUL"
 Write-Step "服务" "后台运行 · 启动器 PID $($proc.Id)"
-Write-Dim "控制台副本: server\logs\serve.out.log"
+Write-Dim "日志: server\logs\server.log"
 
 # ── ④ 健康检查 + 汇总卡片 ────────────────────────────────────────
 
@@ -225,9 +225,9 @@ for ($i = 1; $i -le 30; $i++) {
   } catch { }
 }
 if (-not $ready) {
-  Write-Dim "服务未就绪,最近错误:"
-  Get-Content $errLog -Tail 15 -ErrorAction SilentlyContinue | ForEach-Object { Write-Dim "$_" }
-  Die "启动失败" "请查看 server\logs\ 下的日志"
+  Write-Dim "服务未就绪,最近日志:"
+  Get-Content $serverLog -Tail 15 -ErrorAction SilentlyContinue | ForEach-Object { Write-Dim "$_" }
+  Die "启动失败" "请查看 server\logs\server.log"
 }
 $stopwatch.Stop()
 Write-Step "健康检查" ("就绪 ({0:0.0}s)" -f $stopwatch.Elapsed.TotalSeconds)

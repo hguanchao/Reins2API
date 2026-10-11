@@ -1,7 +1,7 @@
 """出站代理解析（移植自 zen2api upstream/proxy.ts）。
 
 direct / system（环境变量 → Windows WinINET 注册表）/ manual 三档，
-统一旁路列表匹配。三档的取值来自 core.config（data/config.json，管理面可改），
+统一旁路列表匹配。三档的取值来自 core.config（server/config.json，管理面可改），
 改配置调 invalidate() 即可立即生效，不用重启。
 
 system 档 30s TTL：每次请求重读会开注册表查询，从不重读则先启动代理后开网关

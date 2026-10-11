@@ -1,8 +1,11 @@
 """日志配置模块（移植自 grok-rego core/logger.py，LOG_DIR 改从 settings 取）。
 
-控制台彩色输出 + 当前文件 server.log。
+控制台彩色输出 + 当前文件 server.log（TRACE 全等级）。
 每天午夜滚动为 yyyy-mm-dd.log（北京时间），保留 30 天。
 日志时间统一为北京时间（UTC+8），与数据库遥测时间戳一致。
+
+进程级 stdout/stderr 由启动脚本丢进空设备（见 start.ps1/start.sh）——
+server.log 是唯一日志落点，不另开 serve.err/serve.out。
 """
 
 import os
@@ -88,7 +91,7 @@ logger.add(
 
 logger.add(
     os.path.join(LOG_DIR, "server.log"),
-    level="DEBUG",
+    level="TRACE",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
     rotation="00:00",
     compression=_archive_rotated,

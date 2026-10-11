@@ -67,7 +67,7 @@ Web 管理台:构建前端后访问 `http://127.0.0.1:8787/`(SPA)。开发态 `c
 - **OpenCode**:凭证体系固定为**单一 `public` 匿名凭证**:只服务免费档模型(路由层拦截非免费模型,上游对它们一律回 "Missing API key")。
 - **WorkBuddy**:多账号号池,凭证存 `server/data/workbuddy.db` 的 accounts 表(明文,与 wb2api 同款取舍);通过管理台「添加账号」走 OAuth 设备码登录,或手动粘贴 token;token 过期前 10 分钟自动刷新。参数(冷却/熔断/超时等)写死在 `server/core/settings.py` 的 `WB_*` 常量。
 - **管理 API 与推理端点都无鉴权**,安全姿态是默认只监听 `127.0.0.1`。对外暴露前请自己加反代鉴权(WorkBuddy 号池有真实凭证,务必先加)。
-- 运行时可持久化配置只有代理三档(`data/config.json`);其余值写死在 `server/core/settings.py` 与各 provider。
+- 运行时可持久化配置只有代理三档(`server/config.json`);其余值写死在 `server/core/settings.py` 与各 provider。
 
 ## 架构
 
