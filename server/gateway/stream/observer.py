@@ -6,14 +6,14 @@
 
 from __future__ import annotations
 
-from gateway.stream.parser import BridgeStreamParser
+from gateway.protocols import stream_parser
 from gateway.stream.sse import SseFrameSplitter
 from gateway.types import Usage, merge_bridge_usage
 
 
 class StreamUsageObserver:
     def __init__(self, protocol: str) -> None:
-        self._parser = BridgeStreamParser(protocol)
+        self._parser = stream_parser(protocol)
         self._usage = Usage()
         self._reported = False
         self._normal = False

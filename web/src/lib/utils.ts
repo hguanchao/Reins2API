@@ -6,10 +6,14 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/** 展示用模型短名：去掉 provider 命名空间前缀（opencode/big-pickle → big-pickle）。
+/** 展示用模型短名：去掉 provider 命名空间前缀（oc:big-pickle → big-pickle，
+ *  cn:/glb:deepseek-v4.1-flash → deepseek-v4.1-flash，workbuddy/glm-5.3 → glm-5.3）。
  *  仅用于显示；API 请求与数据流保留完整 id。 */
 export function shortModelName(name: string): string {
-  return name.startsWith("opencode/") ? name.slice("opencode/".length) : name;
+  const colon = name.indexOf(":");
+  if (colon >= 0) return name.slice(colon + 1);
+  const slash = name.indexOf("/");
+  return slash >= 0 ? name.slice(slash + 1) : name;
 }
 
 /** Token 紧凑显示：1.2M / 45.3K / 原值，尾随 .0 去除（与 grok-rego 同式）。 */

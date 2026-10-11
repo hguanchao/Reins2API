@@ -21,6 +21,10 @@ class ModelNotFound(ValueError):
     """模型无法路由（未知 / 未上架 / 无可用协议）。"""
 
 
+class UpstreamUnavailable(RuntimeError):
+    """provider 无可用上游资源（如号池全冷却/全占满）——推理层映射 429。"""
+
+
 def random_id(prefix: str, size: int) -> str:
     """prefix_ + size 字节随机 hex（移植自 zen2api util/identity.ts randomID）。"""
     return f"{prefix}_{secrets.token_hex(size)}"
@@ -43,10 +47,11 @@ class RequestIDs:
 @dataclass(frozen=True)
 class Route:
     provider: str
-    model: str           # 对外规范名（opencode/big-pickle）
-    upstream_model: str  # 实际打到上游的模型名（big-pickle）
-    protocol: str        # 上游协议：chat | responses | anthropic
+    model: str           # 对外规范名(oc:big-pickle / cn:deepseek-v4.1-flash)
+    upstream_model: str  # 实际打到上游的模型名(big-pickle / deepseek-v4.1-flash)
+    protocol: str        # 上游协议:chat | responses | anthropic
     free: bool
+    realm: str = ""      # provider 内部选号域(cn/global);opencode 等无域 provider 恒空
 
 
 @dataclass
@@ -61,14 +66,27 @@ class ModelInfo:
 class UpstreamResponse:
     """provider 拥有的上游 HTTP 响应的统一视图（内部持有 curl_cffi Response）。"""
 
-    def __init__(self, status: int, headers: dict[str, str], raw: Any):
+    def __init__(self, status: int, headers: dict[str, str], raw: Any, *, account: str = ""):
         self.status = status
         self.headers = headers
         self._raw = raw
+        self.account = account  # 服务本响应的账号 uid（provider 填写；遥测分账用）
 
     def read_body(self) -> bytes:
+        """整包读取响应体。
+
+        stream=True 时 curl_cffi 的 .content / .text 恒为空（body 只在
+        iter_content 里），而推理请求一律走 stream，所以错误路径必须回退到
+        iter_content，否则上游的错误原文会被丢掉、只剩 HTTP 状态文案。
+        """
         try:
-            return bytes(self._raw.content)
+            content = bytes(self._raw.content)
+            if content:
+                return content
+            try:
+                return b"".join(chunk for chunk in self._raw.iter_content(chunk_size=8192) if chunk)
+            except AssertionError:
+                return content  # 非流式响应不支持 iter_content，此时 content 已是全部
         finally:
             self.close()
 
@@ -124,6 +142,11 @@ class Provider(Protocol):
     ) -> UpstreamResponse: ...
 
 
+# 模型别名前缀（":" 分隔）→ provider 名。别名是客户端规范名，provider 发上游前
+# 自行剥前缀取裸名；cn:/glb: 同属 workbuddy，realm 由 provider 从前缀解析。
+ALIAS_PREFIXES = {"oc": "opencode", "cn": "workbuddy", "glb": "workbuddy"}
+
+
 class Registry:
     def __init__(self) -> None:
         self._providers: dict[str, Provider] = {}
@@ -151,15 +174,51 @@ class Registry:
             return next(iter(self._providers.values()))
 
     def resolve(self, model: str) -> Route:
-        """规范名 provider/xxx 路由到对应 provider；裸名交给默认 provider。"""
+        """模型别名路由:oc:/cn:/glb: 按前缀表选 provider(provider 发上游前
+        自行剥前缀取裸名);旧式 provider/xxx 兼容;裸名交给默认 provider。"""
         with self._lock:
             providers = dict(self._providers)
+        target = self._alias_target(model, providers)
+        if target is not None:
+            return target.route(model)
+        if "/" in model:
+            target = providers.get(model.split("/", 1)[0])
+            if target is not None:
+                return target.route(model)
+        return self.default.route(model)
+
+    def route_target(self, model: str) -> tuple[Provider | None, str | None]:
+        """与 resolve 同源的只读路由预判:返回 (provider, 未知前缀)。
+
+        裸名/无前缀 → (default, None);别名与 provider/xxx 命中 → (provider, None);
+        形如 xxx:yyy 或 xxx/yyy 但前缀未注册(含别名指向的 provider 未注册)→
+        (None, xxx)——调用方据此回 400,而不是把它当裸名丢给默认 provider。"""
+        with self._lock:
+            providers = dict(self._providers)
+        if ":" in model:
+            prefix = model.split(":", 1)[0]
+            name = self._alias_name(prefix)
+            if name is None:
+                return None, prefix
+            target = providers.get(name)
+            return (target, None) if target is not None else (None, prefix)
         if "/" in model:
             prefix = model.split("/", 1)[0]
             target = providers.get(prefix)
             if target is not None:
-                return target.route(model)
-        return self.default.route(model)
+                return target, None
+            return None, prefix
+        return self.default, None
+
+    @staticmethod
+    def _alias_name(prefix: str) -> str | None:
+        return ALIAS_PREFIXES.get(prefix)
+
+    def _alias_target(self, model: str, providers: dict[str, Provider]) -> Provider | None:
+        if ":" not in model:
+            return None
+        name = self._alias_name(model.split(":", 1)[0])
+        return providers.get(name) if name else None
 
     def list_models(self) -> list[ModelInfo]:
         with self._lock:
@@ -180,6 +239,7 @@ __all__ = [
     "RequestIDs",
     "Route",
     "UpstreamResponse",
+    "UpstreamUnavailable",
     "protocol_path",
     "random_id",
     "registry",

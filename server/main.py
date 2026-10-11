@@ -39,7 +39,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    from core.settings import PORT
+    from core.settings import PORT, WB_ENABLED
     from db import init_stores
     from gateway.base import registry
     from providers.opencode import OpenCodeProvider
@@ -48,6 +48,15 @@ def main() -> None:
     registry.register(provider)
     init_stores(registry.names)
     threading.Thread(target=_refresh_loop, args=(provider,), daemon=True).start()
+
+    if WB_ENABLED:
+        from providers.workbuddy import WorkBuddyProvider
+
+        workbuddy = WorkBuddyProvider()
+        registry.register(workbuddy)
+        init_stores(registry.names)  # workbuddy.db（requests + accounts 表）
+        threading.Thread(target=_refresh_loop, args=(workbuddy,), daemon=True).start()
+
     logger.info(f"[启动] provider 已注册: {', '.join(registry.names)}")
 
     from api.server import serve

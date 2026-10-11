@@ -1,6 +1,6 @@
 """上游请求构造与发送（移植自 zen2api upstream/headers.ts + shaping.ts + client.ts）。
 
-- headers：会话亲和头保 prompt cache；认证头按协议分叉（anthropic 走 x-api-key）。
+- headers：按 OpenCode 客户端实际发出的头集合构造；认证头按协议分叉（anthropic 走 x-api-key）。
 - shaping：免费档塑形——上游把非"agent 会话形态"的免费请求以 403 FreeTierError
   拒掉，所以缺流式/缺核心工具的请求在这里补齐；客户端要 JSON 仍由网关折叠流回。
 - send：单凭证（public）单次尝试——无换 key 轮换，上游错误直接返回给推理层透传。
@@ -21,23 +21,21 @@ UPSTREAM = "https://opencode.ai/zen"
 PUBLIC_KEY = "public"
 # 推理流不设本地超时（含连接/空闲）：上限由上游决定，项目侧不掐长生成。
 DISCOVERY_TIMEOUT = 30
-USER_AGENT = "opencode/1.18.31 (win32 x64; node v22)"
+USER_AGENT = "opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14"
 
 _CORE_TOOLS = ("bash", "edit", "glob", "grep", "read")
 
 
 def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str, str]:
-    """相关性头保住 provider 侧的 prompt/会话亲和——多轮对话复用上游 prompt cache
-    全靠它们。"""
+    """按参考 OpenCode 客户端实际发出的头集合构造（对照其 session/llm/request.ts）。
+    身份头的粒度见 identity.py：session 每会话一个、request 每请求一个。"""
     headers: dict[str, str] = {
         "content-type": "application/json",
         "accept": "application/json, text/event-stream",
         "user-agent": USER_AGENT,
         "x-opencode-client": "cli",
+        "x-opencode-session-id": ids.session,
         "x-opencode-session": ids.session,
-        # OpenCode 1.18.x 发这些亲和头；旧版部署仍靠遗留的 x-opencode-session。
-        "x-session-affinity": ids.session,
-        "x-session-id": ids.session,
         "x-opencode-request": ids.request,
         "x-opencode-project": ids.project,
     }

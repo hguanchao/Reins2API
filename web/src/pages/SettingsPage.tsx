@@ -5,13 +5,15 @@
  * 保存走 POST /api/config，后端立即生效并落盘，无需重启。
  */
 import { useCallback, useEffect, useState } from "react";
-import { Link2, Monitor, Network, Save, Zap } from "lucide-react";
+import { Link2, Monitor, Network, RefreshCw, Save, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Button, Input, Label } from "@/components/ui";
 import {
   ApiError,
   fetchConfig,
+  fetchEgress,
   saveConfig,
+  type EgressInfo,
   type ProxyMode,
   type SystemConfig,
 } from "@/lib/api";
@@ -48,11 +50,27 @@ export function SettingsPage() {
   const [mode, setMode] = useState<ProxyMode>("direct");
   const [url, setUrl] = useState("");
   const [saving, setSaving] = useState(false);
+  /** 出口 IP：上游实际看到的地址 */
+  const [egress, setEgress] = useState<EgressInfo | null>(null);
+  const [probing, setProbing] = useState(false);
 
   const applyConfig = useCallback((next: SystemConfig) => {
     setConfig(next);
     setMode(next.proxy.mode);
     setUrl(next.proxy.url);
+  }, []);
+
+  const probeEgress = useCallback(async (force = false) => {
+    setProbing(true);
+    try {
+      setEgress(await fetchEgress(force));
+    } catch (err) {
+      setEgress(null);
+      // 首载探测失败只在卡片里显示，不弹提示；手动重探才打扰
+      if (force) toast.error(err instanceof ApiError ? err.message : "探测出口 IP 失败");
+    } finally {
+      setProbing(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -71,6 +89,10 @@ export function SettingsPage() {
     };
   }, [applyConfig]);
 
+  useEffect(() => {
+    void probeEgress();
+  }, [probeEgress]);
+
   const manualInvalid = mode === "manual" && url.trim() === "";
 
   async function handleSave() {
@@ -79,6 +101,8 @@ export function SettingsPage() {
     try {
       const next = await saveConfig({ mode, url: url.trim() });
       applyConfig(next);
+      // 代理换了，出口 IP 必须重新探
+      void probeEgress(true);
       toast.success("配置已保存并生效");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "保存配置失败");
@@ -86,6 +110,19 @@ export function SettingsPage() {
       setSaving(false);
     }
   }
+
+  const egressText = probing && !egress
+    ? "探测中…"
+    : egress?.ok
+      ? egress.ip
+      : egress
+        ? "探测失败"
+        : "…";
+  const egressCaption = egress
+    ? egress.ok
+      ? `${egress.proxied ? `经代理 ${egress.proxy_url}` : "直连（不走代理）"} · 探测于 ${new Date(egress.at_ms).toLocaleTimeString("zh-CN", { hour12: false })}`
+      : `探测失败：${egress.error || "未知原因"}`
+    : "正在探测上游看到的出口地址…";
 
   return (
     <section className="panel gw-workspace" aria-label="系统配置">
@@ -183,8 +220,30 @@ export function SettingsPage() {
                 <Save className="size-3.5" aria-hidden />
                 {saving ? "保存中…" : "保存配置"}
               </Button>
-              <span className="text-xs text-muted-foreground">
-                当前生效：{config.proxy_status}
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span>当前生效：{config.proxy_status}</span>
+                <span aria-hidden>·</span>
+                {/* 出口 IP：上游实际看到的地址；悬停看探测详情（经代理/直连 + 探测时刻） */}
+                <span className={cn(egress && !egress.ok && "text-destructive")} title={egressCaption}>
+                  出口 IP {egressText}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-6"
+                  disabled={probing}
+                  onClick={() => void probeEgress(true)}
+                  title="重新探测出口 IP"
+                  aria-label="重新探测出口 IP"
+                  aria-busy={probing}
+                >
+                  <RefreshCw
+                    className={cn("size-3", probing && "animate-spin")}
+                    strokeWidth={1.6}
+                    aria-hidden
+                  />
+                </Button>
               </span>
             </div>
           </div>

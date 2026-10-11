@@ -77,8 +77,8 @@ class OpenCodeProvider:
         return self._router.route(self._bare(model))
 
     def _bare(self, model: str) -> str:
-        prefix = f"{self.name}/"
-        return model.removeprefix(prefix)
+        """别名 oc:xxx（及旧式 opencode/xxx）→ 上游裸名。"""
+        return model.removeprefix("oc:").removeprefix(f"{self.name}/")
 
     # ── 请求 ──
 

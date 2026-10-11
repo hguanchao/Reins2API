@@ -1,0 +1,1505 @@
+{
+  "collapse": {
+    "anthropic": {
+      "content": [
+        {
+          "signature": "",
+          "thinking": "r1",
+          "type": "thinking"
+        },
+        {
+          "text": "hello",
+          "type": "text"
+        },
+        {
+          "id": "c1",
+          "input": {
+            "a": 1
+          },
+          "name": "f",
+          "type": "tool_use"
+        }
+      ],
+      "id": "msg_abc",
+      "model": "deepseek-v4",
+      "role": "assistant",
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 8,
+        "output_tokens": 5
+      }
+    },
+    "chat": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "content": "hello",
+            "reasoning_content": "r1",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"a\":1}",
+                  "name": "f"
+                },
+                "id": "c1",
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1700000000,
+      "id": "chatcmpl_abc",
+      "model": "deepseek-v4",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 5,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 10,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 15
+      }
+    },
+    "responses": {
+      "created_at": 1700000000,
+      "error": null,
+      "id": "resp_abc",
+      "incomplete_details": null,
+      "model": "deepseek-v4",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_000000000000000000000025",
+          "status": "completed",
+          "summary": [
+            {
+              "text": "r1",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning"
+        },
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "hello",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_000000000000000000000026",
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        },
+        {
+          "arguments": "{\"a\":1}",
+          "call_id": "c1",
+          "id": "fc_000000000000000000000027",
+          "name": "f",
+          "status": "completed",
+          "type": "function_call"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 10,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 15
+      }
+    }
+  },
+  "convert_response": {
+    "anthropic->anthropic": {
+      "content": [
+        {
+          "signature": "sig",
+          "thinking": "r1",
+          "type": "thinking"
+        },
+        {
+          "text": "hello",
+          "type": "text"
+        },
+        {
+          "id": "c1",
+          "input": {
+            "a": 1
+          },
+          "name": "f",
+          "type": "tool_use"
+        }
+      ],
+      "id": "msg_abc",
+      "model": "deepseek-v4",
+      "role": "assistant",
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "cache_creation_input_tokens": 1,
+        "cache_read_input_tokens": 2,
+        "input_tokens": 8,
+        "output_tokens": 5
+      }
+    },
+    "anthropic->chat": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "content": "hello",
+            "reasoning_content": "r1",
+            "reasoning_signature": "sig",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"a\":1}",
+                  "name": "f"
+                },
+                "id": "c1",
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1700000000,
+      "id": "chatcmpl_abc",
+      "model": "deepseek-v4",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 5,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 11,
+        "prompt_tokens_details": {
+          "cached_tokens": 2
+        },
+        "total_tokens": 16
+      }
+    },
+    "anthropic->responses": {
+      "created_at": 1700000000,
+      "error": null,
+      "id": "resp_abc",
+      "incomplete_details": null,
+      "model": "deepseek-v4",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_00000000000000000000001a",
+          "status": "completed",
+          "summary": [
+            {
+              "text": "r1",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning"
+        },
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "hello",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_00000000000000000000001b",
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        },
+        {
+          "arguments": "{\"a\":1}",
+          "call_id": "c1",
+          "id": "fc_00000000000000000000001c",
+          "name": "f",
+          "status": "completed",
+          "type": "function_call"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 11,
+        "input_tokens_details": {
+          "cached_tokens": 2
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 16
+      }
+    },
+    "chat->anthropic": {
+      "content": [
+        {
+          "signature": "sig",
+          "thinking": "r1",
+          "type": "thinking"
+        },
+        {
+          "text": "hello",
+          "type": "text"
+        },
+        {
+          "id": "c1",
+          "input": {
+            "a": 1
+          },
+          "name": "f",
+          "type": "tool_use"
+        }
+      ],
+      "id": "msg_abc",
+      "model": "deepseek-v4",
+      "role": "assistant",
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2,
+        "input_tokens": 8,
+        "output_tokens": 5
+      }
+    },
+    "chat->chat": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "content": "hello",
+            "reasoning_content": "r1",
+            "reasoning_signature": "sig",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"a\":1}",
+                  "name": "f"
+                },
+                "id": "c1",
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1,
+      "id": "chatcmpl_abc",
+      "model": "deepseek-v4",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 5,
+        "completion_tokens_details": {
+          "reasoning_tokens": 3
+        },
+        "prompt_tokens": 10,
+        "prompt_tokens_details": {
+          "cached_tokens": 2
+        },
+        "total_tokens": 15
+      }
+    },
+    "chat->responses": {
+      "created_at": 1,
+      "error": null,
+      "id": "resp_abc",
+      "incomplete_details": null,
+      "model": "deepseek-v4",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_000000000000000000000003",
+          "status": "completed",
+          "summary": [
+            {
+              "text": "r1",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning"
+        },
+        {
+          "content": [
+            {
+              "annotations": [],
+              "text": "hello",
+              "type": "output_text"
+            }
+          ],
+          "id": "msg_000000000000000000000004",
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        },
+        {
+          "arguments": "{\"a\":1}",
+          "call_id": "c1",
+          "id": "fc_000000000000000000000005",
+          "name": "f",
+          "status": "completed",
+          "type": "function_call"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 10,
+        "input_tokens_details": {
+          "cached_tokens": 2
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 3
+        },
+        "total_tokens": 15
+      }
+    },
+    "responses->anthropic": {
+      "content": [
+        {
+          "data": "enc",
+          "type": "redacted_thinking"
+        },
+        {
+          "text": "hello",
+          "type": "text"
+        },
+        {
+          "id": "c1",
+          "input": {
+            "a": 1
+          },
+          "name": "f",
+          "type": "tool_use"
+        }
+      ],
+      "id": "msg_abc",
+      "model": "deepseek-v4",
+      "role": "assistant",
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2,
+        "input_tokens": 8,
+        "output_tokens": 5
+      }
+    },
+    "responses->chat": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "content": "hello",
+            "reasoning_content": "r1",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"a\":1}",
+                  "name": "f"
+                },
+                "id": "c1",
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1,
+      "id": "chatcmpl_abc",
+      "model": "deepseek-v4",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 5,
+        "completion_tokens_details": {
+          "reasoning_tokens": 3
+        },
+        "prompt_tokens": 10,
+        "prompt_tokens_details": {
+          "cached_tokens": 2
+        },
+        "total_tokens": 15
+      }
+    },
+    "responses->responses": {
+      "created_at": 1,
+      "id": "resp_abc",
+      "model": "deepseek-v4",
+      "object": "response",
+      "output": [
+        {
+          "encrypted_content": "enc",
+          "id": "rs1",
+          "summary": [
+            {
+              "text": "r1",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning"
+        },
+        {
+          "content": [
+            {
+              "text": "hello",
+              "type": "output_text"
+            }
+          ],
+          "role": "assistant",
+          "type": "message"
+        },
+        {
+          "arguments": "{\"a\":1}",
+          "call_id": "c1",
+          "name": "f",
+          "type": "function_call"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 10,
+        "input_tokens_details": {
+          "cached_tokens": 2
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 3
+        },
+        "total_tokens": 15
+      }
+    }
+  },
+  "forward": {
+    "anthropic->anthropic": {
+      "error": null,
+      "sse": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc\",\"model\":\"deepseek-v4\",\"usage\":{\"input_tokens\":8,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"r1\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":1}\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 8,
+        "output": 5,
+        "reasoning": 0,
+        "total": 13
+      }
+    },
+    "anthropic->chat": {
+      "error": null,
+      "sse": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc\",\"model\":\"deepseek-v4\",\"usage\":{\"input_tokens\":8,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"r1\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":1}\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 8,
+        "output": 5,
+        "reasoning": 0,
+        "total": 13
+      }
+    },
+    "anthropic->responses": {
+      "error": null,
+      "sse": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc\",\"model\":\"deepseek-v4\",\"usage\":{\"input_tokens\":8,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"r1\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":1}\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 8,
+        "output": 5,
+        "reasoning": 0,
+        "total": 13
+      }
+    },
+    "chat->anthropic": {
+      "error": null,
+      "sse": "data: {\"id\":\"chatcmpl_abc\",\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"r1\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hel\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\"\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":1}\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\ndata: [DONE]\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "chat->chat": {
+      "error": null,
+      "sse": "data: {\"id\":\"chatcmpl_abc\",\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"r1\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hel\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\"\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":1}\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\ndata: [DONE]\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "chat->responses": {
+      "error": null,
+      "sse": "data: {\"id\":\"chatcmpl_abc\",\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"r1\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hel\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\"\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":1}\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\ndata: [DONE]\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "responses->anthropic": {
+      "error": null,
+      "sse": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_abc\",\"model\":\"deepseek-v4\"}}\n\nevent: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs1\",\"output_index\":0,\"delta\":\"r1\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg1\",\"output_index\":1,\"delta\":\"hello\"}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc1\",\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"f\",\"arguments\":\"\"}}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc1\",\"output_index\":2,\"delta\":\"{\\\"a\\\":1}\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"f\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "responses->chat": {
+      "error": null,
+      "sse": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_abc\",\"model\":\"deepseek-v4\"}}\n\nevent: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs1\",\"output_index\":0,\"delta\":\"r1\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg1\",\"output_index\":1,\"delta\":\"hello\"}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc1\",\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"f\",\"arguments\":\"\"}}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc1\",\"output_index\":2,\"delta\":\"{\\\"a\\\":1}\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"f\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "responses->responses": {
+      "error": null,
+      "sse": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_abc\",\"model\":\"deepseek-v4\"}}\n\nevent: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs1\",\"output_index\":0,\"delta\":\"r1\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg1\",\"output_index\":1,\"delta\":\"hello\"}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc1\",\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"f\",\"arguments\":\"\"}}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc1\",\"output_index\":2,\"delta\":\"{\\\"a\\\":1}\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"f\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    }
+  },
+  "prepare_request": {
+    "anthropic->anthropic": {
+      "max_tokens": 128,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "hi",
+              "type": "text"
+            },
+            {
+              "source": {
+                "type": "url",
+                "url": "http://x/y.png"
+              },
+              "type": "image"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "thinking": "r1",
+              "type": "thinking"
+            },
+            {
+              "text": "ans",
+              "type": "text"
+            },
+            {
+              "id": "c1",
+              "input": {
+                "a": 1
+              },
+              "name": "f",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "result",
+              "is_error": false,
+              "tool_use_id": "c1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4",
+      "stop_sequences": [
+        "x"
+      ],
+      "stream": true,
+      "system": [
+        {
+          "text": "sys",
+          "type": "text"
+        }
+      ],
+      "temperature": 0.5,
+      "thinking": {
+        "budget_tokens": 8192,
+        "type": "enabled"
+      },
+      "tool_choice": {
+        "name": "f",
+        "type": "tool"
+      },
+      "tools": [
+        {
+          "description": "d",
+          "input_schema": {
+            "properties": {},
+            "type": "object"
+          },
+          "name": "f"
+        }
+      ],
+      "top_p": 0.9
+    },
+    "anthropic->chat": {
+      "max_tokens": 128,
+      "messages": [
+        {
+          "content": "sys",
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "text": "hi",
+              "type": "text"
+            },
+            {
+              "image_url": {
+                "url": "http://x/y.png"
+              },
+              "type": "image_url"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": "ans",
+          "reasoning_budget_tokens": 8192,
+          "reasoning_content": "r1",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"a\":1}",
+                "name": "f"
+              },
+              "id": "c1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "result",
+          "role": "tool",
+          "tool_call_id": "c1"
+        }
+      ],
+      "model": "deepseek-v4",
+      "reasoning_effort": "high",
+      "stop": [
+        "x"
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "temperature": 0.5,
+      "tool_choice": {
+        "function": {
+          "name": "f"
+        },
+        "type": "function"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "d",
+            "name": "f",
+            "parameters": {
+              "properties": {},
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ],
+      "top_p": 0.9
+    },
+    "anthropic->responses": {
+      "input": [
+        {
+          "content": [
+            {
+              "text": "hi",
+              "type": "input_text"
+            },
+            {
+              "image_url": "http://x/y.png",
+              "type": "input_image"
+            }
+          ],
+          "role": "user",
+          "type": "message"
+        },
+        {
+          "content": [
+            {
+              "text": "ans",
+              "type": "output_text"
+            }
+          ],
+          "role": "assistant",
+          "type": "message"
+        },
+        {
+          "arguments": "{\"a\":1}",
+          "call_id": "c1",
+          "name": "f",
+          "type": "function_call"
+        },
+        {
+          "call_id": "c1",
+          "output": "result",
+          "type": "function_call_output"
+        }
+      ],
+      "instructions": "sys",
+      "max_output_tokens": 128,
+      "model": "deepseek-v4",
+      "reasoning": {
+        "effort": "high"
+      },
+      "stop": [
+        "x"
+      ],
+      "stream": true,
+      "temperature": 0.5,
+      "tool_choice": {
+        "name": "f",
+        "type": "function"
+      },
+      "tools": [
+        {
+          "description": "d",
+          "name": "f",
+          "parameters": {
+            "properties": {},
+            "type": "object"
+          },
+          "strict": false,
+          "type": "function"
+        }
+      ],
+      "top_p": 0.9
+    },
+    "chat->anthropic": {
+      "max_tokens": 128,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "hi",
+              "type": "text"
+            },
+            {
+              "source": {
+                "type": "url",
+                "url": "http://x/y.png"
+              },
+              "type": "image"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "thinking": "r1",
+              "type": "thinking"
+            },
+            {
+              "text": "ans",
+              "type": "text"
+            },
+            {
+              "id": "c1",
+              "input": {
+                "a": 1
+              },
+              "name": "f",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "result",
+              "is_error": false,
+              "tool_use_id": "c1",
+              "type": "tool_result"
+            },
+            {
+              "text": "again",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4",
+      "output_config": {
+        "effort": "high"
+      },
+      "stop_sequences": [
+        "x"
+      ],
+      "stream": true,
+      "system": [
+        {
+          "text": "sys",
+          "type": "text"
+        },
+        {
+          "text": "dev",
+          "type": "text"
+        }
+      ],
+      "temperature": 0.5,
+      "thinking": {
+        "budget_tokens": 8192,
+        "type": "enabled"
+      },
+      "tool_choice": {
+        "name": "f",
+        "type": "tool"
+      },
+      "tools": [
+        {
+          "description": "d",
+          "input_schema": {
+            "properties": {},
+            "type": "object"
+          },
+          "name": "f"
+        }
+      ],
+      "top_p": 0.9
+    },
+    "chat->chat": {
+      "frequency_penalty": 0.1,
+      "max_tokens": 128,
+      "messages": [
+        {
+          "content": "sys",
+          "role": "system"
+        },
+        {
+          "content": "dev",
+          "role": "developer"
+        },
+        {
+          "content": [
+            {
+              "text": "hi",
+              "type": "text"
+            },
+            {
+              "image_url": {
+                "url": "http://x/y.png"
+              },
+              "type": "image_url"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": "ans",
+          "reasoning_content": "r1",
+          "reasoning_signature": "sig",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"a\":1}",
+                "name": "f"
+              },
+              "id": "c1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "result",
+          "role": "tool",
+          "tool_call_id": "c1"
+        },
+        {
+          "content": "again",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4",
+      "parallel_tool_calls": true,
+      "presence_penalty": 0.2,
+      "prompt_cache_key": "pk",
+      "reasoning_effort": "high",
+      "response_format": {
+        "json_schema": {
+          "name": "s",
+          "schema": {
+            "type": "object"
+          },
+          "strict": true
+        },
+        "type": "json_schema"
+      },
+      "safety_identifier": "si",
+      "seed": 7,
+      "service_tier": "auto",
+      "stop": [
+        "x"
+      ],
+      "store": true,
+      "stream": true,
+      "temperature": 0.5,
+      "tool_choice": {
+        "function": {
+          "name": "f"
+        },
+        "type": "function"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "d",
+            "name": "f",
+            "parameters": {
+              "properties": {},
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ],
+      "top_p": 0.9
+    },
+    "chat->responses": {
+      "input": [
+        {
+          "content": [
+            {
+              "text": "dev",
+              "type": "input_text"
+            }
+          ],
+          "role": "developer",
+          "type": "message"
+        },
+        {
+          "content": [
+            {
+              "text": "hi",
+              "type": "input_text"
+            },
+            {
+              "image_url": "http://x/y.png",
+              "type": "input_image"
+            }
+          ],
+          "role": "user",
+          "type": "message"
+        },
+        {
+          "content": [
+            {
+              "text": "ans",
+              "type": "output_text"
+            }
+          ],
+          "role": "assistant",
+          "type": "message"
+        },
+        {
+          "arguments": "{\"a\":1}",
+          "call_id": "c1",
+          "name": "f",
+          "type": "function_call"
+        },
+        {
+          "call_id": "c1",
+          "output": "result",
+          "type": "function_call_output"
+        },
+        {
+          "content": [
+            {
+              "text": "again",
+              "type": "input_text"
+            }
+          ],
+          "role": "user",
+          "type": "message"
+        }
+      ],
+      "instructions": "sys",
+      "max_output_tokens": 128,
+      "model": "deepseek-v4",
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "pk",
+      "reasoning": {
+        "effort": "high"
+      },
+      "safety_identifier": "si",
+      "service_tier": "auto",
+      "stop": [
+        "x"
+      ],
+      "store": true,
+      "stream": true,
+      "temperature": 0.5,
+      "text": {
+        "format": {
+          "name": "s",
+          "schema": {
+            "type": "object"
+          },
+          "strict": true,
+          "type": "json_schema"
+        }
+      },
+      "tool_choice": {
+        "name": "f",
+        "type": "function"
+      },
+      "tools": [
+        {
+          "description": "d",
+          "name": "f",
+          "parameters": {
+            "properties": {},
+            "type": "object"
+          },
+          "strict": false,
+          "type": "function"
+        }
+      ],
+      "top_p": 0.9
+    },
+    "responses->anthropic": {
+      "max_tokens": 128,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "hi",
+              "type": "text"
+            },
+            {
+              "source": {
+                "type": "url",
+                "url": "http://x/y.png"
+              },
+              "type": "image"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "thinking": "[redacted thinking]",
+              "type": "thinking"
+            },
+            {
+              "id": "c1",
+              "input": {
+                "a": 1
+              },
+              "name": "f",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "result",
+              "is_error": false,
+              "tool_use_id": "c1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4",
+      "output_config": {
+        "effort": "high"
+      },
+      "stop_sequences": [
+        "x"
+      ],
+      "stream": true,
+      "system": [
+        {
+          "text": "sys",
+          "type": "text"
+        }
+      ],
+      "temperature": 0.5,
+      "thinking": {
+        "budget_tokens": 8192,
+        "type": "enabled"
+      },
+      "tool_choice": {
+        "name": "f",
+        "type": "tool"
+      },
+      "tools": [
+        {
+          "description": "d",
+          "input_schema": {
+            "properties": {},
+            "type": "object"
+          },
+          "name": "f"
+        }
+      ],
+      "top_p": 0.9
+    },
+    "responses->chat": {
+      "max_tokens": 128,
+      "messages": [
+        {
+          "content": "sys",
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "text": "hi",
+              "type": "text"
+            },
+            {
+              "image_url": {
+                "url": "http://x/y.png"
+              },
+              "type": "image_url"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": null,
+          "reasoning_content": "r1",
+          "role": "assistant"
+        },
+        {
+          "content": null,
+          "reasoning_content": "tool call",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"a\":1}",
+                "name": "f"
+              },
+              "id": "c1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "result",
+          "role": "tool",
+          "tool_call_id": "c1"
+        }
+      ],
+      "model": "deepseek-v4",
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "pk",
+      "reasoning_effort": "high",
+      "response_format": {
+        "json_schema": {
+          "name": "s",
+          "schema": {
+            "type": "object"
+          }
+        },
+        "type": "json_schema"
+      },
+      "safety_identifier": "si",
+      "service_tier": "auto",
+      "stop": [
+        "x"
+      ],
+      "store": true,
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "temperature": 0.5,
+      "tool_choice": {
+        "function": {
+          "name": "f"
+        },
+        "type": "function"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "d",
+            "name": "f",
+            "parameters": {
+              "properties": {},
+              "type": "object"
+            },
+            "strict": true
+          },
+          "type": "function"
+        }
+      ],
+      "top_p": 0.9
+    },
+    "responses->responses": {
+      "input": [
+        {
+          "content": [
+            {
+              "text": "hi",
+              "type": "input_text"
+            },
+            {
+              "image_url": "http://x/y.png",
+              "type": "input_image"
+            }
+          ],
+          "role": "user",
+          "type": "message"
+        },
+        {
+          "encrypted_content": "enc",
+          "id": "rs1",
+          "summary": [
+            {
+              "text": "r1",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning"
+        },
+        {
+          "arguments": "{\"a\":1}",
+          "call_id": "c1",
+          "name": "f",
+          "type": "function_call"
+        },
+        {
+          "call_id": "c1",
+          "output": "result",
+          "type": "function_call_output"
+        }
+      ],
+      "instructions": "sys",
+      "max_output_tokens": 128,
+      "model": "deepseek-v4",
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "pk",
+      "reasoning": {
+        "effort": "high"
+      },
+      "safety_identifier": "si",
+      "service_tier": "auto",
+      "stop": [
+        "x"
+      ],
+      "store": true,
+      "stream": true,
+      "temperature": 0.5,
+      "text": {
+        "format": {
+          "name": "s",
+          "schema": {
+            "type": "object"
+          },
+          "type": "json_schema"
+        }
+      },
+      "tool_choice": {
+        "name": "f",
+        "type": "function"
+      },
+      "tools": [
+        {
+          "description": "d",
+          "name": "f",
+          "parameters": {
+            "properties": {},
+            "type": "object"
+          },
+          "strict": true,
+          "type": "function"
+        }
+      ],
+      "top_p": 0.9
+    }
+  },
+  "transcode": {
+    "anthropic->anthropic": {
+      "error": null,
+      "sse": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"r1\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":1}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":8,\"output_tokens\":5,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 8,
+        "output": 5,
+        "reasoning": 0,
+        "total": 13
+      }
+    },
+    "anthropic->chat": {
+      "error": null,
+      "sse": "data: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"r1\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"a\\\":1}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":5,\"total_tokens\":13,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\ndata: [DONE]\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 8,
+        "output": 5,
+        "reasoning": 0,
+        "total": 13
+      }
+    },
+    "anthropic->responses": {
+      "error": null,
+      "sse": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_abc\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"deepseek-v4\",\"output\":[],\"error\":null},\"sequence_number\":0}\n\nevent: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_abc\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"deepseek-v4\",\"output\":[],\"error\":null},\"sequence_number\":1}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"rs_00000000000000000000001d\",\"type\":\"reasoning\",\"status\":\"in_progress\",\"summary\":[]},\"sequence_number\":2}\n\nevent: response.reasoning_summary_part.added\ndata: {\"type\":\"response.reasoning_summary_part.added\",\"item_id\":\"rs_00000000000000000000001d\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"\"},\"sequence_number\":3}\n\nevent: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"r1\",\"item_id\":\"rs_00000000000000000000001d\",\"output_index\":0,\"summary_index\":0,\"sequence_number\":4}\n\nevent: response.reasoning_summary_text.done\ndata: {\"type\":\"response.reasoning_summary_text.done\",\"text\":\"r1\",\"item_id\":\"rs_00000000000000000000001d\",\"output_index\":0,\"summary_index\":0,\"sequence_number\":5}\n\nevent: response.reasoning_summary_part.done\ndata: {\"type\":\"response.reasoning_summary_part.done\",\"item_id\":\"rs_00000000000000000000001d\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"r1\"},\"sequence_number\":6}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_00000000000000000000001d\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"r1\"}]},\"sequence_number\":7}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"msg_00000000000000000000001e\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]},\"sequence_number\":8}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_00000000000000000000001e\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":9}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\",\"item_id\":\"msg_00000000000000000000001e\",\"output_index\":1,\"content_index\":0,\"sequence_number\":10}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc_000000000000000000000020\",\"type\":\"function_call\",\"status\":\"in_progress\",\"arguments\":\"\",\"call_id\":\"c1\",\"name\":\"f\"},\"sequence_number\":11}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"a\\\":1}\",\"item_id\":\"fc_000000000000000000000020\",\"output_index\":2,\"sequence_number\":12}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"text\":\"hello\",\"item_id\":\"msg_00000000000000000000001e\",\"output_index\":1,\"content_index\":0,\"sequence_number\":13}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_00000000000000000000001e\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]},\"sequence_number\":14}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"msg_00000000000000000000001e\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]},\"sequence_number\":15}\n\nevent: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"arguments\":\"{\\\"a\\\":1}\",\"item_id\":\"fc_000000000000000000000020\",\"output_index\":2,\"sequence_number\":16}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"id\":\"fc_000000000000000000000020\",\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":\"{\\\"a\\\":1}\",\"call_id\":\"c1\",\"name\":\"f\"},\"sequence_number\":17}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"completed\",\"model\":\"deepseek-v4\",\"output\":[{\"id\":\"rs_00000000000000000000001d\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"r1\"}],\"status\":\"completed\"},{\"id\":\"msg_000000000000000000000021\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]},{\"id\":\"fc_000000000000000000000022\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"c1\",\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}],\"error\":null,\"incomplete_details\":null,\"usage\":{\"input_tokens\":8,\"output_tokens\":5,\"total_tokens\":13,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":18}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 8,
+        "output": 5,
+        "reasoning": 0,
+        "total": 13
+      }
+    },
+    "chat->anthropic": {
+      "error": null,
+      "sse": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"r1\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\":1}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "chat->anthropic#split37": {
+      "sse": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"r1\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\":1}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+    },
+    "chat->chat": {
+      "error": null,
+      "sse": "data: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"r1\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hel\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"a\\\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":1}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\ndata: [DONE]\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "chat->responses": {
+      "error": null,
+      "sse": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_abc\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"deepseek-v4\",\"output\":[],\"error\":null},\"sequence_number\":0}\n\nevent: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_abc\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"deepseek-v4\",\"output\":[],\"error\":null},\"sequence_number\":1}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"rs_000000000000000000000006\",\"type\":\"reasoning\",\"status\":\"in_progress\",\"summary\":[]},\"sequence_number\":2}\n\nevent: response.reasoning_summary_part.added\ndata: {\"type\":\"response.reasoning_summary_part.added\",\"item_id\":\"rs_000000000000000000000006\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"\"},\"sequence_number\":3}\n\nevent: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"r1\",\"item_id\":\"rs_000000000000000000000006\",\"output_index\":0,\"summary_index\":0,\"sequence_number\":4}\n\nevent: response.reasoning_summary_text.done\ndata: {\"type\":\"response.reasoning_summary_text.done\",\"text\":\"r1\",\"item_id\":\"rs_000000000000000000000006\",\"output_index\":0,\"summary_index\":0,\"sequence_number\":5}\n\nevent: response.reasoning_summary_part.done\ndata: {\"type\":\"response.reasoning_summary_part.done\",\"item_id\":\"rs_000000000000000000000006\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"r1\"},\"sequence_number\":6}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_000000000000000000000006\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"r1\"}]},\"sequence_number\":7}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"msg_000000000000000000000007\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]},\"sequence_number\":8}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_000000000000000000000007\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":9}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\",\"item_id\":\"msg_000000000000000000000007\",\"output_index\":1,\"content_index\":0,\"sequence_number\":10}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\",\"item_id\":\"msg_000000000000000000000007\",\"output_index\":1,\"content_index\":0,\"sequence_number\":11}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc_000000000000000000000009\",\"type\":\"function_call\",\"status\":\"in_progress\",\"arguments\":\"\",\"call_id\":\"c1\",\"name\":\"f\"},\"sequence_number\":12}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"a\\\"\",\"item_id\":\"fc_000000000000000000000009\",\"output_index\":2,\"sequence_number\":13}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\":1}\",\"item_id\":\"fc_000000000000000000000009\",\"output_index\":2,\"sequence_number\":14}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"text\":\"hello\",\"item_id\":\"msg_000000000000000000000007\",\"output_index\":1,\"content_index\":0,\"sequence_number\":15}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_000000000000000000000007\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]},\"sequence_number\":16}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"msg_000000000000000000000007\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]},\"sequence_number\":17}\n\nevent: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"arguments\":\"{\\\"a\\\":1}\",\"item_id\":\"fc_000000000000000000000009\",\"output_index\":2,\"sequence_number\":18}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"id\":\"fc_000000000000000000000009\",\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":\"{\\\"a\\\":1}\",\"call_id\":\"c1\",\"name\":\"f\"},\"sequence_number\":19}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"completed\",\"model\":\"deepseek-v4\",\"output\":[{\"id\":\"rs_000000000000000000000006\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"r1\"}],\"status\":\"completed\"},{\"id\":\"msg_00000000000000000000000a\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]},{\"id\":\"fc_00000000000000000000000b\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"c1\",\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}],\"error\":null,\"incomplete_details\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":20}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "responses->anthropic": {
+      "error": null,
+      "sse": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"r1\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"f\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":1}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "responses->chat": {
+      "error": null,
+      "sse": "data: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"r1\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"a\\\":1}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl_abc\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"deepseek-v4\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}\n\ndata: [DONE]\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    },
+    "responses->responses": {
+      "error": null,
+      "sse": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_abc\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"deepseek-v4\",\"output\":[],\"error\":null},\"sequence_number\":0}\n\nevent: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_abc\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"in_progress\",\"model\":\"deepseek-v4\",\"output\":[],\"error\":null},\"sequence_number\":1}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"rs_000000000000000000000010\",\"type\":\"reasoning\",\"status\":\"in_progress\",\"summary\":[]},\"sequence_number\":2}\n\nevent: response.reasoning_summary_part.added\ndata: {\"type\":\"response.reasoning_summary_part.added\",\"item_id\":\"rs_000000000000000000000010\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"\"},\"sequence_number\":3}\n\nevent: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"r1\",\"item_id\":\"rs_000000000000000000000010\",\"output_index\":0,\"summary_index\":0,\"sequence_number\":4}\n\nevent: response.reasoning_summary_text.done\ndata: {\"type\":\"response.reasoning_summary_text.done\",\"text\":\"r1\",\"item_id\":\"rs_000000000000000000000010\",\"output_index\":0,\"summary_index\":0,\"sequence_number\":5}\n\nevent: response.reasoning_summary_part.done\ndata: {\"type\":\"response.reasoning_summary_part.done\",\"item_id\":\"rs_000000000000000000000010\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"r1\"},\"sequence_number\":6}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_000000000000000000000010\",\"type\":\"reasoning\",\"status\":\"completed\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"r1\"}]},\"sequence_number\":7}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"msg_000000000000000000000011\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]},\"sequence_number\":8}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_000000000000000000000011\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":9}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\",\"item_id\":\"msg_000000000000000000000011\",\"output_index\":1,\"content_index\":0,\"sequence_number\":10}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc_000000000000000000000013\",\"type\":\"function_call\",\"status\":\"in_progress\",\"arguments\":\"\",\"call_id\":\"c1\",\"name\":\"f\"},\"sequence_number\":11}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"a\\\":1}\",\"item_id\":\"fc_000000000000000000000013\",\"output_index\":2,\"sequence_number\":12}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"text\":\"hello\",\"item_id\":\"msg_000000000000000000000011\",\"output_index\":1,\"content_index\":0,\"sequence_number\":13}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_000000000000000000000011\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]},\"sequence_number\":14}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"msg_000000000000000000000011\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]},\"sequence_number\":15}\n\nevent: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"arguments\":\"{\\\"a\\\":1}\",\"item_id\":\"fc_000000000000000000000013\",\"output_index\":2,\"sequence_number\":16}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"id\":\"fc_000000000000000000000013\",\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":\"{\\\"a\\\":1}\",\"call_id\":\"c1\",\"name\":\"f\"},\"sequence_number\":17}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_abc\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"completed\",\"model\":\"deepseek-v4\",\"output\":[{\"id\":\"rs_000000000000000000000010\",\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"r1\"}],\"status\":\"completed\"},{\"id\":\"msg_000000000000000000000014\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]},{\"id\":\"fc_000000000000000000000015\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"c1\",\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}],\"error\":null,\"incomplete_details\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":18}\n\n",
+      "usage": {
+        "cache_creation": 0,
+        "cached": 0,
+        "input": 10,
+        "output": 5,
+        "reasoning": 0,
+        "total": 15
+      }
+    }
+  }
+}

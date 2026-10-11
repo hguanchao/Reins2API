@@ -12,9 +12,8 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 
-from gateway.bridge.response_encode import encode_bridge_response
+from gateway.protocols import encode_bridge_response, stream_parser
 from gateway.stream.errors import SseUnexpectedEof, StreamTerminated, UpstreamStreamFailure
-from gateway.stream.parser import BridgeStreamParser
 from gateway.stream.sse import read_sse
 from gateway.types import (
     BridgeBlock,
@@ -26,7 +25,7 @@ from gateway.types import (
 
 
 def collapse_stream(chunks: Iterable[bytes], protocol: str, model: str) -> dict:
-    parser = BridgeStreamParser(protocol)
+    parser = stream_parser(protocol)
     acc = _CollapseAccumulator()
     acc.response.created = int(time.time())
     acc.response.model = model

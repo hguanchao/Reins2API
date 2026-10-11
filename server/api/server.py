@@ -4,7 +4,7 @@
   /v1/*        推理端点（chat / responses / messages / models）→ gateway.inference
   /healthz     健康检查
   /api/*       管理面（无鉴权；OpenCode 运维聚合 + 遥测明细）
-  其余 GET     SPA 静态托管（web-dist 存在时）
+  其余 GET     SPA 静态托管（web/dist 存在时）
 """
 
 from __future__ import annotations
@@ -26,9 +26,10 @@ from core.logger import logger
 from core.respond import error_json, send_json
 from core.settings import WEB_DIST_DIR
 from db import store
-from db.usage import is_range, summarize
+from db.usage import is_range, summarize, window_start_ms
 from gateway import inference
 from gateway.base import registry
+from net import egress
 from net import proxy as outbound_proxy
 
 _CORS_ORIGIN = "*"
@@ -49,7 +50,7 @@ def _web_root() -> str | None:
 
 
 def _safe_web_file(root: str, url_path: str) -> str | None:
-    """把 URL 映射到 web-dist 内文件；越出根目录返回 None。"""
+    """把 URL 映射到 web/dist 内文件；越出根目录返回 None。"""
     relative = unquote(url_path).lstrip("/")
     if not relative or relative.endswith("/"):
         relative = posixpath.join(relative, _WEB_INDEX)
@@ -129,11 +130,17 @@ def _config_payload() -> dict[str, Any]:
 
 
 def _handle_config_api(
-    method: str, path: str, _query: dict[str, list[str]], handler: BaseHTTPRequestHandler
+    method: str, path: str, query: dict[str, list[str]], handler: BaseHTTPRequestHandler
 ) -> bool:
     """系统配置读写：出站代理三档，保存即生效并落盘（重启保留）。"""
     if method == "GET" and path == "/api/config":
         send_json(handler, 200, {"ok": True, "data": _config_payload()})
+        return True
+    if method == "GET" and path == "/api/config/proxy/egress":
+        # 出口 IP 按上游 URL 做代理决策，和真实推理走同一条路
+        force = str((query.get("force") or ["0"])[0]).lower() in ("1", "true", "yes")
+        data = egress.probe(registry.default.upstream_url, force=force)
+        send_json(handler, 200, {"ok": True, "data": data})
         return True
     if method in ("POST", "PUT") and path == "/api/config":
         body = _json_body(handler)
@@ -148,30 +155,40 @@ def _handle_config_api(
             raise ValueError("手动模式必须填写代理 URL")
         app_config.update({"proxy": {"mode": mode, "url": url}})
         outbound_proxy.invalidate()
+        egress.invalidate()
         logger.info(f"[配置] 出站代理已更新: {mode}" + (f" · {url}" if url else ""))
         send_json(handler, 200, {"ok": True, "data": _config_payload()})
         return True
     return False
 
 
-def _model_dict(info: Any, provider_name: str) -> dict[str, Any]:
+def _model_dict(info: Any) -> dict[str, Any]:
     return {
         "id": info.id,
-        # 模型名统一带 provider 前缀，与 id 一致
-        "upstream_model": f"{provider_name}/{info.upstream_model}",
+        # 上游真实模型名（裸名）：实际打到上游的 model 字段，不带 provider 前缀
+        "upstream_model": info.upstream_model,
         "protocol": info.protocol,
         "free": info.free,
         "metadata": info.metadata,
     }
 
 
-def _handle_opencode_api(
+def _handle_provider_api(
     method: str, path: str, query: dict[str, list[str]], handler: BaseHTTPRequestHandler
 ) -> bool:
-    """OpenCode 运维聚合（单次拉取）+ 遥测明细分页。"""
-    provider = registry.get("opencode")
-    if method == "POST" and path == "/api/opencode/refresh":
-        # 手动重新拉取模型目录（同后台 5min 周期刷新；失败保留旧目录）
+    """Provider 运维端点（按 provider 名泛化）：/api/{provider}/{refresh|ops|requests|usage}。"""
+    if not path.startswith("/api/"):
+        return False
+    parts = path.split("/")  # ["", "api", provider, action]
+    if len(parts) != 4:
+        return False
+    name = parts[2]
+    if name not in registry.names:
+        return False
+    provider = registry.get(name)
+    action = parts[3]
+    if method == "POST" and action == "refresh":
+        # 手动重新拉取模型目录（同后台周期刷新；失败保留旧目录）
         try:
             provider.refresh()
         except Exception as exc:
@@ -184,19 +201,19 @@ def _handle_opencode_api(
             {"ok": True, "data": {"status": provider.status(), "models": len(provider.list_models())}},
         )
         return True
-    if method == "GET" and path == "/api/opencode/ops":
+    if method == "GET" and action == "ops":
         now = int(time.time() * 1000)
         rows = store(provider.name).window_rows(now - 24 * 3_600_000)
         data = {
             "service": "reins2api",
             "provider": provider.name,
             "status": provider.status(),
-            "models": [_model_dict(info, provider.name) for info in provider.list_models()],
+            "models": [_model_dict(info) for info in provider.list_models()],
             "usage": summarize(rows, "24h", now),
         }
         send_json(handler, 200, {"ok": True, "data": data})
         return True
-    if method == "GET" and path == "/api/opencode/requests":
+    if method == "GET" and action == "requests":
         try:
             limit = int(query.get("limit", ["20"])[0] or "20")
         except (TypeError, ValueError):
@@ -205,21 +222,160 @@ def _handle_opencode_api(
             offset = int(query.get("offset", ["0"])[0] or "0")
         except (TypeError, ValueError):
             offset = 0
-        total, items = store("opencode").recent(
+        total, items = store(provider.name).recent(
             limit=max(1, min(limit, 100)), offset=max(0, offset)
         )
         send_json(handler, 200, {"ok": True, "data": {"total": total, "items": items}})
         return True
-    if method == "GET" and path == "/api/opencode/usage":
-        range_key = str(query.get("range", ["24h"])[0] or "24h")
+    if method == "GET" and action == "usage":
+        # 图表时间范围：today/7d/14d/30d（默认 7d）；1h/24h 保留兼容旧调用方
+        range_key = str(query.get("range", ["7d"])[0] or "7d")
         if not is_range(range_key):
-            range_key = "24h"
+            range_key = "7d"
         now = int(time.time() * 1000)
-        window_ms = {"1h": 3_600_000, "24h": 86_400_000, "7d": 604_800_000, "30d": 2_592_000_000}[range_key]
-        rows = store("opencode").window_rows(now - window_ms)
+        rows = store(provider.name).window_rows(window_start_ms(range_key, now))
         send_json(handler, 200, {"ok": True, "data": summarize(rows, range_key, now)})
         return True
     return False
+
+
+def _handle_workbuddy_api(
+    method: str, path: str, query: dict[str, list[str]], handler: BaseHTTPRequestHandler
+) -> bool:
+    """WorkBuddy 专属管理端点：账号 CRUD/动作 + 设备码登录 + 池状态。
+
+    路由形态：/api/workbuddy/{accounts|login|state}[/...]；ops/requests/usage
+    由泛化的 _handle_provider_api 先行处理，此处只收专属面。
+    """
+    parts = path.split("/")
+    if len(parts) < 4 or parts[1] != "api" or parts[2] != "workbuddy":
+        return False
+    if "workbuddy" not in registry.names:
+        return False
+    provider = registry.get("workbuddy")
+    action = parts[3]
+
+    if method == "GET" and action == "accounts" and len(parts) == 4:
+        summaries = provider.account_summaries()
+        stats = _workbuddy_account_stats()
+        for item in summaries:
+            extra = stats.get(item["uid"], {})
+            item["stats_7d"] = extra.get("stats")
+            item["last_used_ms"] = extra.get("last_used_ms", 0)
+        send_json(handler, 200, {"ok": True, "data": summaries})
+        return True
+
+    if method == "POST" and action == "accounts" and len(parts) == 4:
+        body = _json_body(handler)
+        if not isinstance(body, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        try:
+            account = provider.manual_add_account(body)
+        except ValueError as exc:
+            send_json(handler, 400, {"ok": False, "error": str(exc)})
+            return True
+        # 导入后立即拉一次目录（新账号可能解锁新模型）；失败不影响导入结果。
+        try:
+            provider.refresh()
+        except Exception:
+            pass
+        send_json(handler, 200, {"ok": True, "data": account.public_dict()})
+        return True
+
+    if method == "DELETE" and action == "accounts" and len(parts) == 5:
+        uid = parts[4]
+        if provider.account_busy(uid):
+            send_json(handler, 409, {"ok": False, "error": "账号有在途请求，稍后再删"})
+            return True
+        from providers.workbuddy.store import default_store
+
+        if not default_store().delete_account(uid):
+            send_json(handler, 404, {"ok": False, "error": f"账号不存在: {uid}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": {"deleted": uid}})
+        return True
+
+    if method == "POST" and action == "accounts" and len(parts) == 6 and parts[5] == "action":
+        uid = parts[4]
+        body = _json_body(handler)
+        act = str((body or {}).get("action") or "")
+        try:
+            updated = provider.account_action(uid, act)
+        except KeyError as exc:
+            send_json(handler, 404, {"ok": False, "error": str(exc)})
+            return True
+        except ValueError as exc:
+            send_json(handler, 400, {"ok": False, "error": str(exc)})
+            return True
+        except Exception as exc:
+            send_json(handler, 502, {"ok": False, "error": f"动作失败: {type(exc).__name__}: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": updated})
+        return True
+
+    if method == "GET" and action == "accounts" and len(parts) == 6 and parts[5] == "models":
+        # 按账号实时查询可用模型（用该账号 token 打上游 /v3/config，不缓存）
+        uid = parts[4]
+        try:
+            models = provider.account_models(uid)
+        except KeyError as exc:
+            send_json(handler, 404, {"ok": False, "error": str(exc)})
+            return True
+        except Exception as exc:
+            send_json(handler, 502, {"ok": False, "error": f"查询失败: {type(exc).__name__}: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": models})
+        return True
+
+    if method == "GET" and action == "state" and len(parts) == 4:
+        send_json(handler, 200, {"ok": True, "data": provider.pool_snapshot()})
+        return True
+
+    if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "start":
+        body = _json_body(handler)
+        realm = str((body or {}).get("realm") or "cn")
+        try:
+            data = provider.login_start(realm)
+        except Exception as exc:
+            send_json(handler, 502, {"ok": False, "error": f"发起设备授权失败: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": data})
+        return True
+
+    if method == "GET" and action == "login" and len(parts) == 5 and parts[4] == "poll":
+        state = str((query.get("state") or [""])[0])
+        if not state:
+            send_json(handler, 400, {"ok": False, "error": "missing state"})
+            return True
+        data = provider.login_poll(state)
+        send_json(handler, 200, {"ok": True, "data": data})
+        return True
+
+    return False
+
+
+def _workbuddy_account_stats() -> dict[str, dict[str, Any]]:
+    """按账号聚合近 7 天 requests 遥测（统计单一代数事实源，docs §7.2）。"""
+    now = int(time.time() * 1000)
+    rows = store("workbuddy").window_rows(now - 7 * 86_400_000)
+    stats: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        uid = str(row.get("account_uid") or "")
+        if not uid:
+            continue
+        entry = stats.setdefault(uid, {
+            "stats": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
+            "last_used_ms": 0,
+        })
+        bucket = entry["stats"]
+        bucket["requests"] += 1
+        status = int(row.get("http_status") or 0)
+        if not 200 <= status < 300:
+            bucket["failed"] += 1
+        bucket["input_tokens"] += int(row.get("input_tokens") or 0)
+        bucket["output_tokens"] += int(row.get("output_tokens") or 0)
+        entry["last_used_ms"] = max(entry["last_used_ms"], int(row.get("created_ms") or 0))
+    return stats
 
 
 def _handle_api(
@@ -228,7 +384,8 @@ def _handle_api(
     for route_handler in (
         _handle_system_api,
         _handle_config_api,
-        _handle_opencode_api,
+        _handle_provider_api,
+        _handle_workbuddy_api,
     ):
         if route_handler(method, path, query, handler):
             return True

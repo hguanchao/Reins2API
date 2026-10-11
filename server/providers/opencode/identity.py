@@ -1,40 +1,64 @@
-"""稳定会话标识与请求 ID（移植自 zen2api util/identity.ts）。
+"""上游身份头 x-opencode-session / x-opencode-request 的生成。
 
-上游通过这些头关联会话，形状很讲究：OpenCode 的 Zen 只认规范形态的 session。
-规范形态原样透传（保住上游 prompt-cache 亲和），其余信号确定性哈希成规范形态，
-让同一段对话跨轮次稳定。
+移植自 OpenCode 的 packages/schema/src/identifier.ts 与 session-id.ts /
+session-message.ts：
+
+    ses_ + descending()   —— 会话 ID
+    msg_ + ascending()    —— 用户消息 ID
+
+descending/ascending 即 create(true)/create(false)：6 字节时间戳十六进制
+（12 字符）+ 14 位 base62 随机；时间戳部分取
+(Date.now() * 0x1000 + 同毫秒内自增序号) 的低 48 位，session 那支按位取反。
+
+粒度按上游 session/llm/request.ts：x-opencode-session 整个会话复用同一个值，
+x-opencode-request 每条用户消息（即每个请求）一个。所以这里 session 按会话信号
+生成一次并缓存，request 每请求现生成。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
+import secrets
+import threading
+import time
+from collections import OrderedDict
 
-from gateway.base import RequestIDs, random_id, stable_id
+from gateway.base import RequestIDs, random_id
 from gateway.jsonutil import first_string, is_object, slice_at, string_at
 
-_CANONICAL_SESSION = re.compile(r"^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$")
 _BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+# 官方 OpenCode 会话形态：ses_ + 12 位时间戳 hex + 14 位 base62
+_CANONICAL_SESSION = re.compile(r"^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$")
+
+# 同毫秒内自增序号。JS 侧是单线程闭包变量，这里是多线程 HTTP 服务，要加锁。
+_seq_lock = threading.Lock()
+_seq_ms = 0
+_seq_ctr = 0
+
+# 会话信号 -> ses_：同一会话跨请求复用同一个 session，保住上游 prompt cache 亲和。
+_session_cache: OrderedDict[str, str] = OrderedDict()
+_session_lock = threading.Lock()
+_SESSION_CACHE_MAX = 1024
 
 
-def canonical_session_id(signal: str) -> str:
-    """已是官方 OpenCode 会话则原样返回；否则哈希成规范形态。"""
-    if _CANONICAL_SESSION.match(signal):
-        return signal
-    digest = hashlib.sha256(f"ses\0{signal}".encode()).digest()
-    time_part = digest[:6].hex()
-    random_part = _base62_fixed(digest[6:16], 14)
-    return f"ses_{time_part}{random_part}"
-
-
-def _base62_fixed(data: bytes, width: int) -> str:
-    value = int.from_bytes(data, "big")
-    out = [""] * width
-    for index in range(width - 1, -1, -1):
-        out[index] = _BASE62[value % 62]
-        value //= 62
-    return "".join(out)
+def _gen_suffix(desc: bool) -> str:
+    """26 字符：12 位时间戳 hex + 14 位 base62 随机。"""
+    global _seq_ms, _seq_ctr
+    with _seq_lock:
+        ms = int(time.time() * 1000)
+        if ms != _seq_ms:
+            _seq_ctr = 1
+        else:
+            _seq_ctr += 1
+        _seq_ms = ms
+        ctr = _seq_ctr
+    value = ms * 0x1000 + ctr
+    if desc:
+        # 与 JS BigInt 的 ~ 同义（-v-1）；负值右移取字节靠算术移位，Python 一致。
+        value = ~value
+    stamp = "".join(f"{(value >> (40 - 8 * i)) & 0xFF:02x}" for i in range(6))
+    return stamp + "".join(_BASE62[b % 62] for b in secrets.token_bytes(14))
 
 
 def header_value(headers: dict[str, str], name: str) -> str:
@@ -44,9 +68,25 @@ def header_value(headers: dict[str, str], name: str) -> str:
     return raw or ""
 
 
-def derive_request_ids(headers: dict[str, str], body: dict) -> RequestIDs:
+def _session_for(signal: str) -> str:
+    """同一会话信号复用同一个 ses_；超上限按 LRU 淘汰最久未用的。"""
+    with _session_lock:
+        existing = _session_cache.get(signal)
+        if existing is not None:
+            _session_cache.move_to_end(signal)
+            return existing
+        created = f"ses_{_gen_suffix(True)}"
+        if len(_session_cache) >= _SESSION_CACHE_MAX:
+            _session_cache.popitem(last=False)
+        _session_cache[signal] = created
+        return created
+
+
+def _conversation_signal(headers: dict[str, str], body: dict) -> str:
+    """从客户端能给的信号里挑一个"这是同一段对话"的稳定标识。"""
     signal = first_string(
         header_value(headers, "x-opencode-session"),
+        header_value(headers, "x-opencode-session-id"),
         header_value(headers, "x-session-affinity"),
         header_value(headers, "x-session-id"),
         header_value(headers, "conversation-id"),
@@ -60,23 +100,7 @@ def derive_request_ids(headers: dict[str, str], body: dict) -> RequestIDs:
         signal = string_at(body, "previous_response_id")
     if signal in ("", "{}"):
         signal = random_id("fallback", 16)
-
-    project_signal = first_string(
-        header_value(headers, "x-opencode-project"),
-        string_at(body, "metadata", "project_id"),
-    )
-    if project_signal == "":
-        project_signal = "reins2api:default-project"
-
-    return RequestIDs(
-        session=canonical_session_id(signal),
-        request=random_id("req", 16),
-        project=stable_id("prj", project_signal),
-        parent_session=first_string(
-            header_value(headers, "x-parent-session-id"),
-            string_at(body, "metadata", "parent_session_id"),
-        ),
-    )
+    return signal
 
 
 def _conversation_seed(body: dict) -> str:
@@ -91,3 +115,24 @@ def _conversation_seed(body: dict) -> str:
             if encoded not in ("", "null"):
                 return encoded
     return ""
+
+
+def derive_request_ids(headers: dict[str, str], body: dict) -> RequestIDs:
+    """session 每会话一个、request 每请求一个。"""
+    client_session = first_string(
+        header_value(headers, "x-opencode-session"),
+        header_value(headers, "x-opencode-session-id"),
+    )
+    if _CANONICAL_SESSION.match(client_session):
+        session = client_session
+    else:
+        session = _session_for(_conversation_signal(headers, body))
+    return RequestIDs(
+        session=session,
+        request=f"msg_{_gen_suffix(False)}",
+        project="global",
+        parent_session=first_string(
+            header_value(headers, "x-parent-session-id"),
+            string_at(body, "metadata", "parent_session_id"),
+        ),
+    )

@@ -146,7 +146,7 @@ class Router:
             )
         return Route(
             provider=_PROVIDER_NAME,
-            model=f"{_PROVIDER_NAME}/{model}",
+            model=f"oc:{model}",
             upstream_model=model,
             protocol=self._protocol_for(model),
             free=bool(record.free) if record else False,

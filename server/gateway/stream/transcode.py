@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from gateway.stream.emitter import BridgeStreamEmitter
+from gateway.protocols import stream_emitter, stream_parser
 from gateway.stream.errors import (
     SseUnexpectedEof,
     StreamTerminated,
@@ -19,7 +19,6 @@ from gateway.stream.errors import (
     client_canceled,
 )
 from gateway.stream.failure import emit_unexpected_stream_error
-from gateway.stream.parser import BridgeStreamParser
 from gateway.stream.sse import StreamSink, read_sse
 from gateway.types import BridgeStreamEvent, Usage
 
@@ -37,8 +36,8 @@ def transcode_stream(
     to_proto: str,
     model: str,
 ) -> StreamOutcome:
-    parser = BridgeStreamParser(from_proto)
-    emitter = BridgeStreamEmitter(sink, to_proto, model)
+    parser = stream_parser(from_proto)
+    emitter = stream_emitter(sink, to_proto, model)
     # 状态放在 dict 里，因为翻转发生在 SSE 回调内部（TS 用对象包一层同因）。
     state = {"termination": "open"}
     read_error: Exception | None = None

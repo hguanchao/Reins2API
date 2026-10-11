@@ -46,7 +46,9 @@
   animation: ap-fade-out 100ms ease-in both;
 }.ap-dialog-content {
   /* 水平 + 垂直居中（top 50% + translateY -50%）：超高内容靠 max-h + 内部滚动保持可达；
-     用 transform 而非个体 translate 属性（会被 Lightning CSS 优化掉），顺带压掉缩放动画 */
+     顺带用 transform 压掉缩放动画。
+     居中只由这里负责——组件里不要再加 -translate-y-1/2：Tailwind v4 的 translate-y 走
+     translate 属性，与下面的 transform 会叠加成 -100%，弹窗整体上移半个身位 */
   top: 50% !important;
   right: 0 !important;
   bottom: auto !important;

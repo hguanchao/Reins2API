@@ -31,11 +31,5 @@ export default defineConfig({
       '/v1': proxyTo('/v1'),
       '/healthz': proxyTo('/healthz'),
     },
-  },
-  build: {
-    // 后端 SPA 托管目录：E:\Projects\Reins2API\web-dist
-    outDir: '../web-dist',
-    emptyOutDir: true,
-    sourcemap: true,
-  },
+  }
 })

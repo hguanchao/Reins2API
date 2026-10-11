@@ -241,8 +241,12 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          /* 水平+垂直居中：超高内容靠 max-h + 内部滚动保持顶部可达 */
-          "ap-dialog-content bg-card text-card-foreground fixed inset-x-0 top-1/2 z-[70] -translate-y-1/2 mx-auto grid h-fit max-h-[min(90vh,920px)] w-full max-w-[calc(100%-2rem)] gap-4 overflow-y-auto overscroll-contain rounded-lg border border-border p-5 shadow-none sm:max-w-lg",
+          /* 定位（fixed + 居中）由 motion.css 的 .ap-dialog-content 接管。
+             不要再写 -translate-y-1/2：Tailwind v4 把它编译成 translate 属性，
+             会与 motion.css 的 transform: translateY(-50%) 叠加成 -100%，
+             弹窗整体上移半个身位、高弹窗顶部直接出屏。
+             超高内容靠 max-h + 内部滚动保持顶部可达 */
+          "ap-dialog-content bg-card text-card-foreground fixed z-[70] grid h-fit max-h-[min(90vh,920px)] w-full max-w-[calc(100%-2rem)] gap-4 overflow-y-auto overscroll-contain rounded-lg border border-border p-5 shadow-none sm:max-w-lg",
           "before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:rounded-t-lg before:bg-primary",
           className,
         )}
@@ -357,8 +361,9 @@ function AlertDialogContent({
       <AlertDialogPrimitive.Content
         data-slot="alert-dialog-content"
         className={cn(
-          /* 与 Dialog 相同：水平+垂直居中（定位由 motion.css .ap-dialog-content 统一接管） */
-          "ap-dialog-content bg-card text-card-foreground fixed inset-x-0 top-1/2 z-[70] -translate-y-1/2 mx-auto grid h-fit w-full max-h-[min(90vh,920px)] max-w-[calc(100%-2rem)] gap-4 overflow-y-auto rounded-lg border border-border p-5 shadow-none sm:max-w-md",
+          /* 与 Dialog 相同：定位由 motion.css 的 .ap-dialog-content 接管。
+             同样不要加 -translate-y-1/2（translate 属性会与 transform 叠加成 -100%） */
+          "ap-dialog-content bg-card text-card-foreground fixed z-[70] grid h-fit w-full max-h-[min(90vh,920px)] max-w-[calc(100%-2rem)] gap-4 overflow-y-auto rounded-lg border border-border p-5 shadow-none sm:max-w-md",
           "before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:rounded-t-lg before:bg-primary",
           className,
         )}
@@ -457,7 +462,7 @@ function Empty({
   className,
 }: {
   icon?: ComponentType<{ className?: string; strokeWidth?: number }>;
-  title: string;
+  title?: string;
   description?: string;
   action?: ReactNode;
   className?: string;
@@ -475,7 +480,7 @@ function Empty({
           <Icon className="size-6 opacity-70" strokeWidth={1.5} />
         </div>
       ) : null}
-      <p className="text-sm font-medium text-foreground">{title}</p>
+      {title ? <p className="text-sm font-medium text-foreground">{title}</p> : null}
       {description ? (
         <p className="text-muted-foreground max-w-sm text-xs leading-relaxed">
           {description}

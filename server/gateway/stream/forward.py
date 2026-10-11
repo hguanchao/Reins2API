@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from gateway.stream.emitter import BridgeStreamEmitter
+from gateway.protocols import stream_emitter
 from gateway.stream.errors import (
     SseUnexpectedEof,
     UpstreamStreamFailure,
@@ -66,7 +66,7 @@ def forward_stream(
         cause = copy_error
     if cause is None:
         cause = SseUnexpectedEof()
-    emitter = BridgeStreamEmitter(sink, protocol, model)
+    emitter = stream_emitter(sink, protocol, model)
     emit_error = emit_unexpected_stream_error(emitter, cause)
     return StreamOutcome(
         usage=usage, error=emit_error if emit_error is not None else cause

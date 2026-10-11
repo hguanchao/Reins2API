@@ -1,14 +1,15 @@
-"""3×3 协议桥（移植自 zen2api protocol/bridge/）。
+"""协议中立的桥层：中间结构（gateway.types）+ 共享助手 + 桥入口。
 
-chat / responses / anthropic 三协议双向转换：同协议深拷贝透传，跨协议
-decode -> Bridge 中间结构 -> encode。公开入口见 prepare_request /
-convert_request / convert_response / response_usage。
+chat / responses / anthropic 三协议的双向转换实现按协议分在
+`gateway.protocols/`；本包只放与协议无关的部分。桥入口
+（prepare_request / convert_request / convert_response / encode_bridge_response）
+依赖 protocols，按 PEP 562 惰性导出——只 import 本包不会拉起 protocols，
+从而避免 protocols → bridge.content 与本包 __init__ 形成导入环。
 """
 
 from __future__ import annotations
 
 from gateway.bridge.content import decode_responses_reasoning
-from gateway.bridge.convert import convert_request, convert_response, prepare_request
 from gateway.bridge.reasoning import (
     anthropic_redacted_thinking_placeholder,
     anthropic_thinking,
@@ -20,7 +21,6 @@ from gateway.bridge.reasoning import (
     tool_reasoning_placeholder,
     with_reasoning_budget,
 )
-from gateway.bridge.response_encode import encode_bridge_response
 from gateway.bridge.stop import (
     anthropic_stop,
     canonical_anthropic_stop,
@@ -44,6 +44,27 @@ from gateway.bridge.usage import (
     response_usage,
 )
 from gateway.errors import BridgeError
+
+_LAZY = (
+    "convert_request",
+    "convert_response",
+    "encode_bridge_response",
+    "prepare_request",
+)
+
+
+def __getattr__(name: str):
+    if name in _LAZY:
+        from gateway.bridge import convert
+
+        return {
+            "convert_request": convert.convert_request,
+            "convert_response": convert.convert_response,
+            "prepare_request": convert.prepare_request,
+            "encode_bridge_response": convert.encode_bridge_response,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "BridgeError",

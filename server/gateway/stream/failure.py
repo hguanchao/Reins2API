@@ -5,13 +5,13 @@
 
 from __future__ import annotations
 
-from gateway.stream.emitter import BridgeStreamEmitter
+from gateway.protocols._stream import StreamEmitterBase
 from gateway.stream.errors import SseUnexpectedEof, UpstreamStreamFailure
 from gateway.types import BridgeStreamEvent
 
 
 def emit_unexpected_stream_error(
-    emitter: BridgeStreamEmitter, cause: Exception
+    emitter: StreamEmitterBase, cause: Exception
 ) -> Exception | None:
     """把“上游没等到终止事件就结束”翻译成客户端协议的错误事件。
 

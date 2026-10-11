@@ -9,7 +9,8 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  /* 正常视口下内容恰好铺满（不出现滚动条）；窗口压到极矮时改为整体滚动而非裁切 */
+  overflow: auto;
 }
 
 /* 内容区：左配置 · 右运行态（与 usage-grid 同 1px 缝） */
@@ -27,16 +28,99 @@
   /* 配置略窄、运行态略宽，贴近 usage 图/表比例 */
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.2fr);
 }
+/* ── 工作区高度分配 ──
+   大屏（2K/4K）下 KPI 条固定，中段（模型目录 | Token 用量）与最近请求平分剩余高度。
+   此前只有 .gw-grid 独占剩余高度、两个面板内部又各自被 max-h-80 封顶，
+   高分辨率屏上就出现"面板撑满、内容缩在顶部、整屏留白"的观感。
+   选择器带 .gw-workspace 前缀：需压过下方 .gw-panel / .gw-grid 的 min-height:0；
+   整段放在窄屏断点之前，堆叠态的重置才能按源码顺序覆盖它。 */
+.gw-workspace > .gw-grid {
+  flex: 1 1 0;
+  min-height: 200px;
+}
+.gw-workspace > .gw-panel-grow {
+  flex: 1 1 0;
+  min-height: 130px;
+}
+
 @media (max-width: 960px) {
+  /* 窄屏：改为纵向堆叠，由工作区整体滚动（同 usage-workspace 的处理） */
+  .gw-workspace {
+    overflow: auto;
+  }
   .gw-grid,
   .gw-grid-split {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
     align-content: start;
-    overflow: auto;
+    overflow: visible;
   }
   .gw-panel {
     min-height: min-content;
   }
+  /* 堆叠态取消高度分配，面板回到内容高度 */
+  .gw-workspace > .gw-grid,
+  .gw-workspace > .gw-panel-grow {
+    flex: none;
+    min-height: 0;
+  }
+  .gw-fill-scroll {
+    max-height: 360px;
+  }
+}
+
+/* 面板内滚动区：撑满面板剩余高度——行少不留白，行多内部滚动 */
+.gw-fill-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+/* 空表：占位行撑满面板、内容居中，把留白变成"明确的空状态"而不是无指向的空白 */
+.gw-fill-scroll.is-empty {
+  display: flex;
+  flex-direction: column;
+}
+.gw-fill-scroll.is-empty > table {
+  flex: 1 1 auto;
+}
+.gw-fill-scroll.is-empty [data-slot="table-empty-row"] [data-slot="table-cell"] {
+  padding: 12px 0;
+  text-align: center;
+  vertical-align: middle;
+}
+
+/* 表头带：列头本来只有一行灰字，下面没有数据行时就像一条孤零零的线。
+   用令牌里已定义的 --table-header / --table-border 给表头上色，
+   空表状态下也读得出"这是表头"。 */
+.gw-workspace [data-slot="table-header"] [data-slot="table-head"] {
+  background: var(--table-header);
+}
+.gw-workspace [data-slot="table-header"] [data-slot="table-row"] {
+  border-bottom-color: var(--table-border);
+}
+
+/* 空状态：撑满面板并居中，不再贴着面板顶部悬浮 */
+.gw-empty-fill {
+  flex: 1 1 auto;
+  min-height: 120px;
+}
+
+/* 图表面板：绘图区随面板高度等比缩放（SVG preserveAspectRatio=meet 居中），
+   不再固定 h-64 —— 面板变高时图表跟着变大，而不是留下一片空白 */
+.gw-chart {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* 绘图区撑满面板剩余高度：组件内 ResizeObserver 把 viewBox 设为容器真实像素，
+   图表随面板高度伸缩且无 letterbox 死区（悬停坐标换算零缩放误差）。 */
+.gw-chart-plot {
+  flex: 1 1 auto;
+  min-height: 240px;
+}
+.gw-chart-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .gw-panel {
@@ -78,6 +162,16 @@
   font-size: 11px;
   color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
+}
+/* 面板底部固定条（分页等）：不参与滚动区高度分配 */
+.gw-panel-foot {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 .gw-panel-action {
   margin-left: auto;
@@ -190,6 +284,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: all;
+}
+/* 探测失败/无结果时别用主色绿，读起来像"正常" */
+.gw-baseurl-value.is-bad {
+  color: var(--destructive);
 }
 .gw-baseurl-copy {
   flex-shrink: 0;

@@ -26,6 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
   Empty,
+  Pagination,
   Table,
   TableBody,
   TableCell,
@@ -45,12 +46,16 @@ import {
   type ModelInfo,
   type OpenCodeOps,
   type RequestRow,
+  type UsageRange,
 } from "@/lib/api";
-import { TokenUsageChart } from "@/components/charts/TokenUsageChart";
+import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { cn, fmtCompact, fmtInt, fmtPct, shortClientUa, shortModelName } from "@/lib/utils";
 
 /** 自动刷新间隔 */
 const AUTO_REFRESH_MS = 10_000;
+
+/** 最近请求默认每页条数 */
+const DEFAULT_PAGE_SIZE = 20;
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -78,35 +83,15 @@ function fmtList(v: unknown): string {
   return Array.isArray(v) && v.length > 0 ? v.map(String).join(" / ") : "—";
 }
 
-/** 思考强度档位 → 徽章变体:档位越高越醒目(同 grok-rego effortTone 的分档思路) */
-function effortVariant(effort: string): "default" | "warning" | "secondary" | "outline" {
-  const level = effort.toLowerCase();
-  if (level === "max") return "default";
-  if (level === "high" || level === "xhigh") return "warning";
-  if (level === "medium") return "secondary";
-  return "outline";
-}
-
-/** 思考强度徽章:effort 档位逐个一枚,toggle 记"开关",布尔能力记"支持" */
-function ReasoningBadges({ metadata }: { metadata: Record<string, unknown> }) {
+/** 思考强度:档位以文本列出(minimal/low/medium/high/xhigh),toggle 记"开关",布尔能力记"支持" */
+function fmtReasoning(metadata: Record<string, unknown>): string {
   const opts = Array.isArray(metadata.reasoningOptions)
     ? metadata.reasoningOptions.map(String)
     : [];
   if (opts.length > 0) {
-    return (
-      <span className="inline-flex flex-wrap items-center gap-1">
-        {opts.map((option) => (
-          <Badge key={option} variant={effortVariant(option === "toggle" ? "" : option)}>
-            {option === "toggle" ? "开关" : option}
-          </Badge>
-        ))}
-      </span>
-    );
+    return opts.map((option) => (option === "toggle" ? "开关" : option)).join("/");
   }
-  if (metadata.reasoning === true) {
-    return <Badge variant="secondary">支持</Badge>;
-  }
-  return <span className="text-xs text-muted-foreground">—</span>;
+  return metadata.reasoning === true ? "支持" : "—";
 }
 
 /** 失败率配色档位（与 grok-rego GatewayPage 同档） */
@@ -120,6 +105,16 @@ function protocolTone(protocol: string): "success" | "warning" | "secondary" {
   if (protocol === "anthropic") return "success";
   if (protocol === "responses") return "warning";
   return "secondary";
+}
+
+/** 思考强度档位配色（同 grok-rego effortTone，配合 usage.css 的 .usage-effort 分档） */
+function effortTone(effort: string): string {
+  const level = (effort || "").toLowerCase();
+  if (level === "max") return "is-max";
+  if (level === "high" || level === "xhigh") return "is-high";
+  if (level === "medium") return "is-medium";
+  if (level === "low") return "is-low";
+  return "";
 }
 
 function statusTone(status: number): "success" | "destructive" | "warning" {
@@ -175,9 +170,11 @@ function CacheCell({
 /** 模型详情弹窗:排版同 grok-rego 号池账号详情(两列卡片网格 + 全宽描述 + 关闭按钮) */
 function ModelDetailDialog({
   model,
+  open,
   onOpenChange,
 }: {
   model: ModelInfo | null;
+  open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const metadata = model?.metadata;
@@ -186,7 +183,7 @@ function ModelDetailDialog({
     (typeof metadata?.name === "string" && metadata.name) ||
     "";
   return (
-    <Dialog open={model !== null} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>模型详情</DialogTitle>
@@ -229,9 +226,7 @@ function ModelDetailDialog({
             </div>
             <div>
               <dt>思考强度</dt>
-              <dd>
-                <ReasoningBadges metadata={metadata} />
-              </dd>
+              <dd>{fmtReasoning(metadata)}</dd>
             </div>
             <div>
               <dt>工具调用</dt>
@@ -270,14 +265,24 @@ export function OpenCodePage() {
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [reloading, setReloading] = useState(false);
+  /** 最近请求分页（服务端 limit/offset，total 由接口返回） */
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [total, setTotal] = useState(0);
   /** 目录表点开的模型详情 */
   const [detail, setDetail] = useState<ModelInfo | null>(null);
+  /** 详情弹窗开关。刻意与 detail 分开：关闭时若同时把 detail 置空，
+      弹窗内容会赶在退场动画之前卸载，动画期间只剩标题+按钮的空壳 */
+  const [detailOpen, setDetailOpen] = useState(false);
+  /** 用量图表时间范围(今日/7天/14天/30天,默认 7 天) */
+  const [usageRange, setUsageRange] = useState<UsageRange>("7d");
   const seq = useRef(0);
 
   /**
-   * 拉取聚合快照 + 最近请求。
+   * 拉取聚合快照 + 最近请求（当前页）。
    * soft=true 走静默刷新（保留旧数据，不打扰）；轮询路径只换用量与请求明细，
-   * 模型目录/目录状态不跟着 10s 轮询动，仅在首载或 full=true（手动刷新目录）时更新。
+   * 模型目录/目录状态不跟着 10s 轮询动，仅在首载、full=true（手动刷新目录）、
+   * 或手上目录为空（后端启动竞态）时更新。
    */
   const load = useCallback(async (soft = false, full = false) => {
     if (!soft) setLoading(true);
@@ -285,12 +290,20 @@ export function OpenCodePage() {
     try {
       const [nextOps, nextRequests] = await Promise.all([
         fetchOpenCodeOps(),
-        fetchOpenCodeRequests(50),
+        fetchOpenCodeRequests(pageSize, (page - 1) * pageSize),
       ]);
       if (id !== seq.current) return;
+      // 页码越界（记录变少）时回到第 1 页，避免停在空页
+      if (nextRequests.items.length === 0 && nextRequests.total > 0 && page > 1) {
+        setPage(1);
+        return;
+      }
       setRequests(nextRequests.items);
+      setTotal(nextRequests.total);
       setOps((prev) =>
-        !prev || !soft || full
+        // 软刷新不覆盖目录，但手上目录是空的时候必须覆盖：后端启动时目录在后台线程里拉，
+        // 这几秒内首载会拿到空目录，否则会一直空到手动刷新。
+        !prev || !soft || full || !prev.models.length
           ? nextOps
           : { ...nextOps, models: prev.models, status: prev.status },
       );
@@ -304,13 +317,22 @@ export function OpenCodePage() {
       if (id !== seq.current) return;
       setLoading(false);
     }
-  }, []);
+  }, [page, pageSize]);
 
   useEffect(() => {
     void load();
     const timer = setInterval(() => void load(true), AUTO_REFRESH_MS);
     return () => clearInterval(timer);
   }, [load]);
+
+  /** 翻页 / 改每页条数：page、pageSize 是 load 的依赖，变化即重新拉取该页 */
+  const changePage = useCallback((next: number) => {
+    setPage(Math.max(1, next));
+  }, []);
+
+  const changePageSize = useCallback((next: number) => {
+    setPageSize(next);
+  }, []);
 
   /** 手动重新拉取上游模型目录，完成后静默刷新页面数据 */
   const reloadCatalog = useCallback(async () => {
@@ -336,10 +358,6 @@ export function OpenCodePage() {
   const cachedTokens = totals?.cached_tokens ?? 0;
   const inputTokens = totals?.input_tokens ?? 0;
   const cacheRate = inputTokens > 0 ? (Math.min(cachedTokens, inputTokens) / inputTokens) * 100 : 0;
-  // 组合图:窗口内有任一请求或 token 即有内容可画
-  const hasChartTraffic = (usage?.series ?? []).some(
-    (p) => p.requests > 0 || p.input_tokens > 0 || p.output_tokens > 0,
-  );
 
   return (
     <section className="panel gw-workspace" aria-label="OpenCode 控制台">
@@ -451,7 +469,7 @@ export function OpenCodePage() {
                   />
                 </Button>
               </div>
-              <div className="max-h-80 overflow-auto">
+              <div className={cn("gw-fill-scroll", !ops?.models.length && "is-empty")}>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -467,7 +485,10 @@ export function OpenCodePage() {
                           <TableCell>
                             <button
                               type="button"
-                              onClick={() => setDetail(model)}
+                              onClick={() => {
+                                setDetail(model);
+                                setDetailOpen(true);
+                              }}
                               className="cursor-pointer text-left font-mono text-xs text-primary underline-offset-2 hover:underline"
                               title={model.id}
                             >
@@ -487,40 +508,37 @@ export function OpenCodePage() {
                         </TableRow>
                       ))
                     ) : (
-                      <TableEmptyRow colSpan={3}>目录为空(等待首次刷新)</TableEmptyRow>
+                      <TableEmptyRow colSpan={3}>
+                        <Empty
+                          icon={Boxes}
+                          title="目录为空"
+                          description="等待首次拉取上游模型目录"
+                        />
+                      </TableEmptyRow>
                     )}
                   </TableBody>
                 </Table>
               </div>
             </section>
 
-            {/* ── 右:Token 用量堆叠面积 + 请求次数折线(24h 小时桶) ── */}
+            {/* ── 右:Token 用量堆叠面积 + 请求次数折线(时间范围可选,默认 7 天) ── */}
             <section className="gw-panel gw-col">
               <div className="gw-panel-head">
                 <Activity className="size-3.5" strokeWidth={1.6} aria-hidden />
-                <h2 className="gw-panel-title">Token 用量与请求次数(24h)</h2>
+                <h2 className="gw-panel-title">Token 用量与请求次数</h2>
+                <UsageRangeSelect value={usageRange} onChange={setUsageRange} className="ml-auto" />
               </div>
-              {usage && hasChartTraffic ? (
-                <TokenUsageChart series={usage.series} />
-              ) : (
-                <Empty
-                  icon={Inbox}
-                  title="窗口内暂无模型请求"
-                  description="24 小时内没有到达上游的请求"
-                  className="py-8"
-                />
-              )}
+              <TokenUsageChart provider="opencode" range={usageRange} />
             </section>
           </div>
 
           {/* ── 最近请求 ── */}
-          <section className="gw-panel">
+          <section className="gw-panel gw-panel-grow">
             <div className="gw-panel-head">
               <Inbox className="size-3.5" strokeWidth={1.6} aria-hidden />
               <h2 className="gw-panel-title">最近请求</h2>
-              <span className="gw-panel-meta">共 {requests.length} 条</span>
             </div>
-            <div className="max-h-80 overflow-auto">
+            <div className={cn("gw-fill-scroll", !requests.length && "is-empty")}>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -529,10 +547,12 @@ export function OpenCodePage() {
                     <TableHead>请求 IP</TableHead>
                     <TableHead>模型</TableHead>
                     <TableHead>协议</TableHead>
+                    <TableHead>流式</TableHead>
+                    <TableHead>思考强度</TableHead>
                     <TableHead>状态</TableHead>
                     <TableHead className="text-right">耗时</TableHead>
                     <TableHead className="text-right">Token</TableHead>
-                    <TableHead>备注</TableHead>
+                    <TableHead className="usage-col-reason">原因</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -540,20 +560,20 @@ export function OpenCodePage() {
                     requests.map((row) => (
                       <TableRow key={row.id}>
                         <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
-                          {row.ts}
+                          {row.created_at}
                         </TableCell>
                         <TableCell>
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <span className="usage-client-ua font-mono text-[11px]">
-                                {shortClientUa(row.client)}
+                                {shortClientUa(row.client_ua)}
                               </span>
                             </TooltipTrigger>
                             <TooltipContent
                               side="top"
                               className="max-w-sm break-all font-mono text-[11px]"
                             >
-                              {row.client || "—"}
+                              {row.client_ua || "—"}
                             </TooltipContent>
                           </Tooltip>
                         </TableCell>
@@ -574,8 +594,8 @@ export function OpenCodePage() {
                         </TableCell>
                         <TableCell>
                           <span className="inline-flex items-center gap-1 text-xs">
-                            <Badge variant="outline">{row.endpoint}</Badge>
-                            {row.upstream_protocol !== row.endpoint ? (
+                            <Badge variant="outline">{row.client_protocol}</Badge>
+                            {row.upstream_protocol !== row.client_protocol ? (
                               <>
                                 <ArrowRight className="size-3 text-muted-foreground" aria-hidden />
                                 <Badge variant={protocolTone(row.upstream_protocol)}>
@@ -586,7 +606,38 @@ export function OpenCodePage() {
                           </span>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={statusTone(row.status)}>{row.status || "—"}</Badge>
+                          <span
+                            className={cn(
+                              "usage-stream font-mono text-[11px]",
+                              row.is_stream ? "is-on" : "is-off",
+                            )}
+                          >
+                            {row.is_stream ? "stream" : "buffer"}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                className={cn(
+                                  "usage-effort font-mono text-[11px]",
+                                  effortTone(row.reasoning_effort),
+                                  !row.reasoning_effort && "text-muted-foreground",
+                                )}
+                              >
+                                {row.reasoning_effort || "—"}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="top"
+                              className="font-mono text-[11px] tabular-nums"
+                            >
+                              推理 {fmtInt(row.reasoning_tokens)}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={statusTone(row.http_status)}>{row.http_status || "—"}</Badge>
                         </TableCell>
                         <TableCell
                           className="text-right font-mono text-xs"
@@ -621,29 +672,51 @@ export function OpenCodePage() {
                             />
                           </div>
                         </TableCell>
-                        <TableCell className="max-w-56 truncate text-xs text-muted-foreground">
-                          {row.error ? (
-                            <span className="text-destructive" title={row.error}>
-                              {row.error.length > 60 ? `${row.error.slice(0, 60)}…` : row.error}
-                            </span>
-                          ) : row.stream ? (
-                            <Badge variant="outline">stream{row.shaped ? " · 塑形" : ""}</Badge>
-                          ) : (
-                            "—"
-                          )}
+                        {/* 原因：只有非 200 才显示上游原始报错，成功请求留空 */}
+                        <TableCell className="usage-col-reason">
+                          {row.http_status !== 200 && row.error_message ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="usage-reason text-[12px] text-destructive">
+                                  {row.error_message}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="top"
+                                className="max-w-sm break-all font-mono text-[11px]"
+                              >
+                                {row.error_message}
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : null}
                         </TableCell>
                       </TableRow>
                     ))
                   ) : (
-                    <TableEmptyRow colSpan={9}>暂无请求</TableEmptyRow>
+                    <TableEmptyRow colSpan={11}>
+                      <Empty
+                        icon={Inbox}
+                        description="暂无数据"
+                      />
+                    </TableEmptyRow>
                   )}
                 </TableBody>
               </Table>
             </div>
+
+            <div className="gw-panel-foot">
+              <Pagination
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPageChange={changePage}
+                onPageSizeChange={changePageSize}
+              />
+            </div>
           </section>
 
           {/* ── 模型详情弹窗 ── */}
-          <ModelDetailDialog model={detail} onOpenChange={(open) => !open && setDetail(null)} />
+          <ModelDetailDialog model={detail} open={detailOpen} onOpenChange={setDetailOpen} />
         </>
       )}
     </section>

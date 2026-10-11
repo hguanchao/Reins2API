@@ -6,6 +6,10 @@ const OpenCodePage = lazy(() =>
   import("@/pages/OpenCodePage").then((module) => ({ default: module.OpenCodePage })),
 );
 
+const WorkBuddyPage = lazy(() =>
+  import("@/pages/WorkBuddyPage").then((module) => ({ default: module.WorkBuddyPage })),
+);
+
 const SettingsPage = lazy(() =>
   import("@/pages/SettingsPage").then((module) => ({ default: module.SettingsPage })),
 );
@@ -16,6 +20,7 @@ export default function App() {
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<OpenCodePage />} />
+          <Route path="workbuddy" element={<WorkBuddyPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
