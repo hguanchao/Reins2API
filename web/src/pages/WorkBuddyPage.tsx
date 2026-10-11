@@ -4,7 +4,7 @@
  * 结构对齐 OpenCodePage：panel gw-workspace 卡片根 + mission-strip KPI +
  * gw-grid；数据 10s 轮询 /api/workbuddy/ops + /api/workbuddy/accounts。
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   ArrowRight,
@@ -61,7 +61,7 @@ import {
   type WorkBuddyOps,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
-import { cn, fmtCompact, fmtInt, fmtPct, shortClientUa, shortModelName } from "@/lib/utils";
+import { cn, fmtCompact, fmtInt, fmtPct, parseCreditFactor, shortClientUa, shortModelName } from "@/lib/utils";
 
 const AUTO_REFRESH_MS = 10_000;
 const LOGIN_POLL_MS = 3_000;
@@ -185,6 +185,15 @@ export function WorkBuddyPage() {
   /** 用量图表时间范围(今日/7天/14天/30天,默认 7 天) */
   const [usageRange, setUsageRange] = useState<UsageRange>("7d");
   const refreshTimers = useRef<number[]>([]);
+
+  /** uid → 账号名(label)：最近请求表按 uid 落库，展示时换成人名 */
+  const accountLabels = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const account of accounts) {
+      if (account.label) map.set(account.uid, account.label);
+    }
+    return map;
+  }, [accounts]);
 
   const load = useCallback(async (soft = false) => {
     try {
@@ -499,11 +508,18 @@ export function WorkBuddyPage() {
                       <TableCell>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="font-mono text-[11px]">
+                            {/* 有账号名就显示人名；缺名回退截断 uid（悬停看完整 uid） */}
+                            <span
+                              className={cn(
+                                "text-xs",
+                                !accountLabels.get(row.account_uid) && "font-mono text-[11px]",
+                              )}
+                            >
                               {row.account_uid
-                                ? row.account_uid.length > 12
-                                  ? `${row.account_uid.slice(0, 12)}…`
-                                  : row.account_uid
+                                ? accountLabels.get(row.account_uid) ||
+                                  (row.account_uid.length > 12
+                                    ? `${row.account_uid.slice(0, 12)}…`
+                                    : row.account_uid)
                                 : "—"}
                             </span>
                           </TooltipTrigger>
@@ -1039,26 +1055,34 @@ function AccountModelsDialog({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {models.map((m) => (
-                      <TableRow key={m.id}>
-                        <TableCell className="whitespace-nowrap font-mono text-xs">{m.id}</TableCell>
-                        <TableCell className="whitespace-nowrap font-mono text-xs">{fmtLimit(m.context_window)}</TableCell>
-                        <TableCell className="whitespace-nowrap font-mono text-xs">{fmtLimit(m.max_output_tokens)}</TableCell>
-                        <TableCell className="whitespace-nowrap text-xs">{m.efforts.length > 0 ? m.efforts.join("/") : "—"}</TableCell>
-                        <TableCell className="whitespace-nowrap font-mono text-xs">
-                          {/* 生效价优先（限时免费/折扣），徽章并列；错峰说明进悬停 */}
-                          <span
-                            title={m.promo_note || undefined}
-                            className={cn("inline-flex items-center gap-1.5", m.promo_credits && "text-primary")}
-                          >
-                            {m.promo_credits || m.credits || "—"}
-                            {m.promo_label ? (
-                              <Badge variant="secondary">{m.promo_label}</Badge>
-                            ) : null}
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {models.map((m) => {
+                      // 生效价优先（限时免费/折扣）；低于 x0.1 用绿色标"极便宜"
+                      const shownCredits = m.promo_credits || m.credits;
+                      const factor = parseCreditFactor(shownCredits);
+                      const cheap = factor !== null && factor < 0.1;
+                      return (
+                        <TableRow key={m.id}>
+                          <TableCell className="whitespace-nowrap font-mono text-xs">{m.id}</TableCell>
+                          <TableCell className="whitespace-nowrap font-mono text-xs">{fmtLimit(m.context_window)}</TableCell>
+                          <TableCell className="whitespace-nowrap font-mono text-xs">{fmtLimit(m.max_output_tokens)}</TableCell>
+                          <TableCell className="whitespace-nowrap text-xs">{m.efforts.length > 0 ? m.efforts.join("/") : "—"}</TableCell>
+                          <TableCell className="whitespace-nowrap font-mono text-xs">
+                            {/* 生效价优先（限时免费/折扣），徽章并列；错峰说明进悬停 */}
+                            <span
+                              title={m.promo_note || undefined}
+                              className="inline-flex items-center gap-1.5"
+                            >
+                              <span className={cn(cheap ? "text-ok" : m.promo_credits && "text-primary")}>
+                                {shownCredits || "—"}
+                              </span>
+                              {m.promo_label ? (
+                                <Badge variant="secondary">{m.promo_label}</Badge>
+                              ) : null}
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>

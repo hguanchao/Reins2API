@@ -16,6 +16,15 @@ export function shortModelName(name: string): string {
   return slash >= 0 ? name.slice(slash + 1) : name;
 }
 
+/** 从倍率文案解析数值：`x0.14 credits` / `x0.08` / `x1.39` → 0.14 / 0.08 / 1.39。
+ *  无 `x` 前缀或解析不出（如 "—"、空串）返回 null。 */
+export function parseCreditFactor(text: string | null | undefined): number | null {
+  const match = /x\s*(\d+(?:\.\d+)?)/i.exec(text ?? "");
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
 /** Token 紧凑显示：1.2M / 45.3K / 原值，尾随 .0 去除（与 grok-rego 同式）。 */
 export function fmtCompact(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
