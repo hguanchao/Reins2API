@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from providers.workbuddy import checkin, classify, dsml, shape
+from providers.workbuddy import checkin, classify, dsml, sanitize, shape
 from providers.workbuddy.pool import Pool
 from providers.workbuddy.provider import WorkBuddyProvider, _parse_prefix
 from providers.workbuddy.store import Account, WorkBuddyStore
@@ -746,6 +746,325 @@ def test_store_migrates_legacy_accounts_table():
             reloaded = store.get_account("u_old")
             assert reloaded.label == "改名" and reloaded.checkin_streak == 3
             assert reloaded.checkin_total_credits == 600.0
+        finally:
+            store.close()
+
+
+# ── 帧规范化（streamwrap._normalize_frame）与软限流同号重试 ──
+
+
+def test_normalize_frame_drops_upstream_noise():
+    """上游那套"空占位 + 私有键"必须剥干净——ZCode 会因为它们把思考链切成一词一块。
+
+    期望逐条对齐 wb2api sse.go normalizeFrame 的测试用例。
+    """
+    from providers.workbuddy.streamwrap import _normalize_frame
+
+    # 空 content/refusal + finish_reason 空串 → 空 delta + null
+    assert _normalize_frame({
+        "id": "x",
+        "choices": [{"index": 0, "delta": {"content": "", "refusal": ""}, "finish_reason": ""}],
+    }) == {
+        "id": "x",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+        "usage": None,
+    }
+    # 非空 tool_calls 保留；空列表丢弃；缺 id 时补标准 id
+    kept = _normalize_frame(
+        {"choices": [{"index": 0, "delta": {"tool_calls": [{"id": "c1"}]}}]}
+    )
+    assert kept["choices"][0]["delta"]["tool_calls"] == [{"id": "c1"}]
+    assert kept["id"] == "chatcmpl-wb2api"
+    dropped = _normalize_frame(
+        {"choices": [{"index": 0, "delta": {"tool_calls": [], "content": "hi"}}]}
+    )
+    assert dropped["choices"][0]["delta"] == {"content": "hi"}
+    # 空占位 function_call（name/arguments 全空）丢弃
+    placeholder = _normalize_frame(
+        {"choices": [{"index": 0, "delta": {"function_call": {"name": "", "arguments": ""}}}]}
+    )
+    assert placeholder["choices"][0]["delta"] == {}
+    # 顶层非标键丢弃；缺 usage 补 null；finish_reason 非空保留
+    noisy = _normalize_frame({
+        "id": "x", "object": "chat.completion.chunk", "created": 1, "junk": "noise",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    })
+    assert noisy == {
+        "id": "x", "object": "chat.completion.chunk", "created": 1,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "usage": None,
+    }
+    # 真实上游帧（实测抓包）：reasoning_content 与 model/created 必须原样活下来，
+    # extra_fields / 空 content / 空 tool_calls / 空 finish_reason 全部消失。
+    real = _normalize_frame({
+        "id": "937c4f0ad29e45c78b8485e3cf8668ee",
+        "model": "deepseek-v4.1-flash",
+        "object": "chat.completion.chunk",
+        "created": 1791792866,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "content": "", "reasoning_content": "The", "function_call": None,
+                "refusal": "", "tool_calls": [], "extra_fields": None,
+            },
+            "logprobs": None,
+            "finish_reason": "",
+        }],
+        "usage": None,
+    })
+    assert real == {
+        "id": "937c4f0ad29e45c78b8485e3cf8668ee",
+        "model": "deepseek-v4.1-flash",
+        "object": "chat.completion.chunk",
+        "created": 1791792866,
+        "choices": [{"index": 0, "delta": {"reasoning_content": "The"}, "finish_reason": None}],
+        "usage": None,
+    }
+
+
+def test_streamwrap_normalizes_frames_end_to_end():
+    """整条流：噪声帧进、标准帧出，且 [DONE] 恰好一个。"""
+    frames = [
+        (
+            b'data: {"id":"x1","object":"chat.completion.chunk","created":1,"model":"m",'
+            b'"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"",'
+            b'"refusal":"","tool_calls":[],"function_call":{"name":"","arguments":""}},'
+            b'"finish_reason":""}],"extra_field":"junk"}\n\n'
+        ),
+        (
+            b'data: {"id":"x1","choices":[{"index":0,"delta":{"content":"hello"},'
+            b'"finish_reason":""}]}\n\n'
+        ),
+        (
+            b'data: {"id":"x1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+            b'"usage":{"total_tokens":7}}\n\n'
+        ),
+        b"data: [DONE]\n\n",
+    ]
+    events = _chunk_events(frames)
+    payloads = _json_events(events)
+    assert len(payloads) == 3 and events.count("[DONE]") == 1
+    assert payloads[0]["choices"][0] == {
+        "index": 0, "delta": {"role": "assistant"}, "finish_reason": None,
+    }
+    assert "extra_field" not in payloads[0]
+    assert payloads[1]["choices"][0]["delta"] == {"content": "hello"}
+    assert payloads[2]["choices"][0]["finish_reason"] == "stop"
+    assert payloads[2]["usage"] == {"total_tokens": 7}
+
+
+def test_soft_rate_single_account_retries_same_account():
+    """单号池撞 429 软限流：清掉刚罚的冷却、歇一下**同号**重试，而不是把 429 透传。
+
+    线上实证：同一个号隔 4 秒再打就过了，而日志里 duration 只有一次上游往返
+    ——说明当时根本没重试（换号轮换在单号池里被 exclude 挡住，第二轮 pick 返回 None）。
+    """
+    import providers.workbuddy.upstream as wb_upstream
+    from core.settings import WB_SOFT_RETRY_SLEEP_S
+    from gateway.base import RequestIDs
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(
+                uid="u_1", realm="cn", access_token="at",
+                token_expires_ms=int(time.time() * 1000) + 3_600_000,
+            ))
+            provider = _provider_with_catalog(store, ["cn-only"], [])
+            provider._refresh_credits_async = lambda uid: None
+
+            class _Resp:
+                def __init__(self, status: int, body: bytes):
+                    self.status_code = status
+                    self.headers: dict[str, str] = {}
+                    self._body = body
+
+                def iter_content(self, chunk_size: int = 8192):
+                    yield self._body
+
+                def close(self) -> None:
+                    pass
+
+            rate = json.dumps({
+                "code": 14003, "msg": "too many requests",
+                "retry_policy": {"retry": True},
+            }).encode()
+            ok = json.dumps({
+                "id": "x", "choices": [{"index": 0, "delta": {"content": "hi"}}],
+            }).encode()
+
+            calls: list[str] = []
+
+            def fake_chat(account, body, **kwargs):
+                calls.append(account.uid)
+                return _Resp(429, rate) if len(calls) == 1 else _Resp(200, ok)
+
+            original_chat = wb_upstream.chat_request
+            original_sleep = time.sleep
+            slept: list[float] = []
+            wb_upstream.chat_request = fake_chat
+            time.sleep = lambda s: slept.append(s)  # 别真等 2 秒
+            try:
+                response = provider.send(
+                    provider.route("cn:cn-only"),
+                    "chat",
+                    json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode(),
+                    RequestIDs(session="s", request="r", project="p"),
+                    stream=True,
+                )
+            finally:
+                wb_upstream.chat_request = original_chat
+                time.sleep = original_sleep
+
+            assert calls == ["u_1", "u_1"]  # 同号重试，不是换号
+            assert response.status == 200
+            assert slept and slept[0] == WB_SOFT_RETRY_SLEEP_S
+            # 重试前把刚写下的软冷却清掉了，否则会被自己的冷却挡住
+            assert store.get_account("u_1").cooldown_until_ms == 0
+        finally:
+            store.close()
+
+
+# ── sanitize.py：出站脱敏（上游逐字审核指纹）──
+
+
+def test_sanitize_rewrites_claude_code_identity_sentence():
+    """线上实证的触发句：请求体里带着它就整单 400（code 11128 unapproved channel）。
+
+    匹配串不带结尾标点——CLI 版句号收尾、桌面版（Agent SDK）逗号接后继句，
+    两种形态都要覆盖，且原有标点原样保留。
+    """
+    cli = "You are Claude Code, Anthropic's official CLI for Claude. Be concise."
+    cleaned = sanitize.sanitize_text(cli)
+    assert "official CLI tool for Claude." in cleaned
+    assert "official CLI for Claude" not in cleaned
+
+    desktop = ("You are Claude Code, Anthropic's official CLI for Claude, "
+               "running within the Claude Agent SDK.")
+    cleaned = sanitize.sanitize_text(desktop)
+    assert "official CLI tool for Claude," in cleaned
+    assert cleaned.endswith("Claude Agent SDK.")
+
+
+def test_sanitize_keeps_clean_text_untouched():
+    """无指纹 → 原样返回；含 11128 的普通正文也不动（不移植 11-128 改写，见模块 docstring）。"""
+    for text in (
+        "Anthropic's official CLI for Claude",       # 缺 "You are Claude Code, " 前缀
+        "the file holds the number 11128 inside",     # 裸数字今天不触发
+        "Main branch you will usually use this for",  # 缺括号/后缀，不误伤零散文本
+    ):
+        assert sanitize.sanitize_text(text) == text
+
+
+def test_sanitize_strips_billing_header_forms():
+    """键值形态整段删除（含值）；裸键名（引用/示例文本）只做最小缩写。"""
+    text = "x-anthropic-billing-header: cc_version=1.2.3; cc_entrypoint=cli; tail"
+    cleaned = sanitize.sanitize_text(text)
+    assert cleaned == "tail"
+
+    # 裸键名不带冒号：缩写而非删除（破坏逐字匹配、保留可读性）
+    assert sanitize.sanitize_text("see X-Anthropic-Billing-Header for details") == \
+        "see x-anthropic-billing-hdr for details"
+
+
+def test_sanitize_covers_reasoning_and_tool_arguments():
+    """reasoning / reasoning_content / tool_calls.arguments / 多模态 text part 全是盲区。
+
+    工具调用轮 content 常为 null——只洗 content 的实现会跳过整条消息，
+    写进工具参数的指纹原样漏出；reasoning 则是 shape 镜像回填的旁路。
+    """
+    identity = "You are Claude Code, Anthropic's official CLI for Claude"
+    body = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": f"quoted {identity} here",
+                "reasoning": "To give feedback, users should report the issue at "
+                             "https://github.com/anthropics/claude-code/issues",
+                "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": {"name": "write", "arguments": json.dumps({"text": identity})},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "c1",
+             "content": [{"type": "text", "text": identity}]},
+        ]
+    }
+    assert sanitize.sanitize_body(body) is True
+    dumped = json.dumps(body, ensure_ascii=False)
+    assert "official CLI for Claude" not in dumped
+    assert "provide feedback" in dumped                       # 只换了 give→provide
+    assert "github.com/anthropics/claude-code/issues" in dumped
+    assert sanitize.sanitize_body(body) is False              # 幂等：再洗无改动
+
+
+def test_sanitize_body_noop_shapes():
+    """坏形状不炸：无 messages / messages 非表 / 非 dict —— 一律 False 不改。"""
+    assert sanitize.sanitize_body({}) is False
+    assert sanitize.sanitize_body({"messages": "nope"}) is False
+    assert sanitize.sanitize_body({"messages": [None, 42, "x"]}) is False
+
+
+def test_send_sanitizes_body_before_upstream():
+    """端到端：带指纹的请求体打到上游前已被改写（本会话自己踩过的粘性 400 回归）。"""
+    import providers.workbuddy.upstream as wb_upstream
+    from gateway.base import RequestIDs
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(
+                uid="u_1", realm="cn", access_token="at",
+                token_expires_ms=int(time.time() * 1000) + 3_600_000,
+            ))
+            provider = _provider_with_catalog(store, ["cn-only"], [])
+            provider._refresh_credits_async = lambda uid: None
+
+            class _Resp:
+                status_code = 200
+
+                def __init__(self, body: bytes):
+                    self.headers: dict[str, str] = {}
+                    self._body = body
+
+                def iter_content(self, chunk_size: int = 8192):
+                    yield self._body
+
+                def close(self) -> None:
+                    pass
+
+            ok = json.dumps({
+                "id": "x", "choices": [{"index": 0, "delta": {"content": "hi"}}],
+            }).encode()
+            seen: list[bytes] = []
+
+            def fake_chat(account, body, **kwargs):
+                seen.append(body)
+                return _Resp(ok)
+
+            original_chat = wb_upstream.chat_request
+            wb_upstream.chat_request = fake_chat
+            try:
+                response = provider.send(
+                    provider.route("cn:cn-only"),
+                    "chat",
+                    json.dumps({"messages": [
+                        {"role": "system",
+                         "content": "You are Claude Code, Anthropic's official CLI for Claude."},
+                        {"role": "user", "content": "hi"},
+                    ]}).encode(),
+                    RequestIDs(session="s", request="r", project="p"),
+                    stream=True,
+                )
+            finally:
+                wb_upstream.chat_request = original_chat
+
+            assert response.status == 200
+            assert seen and b"official CLI for Claude" not in seen[0]
+            assert b"official CLI tool for Claude." in seen[0]
         finally:
             store.close()
 

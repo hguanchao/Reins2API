@@ -50,6 +50,35 @@ def decode_openai_blocks_checked(value: Any) -> list[BridgeBlock]:
             )
         elif kind == "input_image":
             blocks.append(new_block("image", {"url": string_at(raw, "image_url")}))
+        elif kind in ("video_url", "input_video"):
+            # 视频：chat 的 video_url 与部分客户端的 input_video 同形（StepFun 文档的
+            # video_url.url 只收 http/https；data URL 原样带过，收不收由上游定）
+            blocks.append(
+                new_block(
+                    "video",
+                    {
+                        "url": first_string(
+                            string_at(raw, "video_url", "url"), string_at(raw, "video_url"),
+                            string_at(raw, "video_url"),
+                        )
+                    },
+                )
+            )
+        elif kind == "input_audio":
+            # 音频：chat 形态 {input_audio: {data, format}}，format 只认 mp3/wav。
+            # 内部统一存 media_type（data 原样，base64 或 data URL 上游都收）。
+            audio = map_at(raw, "input_audio")
+            blocks.append(
+                new_block(
+                    "audio",
+                    {
+                        "data": first_string(string_at(audio, "data"), string_at(raw, "data")),
+                        "media_type": _audio_media_type(
+                            first_string(string_at(audio, "format"), string_at(raw, "format"))
+                        ),
+                    },
+                )
+            )
         elif kind in ("file", "input_file"):
             file = map_at(raw, "file")
             blocks.append(
@@ -63,13 +92,42 @@ def decode_openai_blocks_checked(value: Any) -> list[BridgeBlock]:
                         "media_type": first_string(
                             string_at(raw, "media_type"), string_at(file, "media_type")
                         ),
-                        "data": first_string(string_at(raw, "file_data"), string_at(file, "file_data")),
+                        "data": first_string(
+                            string_at(raw, "file_data"), string_at(file, "file_data")
+                        ),
+                        "url": first_string(string_at(raw, "file_url"), string_at(file, "file_url")),
                     },
                 )
             )
         else:
             raise BridgeError(f'unsupported OpenAI content block type "{kind}"')
     return blocks
+
+
+def _audio_media_type(format: str) -> str:
+    """input_audio.format（mp3/wav）→ media_type。未知格式按 mp3 记（上游只认这两种）。"""
+    return "audio/wav" if format.strip().lower() in ("wav", "wave", "x-wav") else "audio/mpeg"
+
+
+def _audio_format(media_type: str) -> str:
+    """media_type → input_audio.format。"""
+    return "wav" if media_type.strip().lower().endswith(("wav", "wave")) else "mp3"
+
+
+# 协议里没有等价物、只能降级的块类型 → 占位文案里的人类可读名。
+_BLOCK_LABELS = {"audio": "音频", "video": "视频", "file": "文件", "image": "图片"}
+
+
+def omitted_block_text(block: BridgeBlock) -> str:
+    """目标协议装不下的块 → 可见文字占位。
+
+    不静默丢弃：整条请求 400 会让用户拿不到任何回答，静默丢又可能让模型对着
+    「看不见的附件」编答案；写一句明确的省略说明，模型与用户都知道发生了什么。
+    """
+    label = _BLOCK_LABELS.get(block.kind, block.kind)
+    detail = block.filename or block.media_type
+    suffix = f"（{detail}）" if detail else ""
+    return f"[{label}附件{suffix}已省略：目标协议不支持该输入类型]"
 
 
 def decode_anthropic_blocks_checked(value: Any) -> list[BridgeBlock]:
@@ -107,8 +165,26 @@ def decode_anthropic_blocks_checked(value: Any) -> list[BridgeBlock]:
                         },
                     )
                 )
+        elif kind == "video":
+            # Anthropic 官方没有视频块；ZCode 在「模型声明支持视频」时发的就是这个
+            # 私有形态（source 同 image 的 base64/url 两式）。照收，出站再落到 chat 的
+            # video_url 上——StepFun 那条链路支持 video_url，只是平台对模型关着。
+            source = map_at(raw, "source")
+            if string_at(source, "type") == "url":
+                blocks.append(new_block("video", {"url": string_at(source, "url")}))
+            else:
+                blocks.append(
+                    new_block(
+                        "video",
+                        {
+                            "media_type": string_at(source, "media_type"),
+                            "data": string_at(source, "data"),
+                        },
+                    )
+                )
         elif kind == "document":
             source = map_at(raw, "source")
+            media_type = string_at(source, "media_type")
             if string_at(source, "type") == "text":
                 blocks.append(
                     new_block(
@@ -116,13 +192,28 @@ def decode_anthropic_blocks_checked(value: Any) -> list[BridgeBlock]:
                         {"text": first_string(string_at(source, "data"), string_at(source, "text"))},
                     )
                 )
+            elif media_type.startswith("video/"):
+                # 有的客户端把视频也塞进 document：按 media_type 归到视频块
+                if string_at(source, "type") == "url":
+                    blocks.append(new_block("video", {"url": string_at(source, "url")}))
+                else:
+                    blocks.append(
+                        new_block(
+                            "video",
+                            {
+                                "media_type": media_type,
+                                "data": string_at(source, "data"),
+                                "filename": string_at(raw, "title"),
+                            },
+                        )
+                    )
             else:
                 blocks.append(
                     new_block(
                         "file",
                         {
                             "url": string_at(source, "url"),
-                            "media_type": string_at(source, "media_type"),
+                            "media_type": media_type,
                             "data": first_string(string_at(source, "data"), string_at(source, "text")),
                             "filename": string_at(raw, "title"),
                         },
@@ -241,11 +332,25 @@ def encode_chat_blocks(blocks: list[BridgeBlock]) -> Any:
             if url == "" and block.data != "":
                 url = f"data:{block.media_type};base64,{block.data}"
             parts.append({"type": "image_url", "image_url": {"url": url}})
+        elif block.kind == "video":
+            url = block.url
+            if url == "" and block.data != "":
+                url = f"data:{first_string(block.media_type, 'video/mp4')};base64,{block.data}"
+            parts.append({"type": "video_url", "video_url": {"url": url}})
+        elif block.kind == "audio":
+            data = block.data or block.url
+            parts.append(
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": data, "format": _audio_format(block.media_type)},
+                }
+            )
         elif block.kind == "file":
             file: dict[str, Any] = {}
             put(file, "file_id", block.file_id)
             put(file, "file_data", block.data)
             put(file, "filename", block.filename)
+            put(file, "file_url", block.url)
             parts.append({"type": "file", "file": file})
     return parts
 
@@ -265,6 +370,23 @@ def encode_anthropic_blocks(blocks: list[BridgeBlock]) -> list[Any]:
                         "source": {"type": "base64", "media_type": block.media_type, "data": block.data},
                     }
                 )
+        elif block.kind == "video":
+            if block.url != "":
+                parts.append({"type": "video", "source": {"type": "url", "url": block.url}})
+            else:
+                parts.append(
+                    {
+                        "type": "video",
+                        "source": {
+                            "type": "base64",
+                            "media_type": first_string(block.media_type, "video/mp4"),
+                            "data": block.data,
+                        },
+                    }
+                )
+        elif block.kind == "audio":
+            # Anthropic 协议没有音频块：降级为可见占位（见 omitted_block_text）
+            parts.append({"type": "text", "text": omitted_block_text(block)})
         elif block.kind == "file":
             source: dict[str, Any] | None = None
             if block.url != "":

@@ -19,13 +19,19 @@ def chat_response_format(format: Any) -> Any:
         return {"type": "json_object"}
     if kind == "json_schema":
         if is_object(format.get("json_schema")):
-            return {"type": "json_schema", "json_schema": format["json_schema"]}
-        nested: dict[str, Any] = {}
-        for key in ("name", "description", "schema", "strict"):
-            if key in format:
-                nested[key] = format[key]
+            nested = dict(format["json_schema"])
+        else:
+            # 摊平形态：Responses 的 text.format 与 Anthropic 的 output_config.format
+            # 都把 name/description/schema/strict 放在同一层
+            nested = {}
+            for key in ("name", "description", "schema", "strict"):
+                if key in format:
+                    nested[key] = format[key]
         if len(nested) == 0:
             return None
+        # name 是必填（StepFun 文档：json_schema.name required）。客户端没给就补一个：
+        # 裸 schema 在 chat 上游会被直接 400，比丢一个默认名糟得多。
+        nested.setdefault("name", "structured_output")
         return {"type": "json_schema", "json_schema": nested}
     return None
 

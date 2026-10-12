@@ -1,4 +1,4 @@
-"""上游 SSE 流包装：行缓冲 + 流内 error 帧观测 + DSML 标记修复展开。
+"""上游 SSE 流包装：行缓冲 + 流内 error 帧观测 + DSML 标记修复展开 + 帧规范化。
 
 provider 把 curl_cffi 的 iter_chunks 包成本模块的生成器再交给 UpstreamResponse，
 网关无感。逐帧语义对齐 wb2api sse.go StreamHint：
@@ -7,6 +7,7 @@ provider 把 curl_cffi 的 iter_chunks 包成本模块的生成器再交给 Upst
     保住 error 字段供客户端看到上游 code/msg）;
   - 其余帧喂 MarkupRepair：命中标记时一帧展开为多帧（正文帧 + N 个
     delta.tool_calls 帧 + 收尾 finish 帧）；
+  - 出口一律过 _normalize_frame 重建成标准 OpenAI 形态（见该函数注释）；
   - 流尾 flush 回吐未判定字节；还原过调用但上游没发收尾帧时补一帧
     finish_reason: tool_calls。
 """
@@ -22,6 +23,70 @@ from providers.workbuddy.dsml import (
     MarkupRepair,
     markup_stream_tool_calls,
 )
+
+# 帧顶层白名单（对齐 wb2api normalizeFrame）：其余键——包括上游私有键
+# extra_fields / 各类空占位——全部丢弃。
+_FRAME_TOP_KEYS = ("id", "object", "created", "model", "system_fingerprint", "service_tier")
+# delta 里按「非空才出现」处理的字符串键
+_DELTA_TEXT_KEYS = ("role", "content", "reasoning_content", "refusal")
+
+
+def _normalize_frame(obj: dict[str, Any]) -> dict[str, Any]:
+    """把一帧上游 chunk 重建成标准 OpenAI 形态（逐字段对齐 wb2api normalizeFrame）。
+
+    为什么必须做：上游（腾讯那套）在 delta 里塞满空占位——`content: ""`、
+    `reasoning_content: ""`、`tool_calls: []`、`function_call: null`、`refusal: ""`，
+    外加 `extra_fields` 之类的私有键；`finish_reason` 还用 `""` 表示"没结束"
+    （标准是 null）。这些噪声会把客户端的流式解析带偏：实测 ZCode 会把
+    reasoning_content 的**每个增量**当成一段新的思考块，思考链被切成"一词一块"。
+
+    规则：顶层只留白名单键（缺 object/id 时补标准值）；choices 只留
+    index / delta / finish_reason；delta 里的字符串键只在非空时出现，
+    空 tool_calls 列表与空占位 function_call 丢弃；finish_reason 只留非空字符串、
+    否则 null；usage 原样保留（缺省 null）。
+    """
+    out: dict[str, Any] = {}
+    for key in _FRAME_TOP_KEYS:
+        value = obj.get(key)
+        if value is not None:
+            out[key] = value
+    out.setdefault("object", "chat.completion.chunk")
+    out.setdefault("id", "chatcmpl-wb2api")
+
+    choices = obj.get("choices")
+    if isinstance(choices, list):
+        normalized: list[Any] = []
+        for item in choices:
+            if not isinstance(item, dict):
+                continue
+            choice: dict[str, Any] = {}
+            if "index" in item:
+                choice["index"] = item["index"]
+            delta: dict[str, Any] = {}
+            raw_delta = item.get("delta")
+            if isinstance(raw_delta, dict):
+                for key in _DELTA_TEXT_KEYS:
+                    value = raw_delta.get(key)
+                    if isinstance(value, str) and value:
+                        delta[key] = value
+                calls = raw_delta.get("tool_calls")
+                if isinstance(calls, list) and calls:
+                    delta["tool_calls"] = calls
+                function_call = raw_delta.get("function_call")
+                if isinstance(function_call, dict):
+                    # 空占位（name/arguments 全空）视为噪声剔除
+                    if function_call.get("name") or function_call.get("arguments"):
+                        delta["function_call"] = function_call
+                elif function_call is not None:
+                    delta["function_call"] = function_call
+            choice["delta"] = delta
+            finish = item.get("finish_reason")
+            choice["finish_reason"] = finish if isinstance(finish, str) and finish else None
+            normalized.append(choice)
+        out["choices"] = normalized
+
+    out["usage"] = obj.get("usage") if "usage" in obj else None
+    return out
 
 
 def _call_frames(src: dict[str, Any], calls: list[MarkupCall], base: int) -> list[dict[str, Any]]:
@@ -144,7 +209,9 @@ class SseRepairStream:
                     pass  # 观察者缺陷不得击穿流透传主路径
             return f"data: {payload}\n\n".encode()
         frames = self._repair_frame(obj, payload)
-        return "".join(f"data: {json.dumps(f, ensure_ascii=False)}\n\n" for f in frames).encode("utf-8")
+        return "".join(
+            f"data: {json.dumps(_normalize_frame(f), ensure_ascii=False)}\n\n" for f in frames
+        ).encode("utf-8")
 
     def _repair_frame(self, obj: dict[str, Any], fallback: str) -> list[dict[str, Any]]:
         """DSML 修复：返回「可能多帧」。未命中时单元素（或原样透传）。"""

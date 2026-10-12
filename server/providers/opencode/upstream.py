@@ -16,6 +16,7 @@ from gateway.base import RequestIDs, UpstreamResponse
 from gateway.jsonutil import is_object
 from gateway.types import PROTOCOL_ANTHROPIC, PROTOCOL_CHAT, protocol_path
 from net.proxy import proxies_for
+from providers import parts, profiles
 
 UPSTREAM = "https://opencode.ai/zen"
 PUBLIC_KEY = "public"
@@ -60,6 +61,11 @@ def shape_free_request_body(body: dict[str, Any], protocol: str) -> tuple[dict[s
         shaped["stream"] = True
         changed = True
     if _ensure_usage(shaped, protocol):
+        changed = True
+    if protocol == PROTOCOL_CHAT and parts.normalize_chat_message_parts(
+        shaped, accepted_parts=profiles.OPENCODE.accepted_parts
+    ):
+        # chat 上游按档案接受 part 类型；anthropic 上游原生吃 document，不动。
         changed = True
     if _ensure_tools(shaped, protocol):
         changed = True

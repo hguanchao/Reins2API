@@ -22,6 +22,7 @@ import {
   RefreshCw,
   RotateCcw,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -62,7 +63,7 @@ import {
   type WorkBuddyOps,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
-import { cn, fmtClock, fmtCompact, fmtInt, fmtPct, shortClientUa } from "@/lib/utils";
+import { cn, fmtClock, fmtCompact, fmtInt, fmtPct, latencyMark, parseCreditFactor, shortClientUa } from "@/lib/utils";
 
 const AUTO_REFRESH_MS = 10_000;
 const LOGIN_POLL_MS = 3_000;
@@ -110,6 +111,64 @@ function accountStatusTone(status: string): "success" | "warning" | "destructive
   if (status === "active") return "success";
   if (status === "paused") return "warning";
   return "destructive";
+}
+
+/** last_error 分类 → 中文短语（与 providers/workbuddy/classify.py 的 kind 对齐）。
+ *  未收录的分类原样透出 kind——将来新增分类时宁可显示英文也不吞掉信息。 */
+const ERROR_KIND_LABEL: Record<string, string> = {
+  soft_rate: "上游限流",
+  hard_credit: "积分不足",
+  session_dead: "会话失效",
+  account_fault: "账号异常",
+  model_blocked: "模型不可用",
+  not_found: "上游 404",
+  server: "上游 5xx",
+  waf_block: "WAF 拦截",
+  prompt_too_long: "请求超长",
+  image_invalid: "图片无效",
+  content_blocked: "内容审核",
+  bad_params: "参数非法",
+  client: "上游 4xx",
+};
+
+/** 「分类: 上游响应体」摘要串 → 工具提示要的核心字段。
+ *
+ *  last_error 由服务端写成 `{kind}: {响应体}`，响应体截到 160 字符——完整 JSON
+ *  常被切断在 displayMsg 一半（截断后的串 JSON.parse 必失败），所以解析走两段：
+ *  先按完整 JSON 取 displayMsg.en（官方整句）或 msg，失败再用正则从截断文本里
+ *  捞（msg / code 一般落在截断点之前）。两段都没捞到就退回原文，不丢信息。 */
+function accountErrorBrief(lastError: string): {
+  kind: string;
+  code: string;
+  message: string;
+  requestId: string;
+} {
+  const sep = lastError.indexOf(": ");
+  const kind = sep > 0 ? lastError.slice(0, sep) : "";
+  const body = sep > 0 ? lastError.slice(sep + 2) : lastError;
+  let code = "";
+  let message = "";
+  let requestId = "";
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const display = (parsed.displayMsg as Record<string, unknown> | undefined)?.en;
+    if (typeof display === "string" && display) message = display;
+    else if (typeof parsed.msg === "string") message = parsed.msg;
+    if (parsed.code != null) code = String(parsed.code);
+    if (typeof parsed.requestId === "string") requestId = parsed.requestId;
+  } catch {
+    code = /"code"\s*:\s*"?([^",}]+)"?/.exec(body)?.[1] ?? "";
+    message = /"msg"\s*:\s*"([^"]*)"/.exec(body)?.[1] ?? "";
+    requestId = /"requestId"\s*:\s*"([^"]+)"/.exec(body)?.[1] ?? "";
+  }
+  return {
+    kind: ERROR_KIND_LABEL[kind] ?? kind,
+    code,
+    // 兜底：非 JSON 响应体（WAF/网关的 HTML 错误页）剥标签再收空白，
+    // 否则提示框里是一串 <html><body>…
+    message: message || body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(),
+    requestId,
+  };
 }
 
 /** 缓存命中条：与 OpenCode 用量明细同款（命中率 ≥70% 绿 / ≥30% 黄 / 其余红） */
@@ -450,6 +509,9 @@ export function WorkBuddyPage() {
                       const breaker = fmtCooldown(account.breaker_until_ms);
                       const unsupported = checkinUnsupported(account);
                       const checkedToday = account.last_checkin_day === beijingToday();
+                      const errorBrief = account.last_error
+                        ? accountErrorBrief(account.last_error)
+                        : null;
                       return (
                         <TableRow key={account.uid}>
                           <TableCell>
@@ -471,20 +533,40 @@ export function WorkBuddyPage() {
                             </Tooltip>
                           </TableCell>
                           <TableCell>
-                            <Badge variant={accountStatusTone(account.status)}>
-                              <i className="badge-dot" aria-hidden />
-                              {STATUS_LABEL[account.status] ?? account.status}
-                            </Badge>
-                            {account.last_error ? (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span className="text-muted-foreground ml-1 cursor-help text-xs">⚠</span>
-                                </TooltipTrigger>
-                                <TooltipContent side="top" className="max-w-xs break-all font-mono text-[11px]">
-                                  {account.last_error}
-                                </TooltipContent>
-                              </Tooltip>
-                            ) : null}
+                            <div className="flex items-center gap-1.5">
+                              <Badge variant={accountStatusTone(account.status)}>
+                                <i className="badge-dot" aria-hidden />
+                                {STATUS_LABEL[account.status] ?? account.status}
+                              </Badge>
+                              {errorBrief ? (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    {/* 用图标而非文字字形：emoji 字形会落到彩色字体里、
+                                        字号与基线随系统变。warning 档琥珀色＝「有记录、
+                                        不阻塞」，与徽章的绿/琥珀/红生命周期色不撞。 */}
+                                    <span className="inline-flex cursor-help text-[var(--warning-text)]">
+                                      <TriangleAlert className="size-3.5" strokeWidth={1.75} aria-hidden />
+                                    </span>
+                                  </TooltipTrigger>
+                                  {/* 提示框是绿底白字：次要信息靠 alpha 降级，不能用灰
+                                      （灰在 primary 底上读不出来） */}
+                                  <TooltipContent side="top" className="max-w-xs">
+                                    <div className="text-[10.5px] text-primary-foreground/75">
+                                      上次错误 · {errorBrief.kind}
+                                      {errorBrief.code ? ` · code ${errorBrief.code}` : ""}
+                                    </div>
+                                    <p className="mt-1 text-[11.5px] leading-[1.5] break-words">
+                                      {errorBrief.message}
+                                    </p>
+                                    {errorBrief.requestId ? (
+                                      <div className="mt-1 font-mono text-[10.5px] break-all text-primary-foreground/75">
+                                        requestId {errorBrief.requestId}
+                                      </div>
+                                    ) : null}
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : null}
+                            </div>
                           </TableCell>
                           <TableCell className="font-mono text-xs">
                             {account.credits_remain != null
@@ -528,7 +610,33 @@ export function WorkBuddyPage() {
                             {cooldown ? `冷却 ${cooldown}` : breaker ? `熔断 ${breaker}` : "—"}
                           </TableCell>
                           <TableCell className="font-mono text-xs">
-                            {account.stats_7d ? `${account.stats_7d.requests} / 失败 ${account.stats_7d.failed}` : "0"}
+                            {account.stats_7d ? (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  {/* 请求数 / 失败数：不带文字标签，含义由颜色（绿=请求、
+                                      红=失败）与 hover 提示兜住。失败为 0 时不染红——
+                                      每个号都顶个红 0 是纯噪音。 */}
+                                  <span className="cursor-default tabular-nums">
+                                    <span className="text-ok">{account.stats_7d.requests}</span>
+                                    <span className="text-fg-subtle"> / </span>
+                                    <span
+                                      className={
+                                        account.stats_7d.failed > 0
+                                          ? "text-destructive font-medium"
+                                          : "text-fg-subtle"
+                                      }
+                                    >
+                                      {account.stats_7d.failed}
+                                    </span>
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top">
+                                  7 天 {account.stats_7d.requests} 次请求 · 失败 {account.stats_7d.failed} 次
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : (
+                              "0"
+                            )}
                           </TableCell>
                           <TableCell className="font-mono text-xs">
                             {account.stats_7d
@@ -593,6 +701,7 @@ export function WorkBuddyPage() {
                     <TableHead>最大输出</TableHead>
                     <TableHead>默认档位</TableHead>
                     <TableHead>倍率</TableHead>
+                    <TableHead>活动</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -603,10 +712,18 @@ export function WorkBuddyPage() {
                       const efforts = Array.isArray(md.efforts) ? (md.efforts as string[]) : [];
                       const effort = typeof md.default_effort === "string" ? md.default_effort : "";
                       const promoFactor = typeof md.promo_factor === "number" ? md.promo_factor : null;
-                      // 生效倍率 = 牌价 × factor；无 factor 的「错峰使用」类只有标签没有机器可读折扣
-                      const cheap = promoFactor !== null && promoFactor > 0 && promoFactor < 0.1;
                       const promoCredits = typeof md.promo_credits === "string" ? md.promo_credits : "";
                       const credits = typeof md.credits === "string" ? md.credits : "";
+                      // 上游两种写法混着来（"x0.59 credits" 与 "0.00x"），显示前统一成 x0.59 这一种：
+                      // 去掉 credits 尾巴、把后缀的 x 挪到前面。
+                      const rateText = (promoCredits || credits)
+                        .replace(/\s*credits?\b/i, "")
+                        .replace(/^(\d+(?:\.\d+)?)\s*x$/i, "x$1")
+                        .trim();
+                      // 低价标绿：以文案解析出的数值为准（"0.00x" 这类没有 promo_factor 的行也覆盖），
+                      // 解析不出再退回 metadata 里的 factor。
+                      const rateValue = parseCreditFactor(rateText) ?? promoFactor;
+                      const cheap = rateValue !== null && rateValue < 0.1;
                       const promoLabel = typeof md.promo_label === "string" ? md.promo_label : "";
                       return (
                         <TableRow key={model.id}>
@@ -647,18 +764,22 @@ export function WorkBuddyPage() {
                               cheap && "font-medium text-ok",
                             )}
                           >
-                            {promoCredits || credits || "—"}
+                            {rateText || "—"}
+                          </TableCell>
+                          {/* 活动：上游给的价格活动标签（Exclusive Free / 错峰使用 之类）。
+                              原来挤在倍率格里、和数字抢位置，单独一列后倍率保持纯数字可比大小 */}
+                          <TableCell>
                             {promoLabel ? (
-                              <Badge variant="warning" className="ml-1.5">
-                                {promoLabel}
-                              </Badge>
-                            ) : null}
+                              <Badge variant="warning">{promoLabel}</Badge>
+                            ) : (
+                              <span className="text-fg-subtle">—</span>
+                            )}
                           </TableCell>
                         </TableRow>
                       );
                     })
                   ) : (
-                    <TableEmptyRow colSpan={5}>
+                    <TableEmptyRow colSpan={6}>
                       <Empty
                         icon={Boxes}
                         title="列表为空"
@@ -712,7 +833,9 @@ export function WorkBuddyPage() {
                 </TableHeader>
                 <TableBody>
                   {requests.length ? (
-                    requests.map((row) => (
+                    requests.map((row) => {
+                      const latency = latencyMark(row);
+                      return (
                       <TableRow key={row.id}>
                         <TableCell
                           className="mono whitespace-nowrap text-xs text-foreground"
@@ -826,12 +949,26 @@ export function WorkBuddyPage() {
                         <TableCell className="text-right">
                           {/* 上首字、下总耗时（对齐 demo 的 .cell-2 双行格）。
                              首字为 0 说明是失败请求或旧记录，显示「—」而不是 0.0s。
-                             is-compact：两行同为 11px，比邻列小一档且左右边缘对齐。 */}
+                             is-compact：两行同为 11px，比邻列小一档且左右边缘对齐。
+                             分档见 lib/utils.latencyMark：首字 >10s 琥珀 / >30s 红；
+                             总耗时只在「>30s 且 <10 tok/s」时红——长而快是正常生成。 */}
                           <div className="cell-2 is-compact items-end">
-                            <span className="mono" title={`首字 ${row.first_byte_ms}ms`}>
+                            <span
+                              className={cn(
+                                "mono",
+                                latency.ttft === "warn" && "text-warn",
+                                latency.ttft === "bad" && "font-medium text-destructive",
+                              )}
+                              title={`首字 ${row.first_byte_ms}ms`}
+                            >
                               首字 {row.first_byte_ms > 0 ? fmtSeconds(row.first_byte_ms, 1) : "—"}
                             </span>
-                            <small className="mono" title={`耗时 ${row.duration_ms}ms`}>
+                            <small
+                              className={cn("mono", latency.slow && "font-medium text-destructive")}
+                              title={`耗时 ${row.duration_ms}ms${
+                                latency.speed != null ? ` · ${latency.speed.toFixed(1)} tok/s` : ""
+                              }`}
+                            >
                               耗时 {fmtSeconds(row.duration_ms, 1)}
                             </small>
                           </div>
@@ -880,7 +1017,8 @@ export function WorkBuddyPage() {
                           )}
                         </TableCell>
                       </TableRow>
-                    ))
+                      );
+                    })
                   ) : (
                     <TableEmptyRow colSpan={13}>
                       <Empty icon={Inbox} description="暂无数据" />

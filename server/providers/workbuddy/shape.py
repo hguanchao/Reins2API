@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from providers import parts, profiles
+
 # effort 档位从低到高（payload.go effortRank）。
 _EFFORT_RANK = {"off": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6}
 # GPT 系上游接受的 max_tokens 下限（<16 一律 400 11133，15 拒 16 过）。
@@ -47,6 +49,8 @@ def shape_workbuddy_body(
     if _normalize_roles(body):
         changed = True
     if _normalize_image_url(body):
+        changed = True
+    if parts.normalize_chat_message_parts(body, accepted_parts=profiles.WORKBUDDY.accepted_parts):
         changed = True
     messages = body.get("messages")
     if isinstance(messages, list):

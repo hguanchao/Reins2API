@@ -12,6 +12,8 @@ from typing import Any
 
 from core.logger import logger
 from gateway.base import ModelInfo, RequestIDs, Route, UpstreamResponse
+from providers import profiles
+from providers.capabilities import as_flag, capability_block
 from providers.opencode.discovery import discover
 from providers.opencode.identity import derive_request_ids
 from providers.opencode.routing import ModelIndex, Router
@@ -57,16 +59,36 @@ class OpenCodeProvider:
         }
 
     def list_models(self) -> list[ModelInfo]:
-        return [
-            ModelInfo(
-                id=entry["id"],
-                upstream_model=entry["upstream_model"],
-                protocol=entry["protocol"],
-                free=entry["free"],
-                metadata=entry["metadata"],
+        out: list[ModelInfo] = []
+        for entry in self._router.list():
+            metadata = entry["metadata"]
+            # 目录是 models.dev 的字段名（inputModalities / structuredOutput / …），
+            # 只在这一层翻译成标准化能力名；缺省的字段交给上游档案，档案也没有就不输出
+            out.append(
+                ModelInfo(
+                    id=entry["id"],
+                    upstream_model=entry["upstream_model"],
+                    protocol=entry["protocol"],
+                    free=entry["free"],
+                    display_name=str(metadata.get("name") or ""),
+                    capabilities=capability_block(
+                        profiles.OPENCODE,
+                        entry["protocol"],
+                        {
+                            "input_modalities": metadata.get("inputModalities"),
+                            "output_modalities": metadata.get("outputModalities"),
+                            "supports_reasoning": as_flag(metadata.get("reasoning")),
+                            "supports_function_calling": as_flag(metadata.get("toolCall")),
+                            "supports_structured_output": as_flag(metadata.get("structuredOutput")),
+                            "context_window": metadata.get("contextWindow"),
+                            "max_input_tokens": metadata.get("maxInput"),
+                            "max_output_tokens": metadata.get("maxOutput"),
+                        },
+                    ),
+                    metadata=metadata,
+                )
             )
-            for entry in self._router.list()
-        ]
+        return out
 
     # ── 路由 ──
 

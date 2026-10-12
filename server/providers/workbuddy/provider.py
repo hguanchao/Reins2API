@@ -34,6 +34,7 @@ from core.settings import (
     WB_COOLDOWN_WAF,
     WB_ROTATE_ATTEMPTS,
     WB_SESSION_INVALID_LIMIT,
+    WB_SOFT_RETRY_SLEEP_S,
     WB_UPSTREAM_BASE,
 )
 from gateway.base import (
@@ -44,8 +45,10 @@ from gateway.base import (
     UpstreamResponse,
     UpstreamUnavailable,
 )
+from providers import profiles
+from providers.capabilities import as_flag, capability_block
 from providers.opencode.identity import derive_request_ids  # 通用会话派生（复用）
-from providers.workbuddy import checkin, classify, dsml, shape
+from providers.workbuddy import checkin, classify, dsml, sanitize, shape
 from providers.workbuddy import upstream as wb_upstream
 from providers.workbuddy.pool import Pool
 from providers.workbuddy.store import (
@@ -229,13 +232,29 @@ class WorkBuddyProvider:
 
     def _model_info(self, bare: str, entry: dict[str, Any], realm_alias: str) -> ModelInfo:
         reasoning = entry.get("reasoning") if isinstance(entry.get("reasoning"), dict) else {}
+        name = str(entry.get("name") or bare)
+        # 厂商字段名 → 标准化能力名，只在这一层翻译一次；缺省/None 的字段不输出
+        capabilities = capability_block(
+            profiles.WORKBUDDY,
+            "chat",
+            {
+                "input_modalities": ["text", "image"] if entry.get("supportsImages") else ["text"],
+                "output_modalities": ["text"],
+                "supports_reasoning": as_flag(entry.get("supportsReasoning")),
+                "supports_function_calling": as_flag(entry.get("supportsToolCall")),
+                "context_window": entry.get("maxInputTokens") or None,
+                "max_output_tokens": entry.get("maxOutputTokens") or None,
+            },
+        )
         return ModelInfo(
             id=f"{realm_alias}:{bare}",
             upstream_model=bare,
             protocol="chat",
             free=False,
+            display_name=name,
+            capabilities=capabilities,
             metadata={
-                "name": entry.get("name") or bare,
+                "name": name,
                 "realm": "global" if realm_alias == "glb" else "cn",
                 "aliases": self._realm_aliases(bare),
                 "context_window": entry.get("maxInputTokens") or 0,
@@ -322,6 +341,12 @@ class WorkBuddyProvider:
             body_dict = {}
         if not isinstance(body_dict, dict):
             body_dict = {}
+        # 出站脱敏：上游按逐字匹配拦整单（400 11128 unapproved channel），历史每轮
+        # 重发 ⇒ 会话里只要出现过指纹就是粘性 400。这里洗一次覆盖全部换号重试与
+        # 三种客户端协议（sanitize 模块 docstring 有 2026-10-12 的线上实证）。
+        if sanitize.sanitize_body(body_dict):
+            body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+            logger.warning("[workbuddy] 出站脱敏：请求体命中上游审核指纹，已改写后转发")
         conversation_id = ""
         for key in ("conversation_id", "conversationId"):
             value = body_dict.get(key)
@@ -335,6 +360,7 @@ class WorkBuddyProvider:
 
         exclude: set[str] = set()
         refreshed: set[str] = set()
+        soft_retried: set[str] = set()
         last_error: UpstreamResponse | None = None
         attempts = 0
         while attempts < WB_ROTATE_ATTEMPTS:
@@ -423,6 +449,21 @@ class WorkBuddyProvider:
                         attempts -= 1  # 同号重试不计入换号预算（仍受总 attempts 上限约束）
                         continue
                     exclude.add(account.uid)
+                # 软限流（429/14003）：上游只回 "too many requests" + retry_policy.retry=true，
+                # 是瞬时限流——线上实测同一个号隔 4 秒再打就过了。但换号轮换在单号池里不成立：
+                # 刚罚完的号进了 exclude，第二轮 pick 直接返回 None，于是把 429 原样透传给客户端
+                # （这就是"一上来就 Too Many Requests"的来源，日志里 duration 只有一次上游往返的
+                # 耗时，说明根本没重试）。这里补一次同号重试：先清掉刚写下的软冷却——否则会被
+                # 自己的冷却挡住，和上面 session 刷新那条路是同一个坑——歇一下再打一次。
+                if classified.kind == classify.SOFT_RATE and account.uid not in soft_retried:
+                    soft_retried.add(account.uid)
+                    self._store.update_runtime(
+                        account.uid, cooldown_until_ms=0, cooldown_kind="",
+                    )
+                    attempts -= 1  # 同号重试不占换号预算（仍受总 attempts 上限约束）
+                    exclude.discard(account.uid)
+                    time.sleep(WB_SOFT_RETRY_SLEEP_S)
+                    continue
                 if not classified.retryable or attempts >= WB_ROTATE_ATTEMPTS:
                     if classified.retryable:
                         self._pool.unbind_sticky(ids.session)

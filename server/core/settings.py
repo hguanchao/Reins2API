@@ -50,6 +50,7 @@ WB_TIMEOUT_IDLE = 300
 WB_MAX_IN_FLIGHT = 3           # 单账号在途上限
 WB_ROTATE_ATTEMPTS = 3         # 单请求最大换号数
 WB_BACKOFF_BASE_S = 0.5        # 轮换退避基数（×attempt + 抖动）
+WB_SOFT_RETRY_SLEEP_S = 2.0    # 软限流(429/14003)同号重试前的等待；上游只回 "retry": true，不给时长
 WB_STICKY_ENABLED = True       # 会话粘性（ses_ → uid）
 WB_STICKY_TTL_S = 1800         # 粘性 TTL（滚动续期）
 WB_STICKY_GC_S = 300           # 粘性惰性 GC 周期

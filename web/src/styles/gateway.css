@@ -127,14 +127,17 @@
 .gw-grid {
   display: grid;
   --gw-mid-h: clamp(340px, 34svh, 430px);
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* 1.25 : 1 —— 左列（模型列表/账号池）比右列（图表）宽一档，取 demo 的 .grid-2 比例。
+     模型列表加「活动」列后 6 列，等宽那版会把最右那列挤出卡片。 */
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
   grid-template-rows: var(--gw-mid-h);
   gap: 20px;
   min-width: 0;
 }
 .gw-grid-split {
-  /* 模型列表与 Token 用量左右等宽 */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* 模型列表与 Token 用量：同为 1.25 : 1（值必须与上面 .gw-grid 一致——
+     两个类常一起出现在同一个元素上，谁的值靠后谁生效） */
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
 }
 /* 单列网格：承载整块全宽面板（账号池 8 列挤不进半宽栅格）。
    行高必须回到 auto——账号池要按号数自然增高，固定高度会让号少时留白、号多时被裁。

@@ -462,20 +462,27 @@ def _model_owner(model_id: str) -> str:
 
 
 def _send_models(handler: BaseHTTPRequestHandler) -> None:
+    """模型列表。能力块由 **provider** 算好（厂商字段名只活在 provider 里：
+    providers/profiles.py 的上游档案 + providers/capabilities.py 的合并规则），
+    gateway 只负责平铺输出——它不认识任何厂商字段名。"""
     data = []
     for info in registry.list_models():
-        data.append(
-            {
-                "id": info.id,
-                "object": "model",
-                "created": 0,
-                "owned_by": _model_owner(info.id),
-                # 上游真实模型名(裸名):实际打到上游的 model 字段,不带别名前缀
-                "upstream_model": info.upstream_model,
-                "protocol": info.protocol,
-                "free": info.free,
-            }
-        )
+        entry = {
+            "id": info.id,
+            "object": "model",
+            "created": 0,
+            "owned_by": _model_owner(info.id),
+            # 上游真实模型名(裸名):实际打到上游的 model 字段,不带别名前缀
+            "upstream_model": info.upstream_model,
+            "protocol": info.protocol,
+            "free": info.free,
+        }
+        if info.display_name:
+            entry["display_name"] = info.display_name
+        # 能力字段平铺（Codex 目录 / LiteLLM model_info / Anthropic 模型列表都这么给），
+        # 客户端不必再套一层就能读
+        entry.update(info.capabilities)
+        data.append(entry)
     send_json(handler, 200, {"object": "list", "data": data})
 
 

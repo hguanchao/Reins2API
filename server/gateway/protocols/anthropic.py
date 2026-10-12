@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.logger import logger
 from gateway.bridge.content import (
     decode_anthropic_blocks_checked,
     decode_anthropic_tool_choice,
@@ -63,11 +64,23 @@ def anthropic_reasoning(input: dict[str, Any]) -> Any:
     return input.get("thinking")
 
 
+def anthropic_response_format(input: dict[str, Any]) -> Any:
+    """Anthropic 结构化输出（structured-outputs beta）：output_config.format。
+
+    形态是摊平的 `{type:"json_schema", schema:{...}}`，与 Responses 的 text.format
+    同族；这里存原始形态，由目标协议编码器（chat_response_format）落地——name
+    缺失时它会补一个默认名（chat 上游要求必填）。
+    """
+    format = any_at(input, "output_config", "format")
+    return format if is_object(format) else None
+
+
 def decode_request(input: dict[str, Any]) -> BridgeRequest:
     request = new_bridge_request(input)
     request.max_tokens = input.get("max_tokens")
     request.stop = input.get("stop_sequences")
     request.reasoning = anthropic_reasoning(input)
+    request.response_format = anthropic_response_format(input)
     try:
         request.system.extend(decode_anthropic_blocks_checked(input.get("system")))
     except BridgeError as error:
@@ -101,6 +114,16 @@ def decode_request(input: dict[str, Any]) -> BridgeRequest:
     for i, tool in enumerate(tools):
         if not is_object(tool):
             raise BridgeError(f"tools[{i}] must be an object")
+        if not is_object(tool.get("input_schema")):
+            # 自定义工具必带 input_schema；不带的就是服务端工具（web_search_20250305 /
+            # web_fetch_* / tool_search_* / code_execution_* …）——由 Anthropic 服务端
+            # 执行，转成 function 工具没人会执行它，上游也只认 function 工具。
+            # 忽略并记日志（客户端拿不到联网搜索，但整个请求照常完成）。
+            logger.warning(
+                f'[桥接] tools[{i}] 服务端工具'
+                f'（type={string_at(tool, "type") or "无"}，name={string_at(tool, "name") or "无"}），已忽略'
+            )
+            continue
         request.tools.append(
             BridgeTool(
                 name=string_at(tool, "name"),

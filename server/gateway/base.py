@@ -61,6 +61,10 @@ class ModelInfo:
     protocol: str
     free: bool
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 展示名与能力块由 **provider** 算好（厂商字段名只活在 provider 里）：
+    # capabilities 是标准化后的平铺字段，直接进 /v1/models；gateway 不做解释。
+    display_name: str = ""
+    capabilities: dict[str, Any] = field(default_factory=dict)
 
 
 class _FirstChunkStamp:

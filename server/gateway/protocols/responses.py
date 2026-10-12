@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.logger import logger
 from gateway.base import random_id
 from gateway.bridge.content import (
     bridge_arguments_json,
@@ -124,7 +125,13 @@ def decode_request(input: dict[str, Any]) -> BridgeRequest:
     tools = slice_at(input, "tools")
     for i, tool in enumerate(tools):
         if not is_object(tool) or string_at(tool, "type") != "function":
-            raise BridgeError(f"tools[{i}] must be a function tool")
+            # 非 function 工具（web_search / file_search / computer_use / mcp …）
+            # 见 chat.py 同处注释：上游只认 function 工具，丢弃并记日志。
+            logger.warning(
+                f'[桥接] tools[{i}] 非 function 工具'
+                f'（type={string_at(tool, "type") or "缺失"}），已忽略'
+            )
+            continue
         request.tools.append(
             BridgeTool(
                 name=string_at(tool, "name"),

@@ -49,7 +49,7 @@ import {
   type UsageRange,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
-import { cn, fmtClock, fmtCompact, fmtInt, fmtPct, shortClientUa } from "@/lib/utils";
+import { cn, fmtClock, fmtCompact, fmtInt, fmtPct, latencyMark, shortClientUa } from "@/lib/utils";
 
 /** 自动刷新间隔 */
 const AUTO_REFRESH_MS = 10_000;
@@ -585,7 +585,9 @@ export function OpenCodePage() {
                   </TableHeader>
                   <TableBody>
                     {requests.length ? (
-                      requests.map((row) => (
+                      requests.map((row) => {
+                        const latency = latencyMark(row);
+                        return (
                         <TableRow key={row.id}>
                           <TableCell
                             className="mono whitespace-nowrap text-xs text-foreground"
@@ -685,12 +687,27 @@ export function OpenCodePage() {
                           <TableCell className="text-right">
                             {/* 上首字、下总耗时（对齐 demo 的 .cell-2 双行格）。
                                首字为 0 说明是失败请求或旧记录，显示「—」而不是 0.0s。
-                               is-compact：两行同为 11px，比邻列小一档且左右边缘对齐。 */}
+                               is-compact：两行同为 11px，比邻列小一档且左右边缘对齐。
+                               分档见 lib/utils.latencyMark：首字 >10s 琥珀 / >30s 红；
+                               总耗时只在「>30s 且 <10 tok/s」时红——长而快是正常生成。
+                               注意非流式客户端的首字恒为 0（整包被缓冲），是「—」不是慢。 */}
                             <div className="cell-2 is-compact items-end">
-                              <span className="mono" title={`首字 ${row.first_byte_ms}ms`}>
+                              <span
+                                className={cn(
+                                  "mono",
+                                  latency.ttft === "warn" && "text-warn",
+                                  latency.ttft === "bad" && "font-medium text-destructive",
+                                )}
+                                title={`首字 ${row.first_byte_ms}ms`}
+                              >
                                 首字 {row.first_byte_ms > 0 ? fmtSeconds(row.first_byte_ms, 1) : "—"}
                               </span>
-                              <small className="mono" title={`耗时 ${row.duration_ms}ms`}>
+                              <small
+                                className={cn("mono", latency.slow && "font-medium text-destructive")}
+                                title={`耗时 ${row.duration_ms}ms${
+                                  latency.speed != null ? ` · ${latency.speed.toFixed(1)} tok/s` : ""
+                                }`}
+                              >
                                 耗时 {fmtSeconds(row.duration_ms, 1)}
                               </small>
                             </div>
@@ -746,7 +763,8 @@ export function OpenCodePage() {
                             )}
                           </TableCell>
                         </TableRow>
-                      ))
+                        );
+                      })
                     ) : (
                         <TableEmptyRow colSpan={12}>
 
