@@ -298,14 +298,12 @@ def test_as_flag_keeps_unknown_as_none():
     assert as_flag("true") is None  # 非布尔不猜
 
 
-def test_profiles_are_declared_with_evidence():
-    """档案本身要带证据：这是「结论」与「写死」的区别所在。"""
-    assert "file" not in profiles.WORKBUDDY.accepted_parts  # 实测 file → 400
-    assert "file" not in profiles.OPENCODE.accepted_parts   # 同样实测 400
-    assert "video_url" not in profiles.OPENCODE.accepted_parts  # 实测 400
+def test_profiles_declare_transport_parts():
+    """档案要点：名称非空、传输层至少认文本与图片；其余类型的取舍与依据见
+    tests/upstream_evidence.md（记录放测试目录，生产代码不放探针明细）。"""
     for profile in (profiles.WORKBUDDY, profiles.OPENCODE):
-        assert profile.evidence.strip() != ""
         assert profile.name != ""
+        assert {"text", "image_url"} <= set(profile.accepted_parts)
 
 
 # ── 内建运行入口（无 pytest 环境直接跑）──

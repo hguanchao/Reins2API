@@ -67,11 +67,10 @@ def default_user_agent(realm: str = "cn") -> str:
 
 
 # /v3/config 对 UA 敏感：必须能解析出 CodeBuddy 版本号，否则 400 code=12403；
-# 且不同 UA 下发不同模型集合（实测 2026-10-11）：
-#   - global 发完整桌面端 UA → 28 条（含 gpt-6-luna / gpt-6-sol / grok-4.7 等新模型）；
-#     只发裸 `CLI/<v> CodeBuddy/<v>` 会被上游降级成 22 条旧目录（缺 gpt-6-*），
-#     IDE UA 更是只剩别名/路由条目。故 global 直接复用 default_user_agent("global")。
-#   - CN 沿用 IDE UA（现状）。
+# 且不同 UA 下发不同规模的模型集合——global 必须用完整桌面端 UA 才拿得到含
+# gpt-6-* 在内的完整目录，裸 `CLI/<v>` 与 IDE UA 都会被降级。故 global 复用
+# default_user_agent("global")，CN 沿用 IDE UA。（各 UA 的下发条数与日期见
+# tests/upstream_evidence.md）
 V3_CONFIG_UA_CN = "CodeBuddyIDE/4.12.0 CodeBuddy/4.12.0"
 V3_CONFIG_UA_GLOBAL = default_user_agent("global")
 

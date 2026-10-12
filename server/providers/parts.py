@@ -1,6 +1,6 @@
 """出站 chat 请求的附件归一：**按上游档案**决定放行 / 改写 / 降级。
 
-上游拿的是 OpenAI chat 方言，但各家接受的 content part 类型并不一样（StepFun 系只认
+上游拿的是 OpenAI chat 方言，但各家接受的 content part 类型并不一样（有的只认
 text / image_url / video_url / input_audio，`file` 一律 400；别家可能就吃 `file`）。
 所以这里**不认识任何厂商名**：接受集合由 `accepted_parts` 参数传入（来自
 providers/profiles.py 的上游档案），本模块只管三件事：
@@ -10,10 +10,9 @@ providers/profiles.py 的上游档案），本模块只管三件事：
   内联 `text`），前提是目标形态也被接受；
 - 其余 —— 丢弃，并在该消息末尾留一句**显式省略说明**。
 
-省略说明用 pi-mono（earendil-works/pi）的口径：`(image omitted: model does not
-support images)` 那种「告诉模型附件没送到」，而不是静默丢弃。两份参考在空 turn 上
-分歧——CLIProxyAPI 直接回 400，我们选说明：附件被平台/上游拒时模型本来就该如实
-回答看不到，走同一条路，用户能在回答里看到原因，而不是拿到一个失败请求。
+省略说明选「告诉模型附件没送到」而不是静默丢弃（pi-mono 的口径）：备选方案是
+CLIProxyAPI 的「整单 400」，但那样用户拿到的是失败请求；而附件被上游拒时模型本来
+就该如实回答看不到，走同一条路，用户能在回答里看到原因。
 """
 
 from __future__ import annotations

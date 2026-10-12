@@ -343,7 +343,7 @@ class WorkBuddyProvider:
             body_dict = {}
         # 出站脱敏：上游按逐字匹配拦整单（400 11128 unapproved channel），历史每轮
         # 重发 ⇒ 会话里只要出现过指纹就是粘性 400。这里洗一次覆盖全部换号重试与
-        # 三种客户端协议（sanitize 模块 docstring 有 2026-10-12 的线上实证）。
+        # 三种客户端协议（词表与实测记录见 tests/upstream_evidence.md）。
         if sanitize.sanitize_body(body_dict):
             body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
             logger.warning("[workbuddy] 出站脱敏：请求体命中上游审核指纹，已改写后转发")
@@ -450,11 +450,11 @@ class WorkBuddyProvider:
                         continue
                     exclude.add(account.uid)
                 # 软限流（429/14003）：上游只回 "too many requests" + retry_policy.retry=true，
-                # 是瞬时限流——线上实测同一个号隔 4 秒再打就过了。但换号轮换在单号池里不成立：
-                # 刚罚完的号进了 exclude，第二轮 pick 直接返回 None，于是把 429 原样透传给客户端
-                # （这就是"一上来就 Too Many Requests"的来源，日志里 duration 只有一次上游往返的
-                # 耗时，说明根本没重试）。这里补一次同号重试：先清掉刚写下的软冷却——否则会被
-                # 自己的冷却挡住，和上面 session 刷新那条路是同一个坑——歇一下再打一次。
+                # 是瞬时限流，等几秒同号重试就能过。但换号轮换在单号池里不成立：刚罚完的号
+                # 进了 exclude，第二轮 pick 直接返回 None，于是 429 原样透传给客户端
+                # （"一上来就 Too Many Requests" 的成因）。这里补一次同号重试：先清掉刚写下的
+                # 软冷却——否则会被自己的冷却挡住，和上面 session 刷新那条路是同一个坑——
+                # 歇一下再打一次。
                 if classified.kind == classify.SOFT_RATE and account.uid not in soft_retried:
                     soft_retried.add(account.uid)
                     self._store.update_runtime(

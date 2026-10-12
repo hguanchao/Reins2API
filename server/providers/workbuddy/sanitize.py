@@ -1,24 +1,17 @@
-"""出站请求体脱敏：剥离上游内容审核的**逐字**指纹（移植 wb2api sanitize.go，
-词表按 2026-10-12 线上实测校正）。
+"""出站请求体脱敏：剥离上游内容审核的**逐字**指纹（移植 wb2api sanitize.go）。
 
 上游审核不是语义判断而是逐字精确匹配，命中就把**整个请求**判 400：
 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}。
 而对话历史每轮重发 ⇒ 一旦某句话进了会话（客户端 system prompt 的模板句、
 或工具结果里引用过的同款文本），这个会话就是**粘性 400**，只能靠出站改写打破。
 
-线上实证（2026-10-12，同账号同参数逐条对照）：
-  - system 里放 "You are Claude Code, Anthropic's official CLI for Claude." → 400
-    （上游返回的正是 code 11128 / unapproved channel）；去掉这句 → 200。
-  - 但 "Main branch (you will usually use this for PRs)"、"You are a coding agent
-    running in the Codex CLI, …"、"x-anthropic-billing-header: …"，以及裸数字
-    11128（试遍 user / assistant+reasoning_content / tool_calls.arguments /
-    tool 结果五个位置）**当前都不触发**。
-因此：句级改写词表按参考实现全量保留（审核规则会变，命中就是整单失败），
-而 sanitize.go 里 "11128" → "11-128" 那条**不移植**——今天不触发，却会改坏
-用户正文里的数字（讨论错误码/哈希的场景）。
+词表按参考实现全量保留：审核规则会变，命中就是整单失败，宁可多改写一句；
+但 sanitize.go 里 "11128" → "11-128" 那条**不移植**——它今天不触发，
+却会改坏用户正文里的数字（讨论错误码/哈希的场景）。
 
 改动只做两类，都不动语义：整段删除（header 键值对）、一词之差的改写（模板句）。
 无指纹的请求走特征预检快速路径，原样返回、零改动。
+词表与实测记录见 tests/upstream_evidence.md。
 """
 
 from __future__ import annotations

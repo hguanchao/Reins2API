@@ -7,12 +7,15 @@
 false` 会让客户端把视频入口藏起来，而没有任何依据时不该做这种断言。所以档案里用
 None（或干脆不写）表示「不知道」，机制只负责把有依据的值输出。
 
-两层能力也要分开（2026-10-12 那轮实测学到的）：
+两层能力也要分开表达：
+
 - **传输层**（`accepted_parts`）：上游会不会因为这种 content part 直接报错。
-  实测 workbuddy：`file` → 400；`video_url` / `input_audio` → 200。parts.py 只按这个
-  集合决定「放行 / 无损改写 / 降级」，不认识任何厂商名。
-- **模型层**（模态与 `supports_*`）：part 能送到也不代表模型能用——实测 workbuddy
-  收下 `video_url` 却告诉模型「不支持视频」。这一层由目录元数据 + provider 档案表达。
+  parts.py 只按这个集合决定「放行 / 无损改写 / 降级」，不认识任何厂商名。
+- **模型层**（模态与 `supports_*`）：part 能送到也不代表模型能用——上游常把送不到
+  或看不懂的内容静默丢掉，这时只有模型的回答能说明真相。这一层由目录元数据 +
+  provider 档案表达。
+
+各 provider 的取值依据（探针与日期）见 tests/upstream_evidence.md。
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ MODALITY_PARTS: Mapping[str, str] = {
 
 @dataclass(frozen=True)
 class UpstreamProfile:
-    """一个 provider 的上游档案：字段即结论，结论必须带证据（evidence，含日期）。"""
+    """一个 provider 的上游档案（取值依据见 tests/upstream_evidence.md）。"""
 
     name: str
     # 传输层：上游接受的 chat content part 类型；不在集合里的 part 由 parts.py
@@ -43,8 +46,6 @@ class UpstreamProfile:
     accepted_parts: frozenset[str] = frozenset({"text", "image_url"})
     # 模型层默认值：目录元数据没声明时用。None / 缺省 = 不知道，不输出。
     defaults: Mapping[str, Any] = field(default_factory=dict)
-    # 证据与日期：重测一个上游只改这里，不动共享代码。
-    evidence: str = ""
 
 
 def as_flag(value: Any) -> bool | None:

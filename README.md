@@ -109,21 +109,18 @@ web/                     React 管理台(OpenCodePage / WorkBuddyPage / Settings
 
 ## 多模态与模型能力适配
 
-三个端点都能**收**文本/图片/视频/PDF/音频,但"能收"≠"上游能用"。**厂商差异不在共享代码里**——`providers/profiles.py` 给每个 provider 一份上游档案(结论 + 证据 + 日期),`providers/capabilities.py` 是通用机制,`providers/parts.py`(出站附件归一)只按档案给的 `accepted_parts` 决定放行/改写/降级,不认识任何厂商名。加新上游 = 写一份档案,不改共享代码。
+三个端点都能**收**文本/图片/视频/PDF/音频,但"能收"≠"上游能用"。**厂商差异不在共享代码里**——`providers/profiles.py` 给每个 provider 一份上游档案,`providers/capabilities.py` 是通用机制,`providers/parts.py`(出站附件归一)只按档案给的 `accepted_parts` 决定放行/改写/降级,不认识任何厂商名。加新上游 = 写一份档案,不改共享代码。**每家上游的实测结论(探针、日期、未验证项、复测方法)记在 `server/tests/upstream_evidence.md`**,生产代码里不放实验明细。
 
-**两层能力分开表达**(实测学到的区分):
+**两层能力分开表达**:
 
-- **传输层**(`accepted_parts`):上游会不会因为这种 content part 直接报错。在集合里的 part 原样放行;不在集合里但能无损改写的改写(`file` 装图片→`image_url`、装文本→内联 `text`);其余丢弃并在该消息末尾留一句**显式省略说明**(pi-mono 口径:告诉模型附件没送到,而不是静默丢)。
+- **传输层**(`accepted_parts`):上游会不会因为这种 content part 直接报错。在集合里的 part 原样放行;不在集合里但能无损改写的改写(`file` 装图片→`image_url`、装文本→内联 `text`);其余丢弃并在该消息末尾留一句**显式省略说明**(告诉模型附件没送到,而不是静默丢弃——静默丢会让模型对着看不见的附件编答案,整单 400 又会让用户拿不到任何回答)。
 - **模型层**(模态与 `supports_*`):part 能送到也不代表模型能用。合并优先级 **目录声明 > 档案默认 > 省略**;"省略"是刻意的第三档——`supports_video_input: false` 会让客户端把视频入口藏起来,没有依据时不该做这种断言,所以用 None/缺省表示"不知道",不输出。
 
-已实测的档案(2026-10-12):
-
-- **workbuddy**:`file` → 400(装图片/文本/PDF 都一样);`video_url`/`input_audio` → 200。图片确实能用(实测识别出颜色);**视频是模型层的死路**——收得下但平台明确告诉模型"不支持视频"(换真实 http mp4 同样看不到);`response_format` 被忽略(json_schema 返回散文)→ 结构化输出标 false;对话中段 `role:system` 模型照做 → 标 true;`tools` 里的 `web_search` 走工具会回 `unsupported_content_type`。
-- **opencode**:`text`/`image_url` → 200(实测模型准确答出图片颜色);`file`/`video_url`/`input_audio` → 400。目录里声明的 video/pdf/audio 模态因此在 chat 路线上被过滤掉(送不达就不声明);走 `responses` 协议的模型(muse-spark)保留 pdf——`input_file` 是那条路的原生载体。样本只有一个模型(free 端点多数时间 429),下一轮验证扩样。
+当前两家的取值(依据见上述实测记录):workbuddy 的 chat 路线收 text/image_url/video_url/input_audio,视频在模型层不可用、结构化输出与联网搜索不可用、对话中段 system 消息可用;opencode 的 chat 路线只收 text/image_url,走 `responses` 的模型另有 PDF 通道(见 `capabilities.py` 的 `_deliverable`)。
 
 其余适配:
 
-- **服务端工具(web_search 等)**:跨协议时**忽略并记日志**而不是 400——上游只认 `function` 工具(StepFun 文档明确),step 系带 `web_search` 会整单失败。function 工具不受影响。
+- **服务端工具(web_search 等)**:跨协议时**忽略并记日志**而不是 400——上游只认 `function` 工具,step 系带 `web_search` 会整单失败。function 工具不受影响。
 - **结构化输出**:映射是通的(anthropic 的 `output_config.format` → chat 的 `response_format`,name 缺失补默认名),但 workbuddy 那条链路上游忽略该字段,所以按 false 声明。
 - `/v1/models` 平铺能力字段:`input_modalities`/`output_modalities`/`supports_vision`/`supports_video_input`/`supports_pdf_input`/`supports_reasoning`/`supports_function_calling`/`supports_structured_output`/`supports_system_messages`/`supports_web_search`/`context_window`/`max_input_tokens`/`max_output_tokens`,值由 **provider** 算好(目录字段名只活在 provider 里,gateway 只平铺输出)。
 
