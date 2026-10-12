@@ -49,7 +49,7 @@ import {
   type UsageRange,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
-import { cn, fmtCompact, fmtInt, fmtPct, shortClientUa, shortModelName } from "@/lib/utils";
+import { cn, fmtClock, fmtCompact, fmtInt, fmtPct, shortClientUa } from "@/lib/utils";
 
 /** 自动刷新间隔 */
 const AUTO_REFRESH_MS = 10_000;
@@ -64,8 +64,10 @@ function fmtTokens(n: number): string {
 }
 
 /** 耗时统一秒显示（0.01s 粒度；精确毫秒放 title） */
-function fmtSeconds(ms: number): string {
-  return `${(ms / 1000).toFixed(2)}s`;
+/** 毫秒 → 秒。digits 默认 2（KPI 用）；最近请求的耗时列用 1 位，
+ *  与首字对齐成 0.1s / 1.0s 的同一量级。 */
+function fmtSeconds(ms: number, digits = 2): string {
+  return `${(ms / 1000).toFixed(digits)}s`;
 }
 
 /** 目录数值列:0/缺失显示 — */
@@ -94,13 +96,6 @@ function fmtReasoning(metadata: Record<string, unknown>): string {
   return metadata.reasoning === true ? "支持" : "—";
 }
 
-/** 失败率配色档位（与 grok-rego GatewayPage 同档） */
-function failRateTone(rate: number): "is-ok" | "is-warn" | "is-bad" {
-  if (rate <= 5) return "is-ok";
-  if (rate <= 15) return "is-warn";
-  return "is-bad";
-}
-
 function protocolTone(protocol: string): "success" | "warning" | "secondary" {
   if (protocol === "anthropic") return "success";
   if (protocol === "responses") return "warning";
@@ -117,10 +112,10 @@ function effortTone(effort: string): string {
   return "";
 }
 
-function statusTone(status: number): "success" | "destructive" | "warning" {
-  if (status >= 200 && status < 300) return "success";
-  if (status >= 500 || status === 0) return "destructive";
-  return "warning";
+function statusTone(status: number): "success" | "destructive" {
+  /* 4xx 与 5xx 同档：都是"这一次请求失败了"。demo 里 429 / 402 都是红色，
+     单独给 4xx 一档琥珀会让限流/额度类错误看起来只是"警告"。 */
+  return status >= 200 && status < 300 ? "success" : "destructive";
 }
 
 /** 缓存命中条：与 grok-rego 用量明细同款（命中率 ≥70% 绿 / ≥30% 黄 / 其余红） */
@@ -149,6 +144,8 @@ function CacheCell({
           <div className="usage-cache-track" aria-hidden>
             <i style={{ width: `${has ? rate : 0}%` }} />
           </div>
+          {/* 百分比直接显示（demo 的 .cache-num）：只有条的话命中率必须悬停才看得到 */}
+          <span className="usage-cache-num">{has ? `${Math.round(rate)}%` : "—"}</span>
         </div>
       </TooltipTrigger>
       <TooltipContent side="top" className="font-mono text-[11px] tabular-nums">
@@ -251,7 +248,7 @@ function ModelDetailDialog({
           </dl>
         ) : null}
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          <Button size="sm" type="button" variant="outline" onClick={() => onOpenChange(false)}>
             关闭
           </Button>
         </DialogFooter>
@@ -360,11 +357,18 @@ export function OpenCodePage() {
   const cacheRate = inputTokens > 0 ? (Math.min(cachedTokens, inputTokens) / inputTokens) * 100 : 0;
 
   return (
-    <section className="panel gw-workspace" aria-label="OpenCode 控制台">
+    <section className="gw-workspace" aria-label="OpenCode 控制台">
       {loading && !ops ? (
         <div className="gw-skeleton" aria-hidden />
       ) : (
         <>
+          <div className="gw-page-head">
+            <div>
+              <h1 className="gw-page-title">OpenCode 控制台</h1>
+              <p className="gw-page-sub">上游 opencode zen · 免费档模型代理与流量遥测</p>
+            </div>
+          </div>
+
           {/* ── KPI 条 ── */}
           <div className="mission-strip mission-strip-gw" role="group" aria-label="OpenCode KPI">
             <div className="metric">
@@ -372,7 +376,7 @@ export function OpenCodePage() {
                 <Activity className="metric-ico" strokeWidth={1.6} />
                 24h 请求
               </div>
-              <div className="metric-v is-live">{totals?.requests ?? 0}</div>
+              <div className="metric-v">{totals?.requests ?? 0}</div>
               <div className="metric-sub usage-metric-sub">
                 失败 {totals?.failed ?? 0} · 未路由 {totals?.unrouted ?? 0}
               </div>
@@ -391,7 +395,7 @@ export function OpenCodePage() {
                 {totals ? totals.success_rate.toFixed(1) : "100.0"}%
               </div>
               <div className="metric-sub usage-metric-sub">
-                <span className={cn("gw-fail-rate", failRateTone(failRate))}>
+                <span className="gw-fail-rate">
                   失败率 {failRate.toFixed(1)}%
                 </span>
               </div>
@@ -416,7 +420,14 @@ export function OpenCodePage() {
               <div
                 className={cn(
                   "metric-v",
-                  cacheRate >= 85 ? "is-ok" : cacheRate >= 60 ? "is-warn" : "is-bad",
+                  /* 无数据时不上色：0% 命中率配红色读起来像故障，实际只是没有输入 token */
+                  cacheRate <= 0
+                    ? ""
+                    : cacheRate >= 85
+                      ? "is-ok"
+                      : cacheRate >= 60
+                        ? "is-warn"
+                        : "is-bad",
                 )}
               >
                 {cacheRate.toFixed(1)}%
@@ -447,10 +458,10 @@ export function OpenCodePage() {
 
           <div className="gw-grid gw-grid-split">
             {/* ── 左:模型目录 ── */}
-            <section className="gw-panel gw-col">
+            <section className="gw-panel">
               <div className="gw-panel-head">
                 <Boxes className="size-3.5" strokeWidth={1.6} aria-hidden />
-                <h2 className="gw-panel-title">模型目录({ops?.models.length ?? 0})</h2>
+                <h2 className="gw-panel-title">模型列表({ops?.models.length ?? 0})</h2>
                 <Button
                   type="button"
                   variant="ghost"
@@ -458,8 +469,8 @@ export function OpenCodePage() {
                   className="ml-auto size-6"
                   disabled={reloading}
                   onClick={() => void reloadCatalog()}
-                  title="重新拉取 OpenCode 模型目录"
-                  aria-label="重新拉取模型目录"
+                  title="重新拉取 OpenCode 模型列表"
+                  aria-label="重新拉取模型列表"
                   aria-busy={reloading}
                 >
                   <RefreshCw
@@ -469,60 +480,75 @@ export function OpenCodePage() {
                   />
                 </Button>
               </div>
-              <div className={cn("gw-fill-scroll", !ops?.models.length && "is-empty")}>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>模型</TableHead>
-                      <TableHead>协议</TableHead>
-                      <TableHead>档位</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {ops?.models.length ? (
-                      ops.models.map((model) => (
-                        <TableRow key={model.id}>
-                          <TableCell>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setDetail(model);
-                                setDetailOpen(true);
-                              }}
-                              className="cursor-pointer text-left font-mono text-xs text-primary underline-offset-2 hover:underline"
-                              title={model.id}
-                            >
-                              {shortModelName(model.id)}
-                            </button>
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={protocolTone(model.protocol)}>
-                              {model.protocol}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={model.free ? "success" : "secondary"}>
-                              {model.free ? "免费" : "标准"}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    ) : (
-                      <TableEmptyRow colSpan={3}>
-                        <Empty
-                          icon={Boxes}
-                          title="目录为空"
-                          description="等待首次拉取上游模型目录"
-                        />
-                      </TableEmptyRow>
-                    )}
-                  </TableBody>
-                </Table>
+              <div className={cn("gw-table-card", !ops?.models.length && "is-empty")}>
+                <div className="gw-table-scroll">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>模型</TableHead>
+                        <TableHead>协议</TableHead>
+                        <TableHead>档位</TableHead>
+                        <TableHead>上下文</TableHead>
+                        <TableHead>最大输出</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {ops?.models.length ? (
+                        ops.models.map((model) => (
+                          <TableRow key={model.id}>
+                            <TableCell>
+                              {/* 上行＝对外规范名（带别名前缀，客户端要填的），
+                                  下行＝实际打到上游的裸名（上游报错里出现的那个） */}
+                              <div className="cell-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setDetail(model);
+                                    setDetailOpen(true);
+                                  }}
+                                  className="model-link"
+                                  title="点开模型详情"
+                                >
+                                  {model.id}
+                                </button>
+                                <small className="mono">{model.upstream_model}</small>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={protocolTone(model.protocol)}>
+                                {model.protocol}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={model.free ? "success" : "secondary"}>
+                                {model.free ? "免费" : "标准"}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-xs tabular-nums">
+                              {fmtLimit(model.metadata.contextWindow)}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-xs tabular-nums">
+                              {fmtLimit(model.metadata.maxOutput)}
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      ) : (
+                        <TableEmptyRow colSpan={5}>
+                          <Empty
+                            icon={Boxes}
+                            title="列表为空"
+                            description="等待首次拉取上游模型列表"
+                          />
+                        </TableEmptyRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               </div>
             </section>
 
             {/* ── 右:Token 用量堆叠面积 + 请求次数折线(时间范围可选,默认 7 天) ── */}
-            <section className="gw-panel gw-col">
+            <section className="gw-panel">
               <div className="gw-panel-head">
                 <Activity className="size-3.5" strokeWidth={1.6} aria-hidden />
                 <h2 className="gw-panel-title">Token 用量与请求次数</h2>
@@ -533,126 +559,149 @@ export function OpenCodePage() {
           </div>
 
           {/* ── 最近请求 ── */}
-          <section className="gw-panel gw-panel-grow">
+          <section className="gw-panel">
             <div className="gw-panel-head">
               <Inbox className="size-3.5" strokeWidth={1.6} aria-hidden />
               <h2 className="gw-panel-title">最近请求</h2>
             </div>
-            <div className={cn("gw-fill-scroll", !requests.length && "is-empty")}>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>时间</TableHead>
-                    <TableHead>客户端</TableHead>
-                    <TableHead>请求 IP</TableHead>
-                    <TableHead>模型</TableHead>
-                    <TableHead>协议</TableHead>
-                    <TableHead>流式</TableHead>
-                    <TableHead>思考强度</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead className="text-right">耗时</TableHead>
-                    <TableHead className="text-right">Token</TableHead>
-                    <TableHead className="usage-col-reason">原因</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {requests.length ? (
-                    requests.map((row) => (
-                      <TableRow key={row.id}>
-                        <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
-                          {row.created_at}
-                        </TableCell>
-                        <TableCell>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="usage-client-ua font-mono text-[11px]">
-                                {shortClientUa(row.client_ua)}
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent
-                              side="top"
-                              className="max-w-sm break-all font-mono text-[11px]"
-                            >
-                              {row.client_ua || "—"}
-                            </TooltipContent>
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="usage-ip font-mono text-[11px]">
-                                {row.client_ip || "—"}
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent side="top" className="font-mono text-[11px]">
-                              {row.client_ip || "—"}
-                            </TooltipContent>
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell className="max-w-40 truncate font-mono text-xs" title={row.model}>
-                          {shortModelName(row.model)}
-                        </TableCell>
-                        <TableCell>
-                          <span className="inline-flex items-center gap-1 text-xs">
-                            <Badge variant="outline">{row.client_protocol}</Badge>
-                            {row.upstream_protocol !== row.client_protocol ? (
-                              <>
-                                <ArrowRight className="size-3 text-muted-foreground" aria-hidden />
-                                <Badge variant={protocolTone(row.upstream_protocol)}>
-                                  {row.upstream_protocol}
-                                </Badge>
-                              </>
-                            ) : null}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <span
-                            className={cn(
-                              "usage-stream font-mono text-[11px]",
-                              row.is_stream ? "is-on" : "is-off",
-                            )}
+            <div className={cn("gw-table-card", !requests.length && "is-empty")}>
+              <div className="gw-table-scroll">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>时间</TableHead>
+                      <TableHead>客户端</TableHead>
+                      <TableHead>请求 IP</TableHead>
+                      <TableHead>模型</TableHead>
+                      <TableHead>协议</TableHead>
+                      <TableHead>流式</TableHead>
+                      <TableHead>思考强度</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead>耗时</TableHead>
+                      <TableHead>Token</TableHead>
+                      <TableHead>缓存</TableHead>
+                      <TableHead className="usage-col-reason">原因</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {requests.length ? (
+                      requests.map((row) => (
+                        <TableRow key={row.id}>
+                          <TableCell
+                            className="mono whitespace-nowrap text-xs text-foreground"
+                            title={row.created_at}
                           >
-                            {row.is_stream ? "stream" : "buffer"}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span
-                                className={cn(
-                                  "usage-effort font-mono text-[11px]",
-                                  effortTone(row.reasoning_effort),
-                                  !row.reasoning_effort && "text-muted-foreground",
-                                )}
-                              >
-                                {row.reasoning_effort || "—"}
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent
-                              side="top"
-                              className="font-mono text-[11px] tabular-nums"
-                            >
-                              推理 {fmtInt(row.reasoning_tokens)}
-                            </TooltipContent>
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={statusTone(row.http_status)}>{row.http_status || "—"}</Badge>
-                        </TableCell>
-                        <TableCell
-                          className="text-right font-mono text-xs"
-                          title={`${row.duration_ms}ms`}
-                        >
-                          {fmtSeconds(row.duration_ms)}
-                        </TableCell>
-                        <TableCell className="text-right font-mono text-[11px] tabular-nums whitespace-nowrap">
-                          <div className="usage-token-block">
+                            {fmtClock(row.created_at)}
+                          </TableCell>
+                          <TableCell>
                             <Tooltip>
                               <TooltipTrigger asChild>
+                                <span className="usage-client-ua text-xs font-medium">
+                                  {shortClientUa(row.client_ua)}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="top"
+                                className="max-w-sm break-all font-mono text-[11px]"
+                              >
+                                {row.client_ua || "—"}
+                              </TooltipContent>
+                            </Tooltip>
+                          </TableCell>
+                          <TableCell>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="usage-ip mono text-xs">
+                                  {row.client_ip || "—"}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="font-mono text-[11px]">
+                                {row.client_ip || "—"}
+                              </TooltipContent>
+                            </Tooltip>
+                          </TableCell>
+                          {/* 格内＝客户端填的别名（与模型列表上行同一个名字），
+                              上游裸名挪进悬停提示：路由/回退换了上游时只有提示里看得出来 */}
+                          <TableCell className="max-w-40 font-mono text-xs">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="block truncate">{row.model}</span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="font-mono text-[11px]">
+                                别名 {row.model}
+                                <span className="mt-1 block">上游 {row.upstream_model || "—"}</span>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TableCell>
+                          <TableCell>
+                            <span className="inline-flex items-center gap-1 text-xs">
+                              {/* 灰底实心（= demo 的 badge-neutral），不是白底描边：
+                                  协议是"分类标签"，与状态徽章同一套实心视觉 */}
+                              <Badge variant="secondary">{row.client_protocol}</Badge>
+                              {row.upstream_protocol !== row.client_protocol ? (
+                                <>
+                                  <ArrowRight className="size-3 text-fg-subtle" aria-hidden />
+                                  <Badge variant={protocolTone(row.upstream_protocol)}>
+                                    {row.upstream_protocol}
+                                  </Badge>
+                                </>
+                              ) : null}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <span
+                              className={cn(
+                                "usage-stream",
+                                row.is_stream ? "is-on" : "is-off",
+                              )}
+                            >
+                              <i />{row.is_stream ? "stream" : "buffer"}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span
+                                  className={cn(
+                                    "usage-effort",
+                                    effortTone(row.reasoning_effort),
+                                    !row.reasoning_effort && "text-muted-foreground",
+                                  )}
+                                >
+                                  {row.reasoning_effort || "—"}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent
+                                side="top"
+                                className="font-mono text-[11px] tabular-nums"
+                              >
+                                推理 {fmtInt(row.reasoning_tokens)}
+                              </TooltipContent>
+                            </Tooltip>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={statusTone(row.http_status)}>{row.http_status || "—"}</Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {/* 上首字、下总耗时（对齐 demo 的 .cell-2 双行格）。
+                               首字为 0 说明是失败请求或旧记录，显示「—」而不是 0.0s。
+                               is-compact：两行同为 11px，比邻列小一档且左右边缘对齐。 */}
+                            <div className="cell-2 is-compact items-end">
+                              <span className="mono" title={`首字 ${row.first_byte_ms}ms`}>
+                                首字 {row.first_byte_ms > 0 ? fmtSeconds(row.first_byte_ms, 1) : "—"}
+                              </span>
+                              <small className="mono" title={`耗时 ${row.duration_ms}ms`}>
+                                耗时 {fmtSeconds(row.duration_ms, 1)}
+                              </small>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                {/* 上输入、下输出：并排两个裸数字只看颜色认不出哪条是哪条 */}
                                 <span className="usage-token-pair">
-                                  {fmtCompact(row.input_tokens)}
-                                  <em>/</em>
-                                  {fmtCompact(row.output_tokens)}
+                                  <span className="in">输入 {fmtCompact(row.input_tokens)}</span>
+                                  <span className="out">输出 {fmtCompact(row.output_tokens)}</span>
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent
@@ -666,42 +715,50 @@ export function OpenCodePage() {
                                 </span>
                               </TooltipContent>
                             </Tooltip>
+                          </TableCell>
+                          {/* 缓存独立成列（对齐 demo）：命中率要能独立扫视比较，
+                              塞在 Token 格内只能靠悬停才发现 */}
+                          <TableCell>
                             <CacheCell
                               cacheTokens={row.cached_tokens}
                               promptTokens={row.input_tokens}
                             />
-                          </div>
-                        </TableCell>
-                        {/* 原因：只有非 200 才显示上游原始报错，成功请求留空 */}
-                        <TableCell className="usage-col-reason">
-                          {row.http_status !== 200 && row.error_message ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="usage-reason text-[12px] text-destructive">
+                          </TableCell>
+                          {/* 原因：只有非 200 才显示上游原始报错；成功请求显示占位「—」，
+                            与 demo 一致（留空会让整列看起来缺内容） */}
+                          <TableCell className="usage-col-reason">
+                            {row.http_status !== 200 && row.error_message ? (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="usage-reason">
+                                    {row.error_message}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent
+                                  side="top"
+                                  className="max-w-sm break-all font-mono text-[11px]"
+                                >
                                   {row.error_message}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                className="max-w-sm break-all font-mono text-[11px]"
-                              >
-                                {row.error_message}
-                              </TooltipContent>
-                            </Tooltip>
-                          ) : null}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  ) : (
-                    <TableEmptyRow colSpan={11}>
-                      <Empty
-                        icon={Inbox}
-                        description="暂无数据"
-                      />
-                    </TableEmptyRow>
-                  )}
-                </TableBody>
-              </Table>
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : (
+                              <span className="text-fg-subtle">—</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                        <TableEmptyRow colSpan={12}>
+
+                        <Empty
+                          icon={Inbox}
+                          description="暂无数据"
+                        />
+                      </TableEmptyRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
 
             <div className="gw-panel-foot">

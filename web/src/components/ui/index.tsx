@@ -26,24 +26,26 @@ import { cn } from "@/lib/utils";
 // ---------- Button ----------
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-[13px] font-semibold tracking-tight disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-3.5 shrink-0 outline-none focus-visible:ring-1 focus-visible:ring-ring/50 transition-[color,background-color,border-color,opacity,transform,filter] duration-150 ease-out active:scale-[0.98]",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[10px] text-[13.5px] font-medium disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-3.5 shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-ring transition-[color,background-color,border-color,opacity,transform,box-shadow] duration-150 ease-out",
   {
     variants: {
       variant: {
+        /* landing 的签名微交互：悬停放大 2%。只给独立按钮（primary/outline），
+           行内图标按钮不加——密集行里缩放会抖 */
         default:
-          "bg-primary text-primary-foreground hover:brightness-105",
+          "bg-primary text-primary-foreground hover:brightness-105 hover:scale-[1.02] disabled:bg-muted disabled:text-muted-foreground",
         destructive:
-          "bg-destructive/15 text-destructive border border-destructive/35 hover:bg-destructive/25",
+          "bg-destructive/12 text-destructive border border-destructive/30 hover:bg-destructive/20",
         outline:
-          "border border-border bg-secondary/60 text-foreground hover:border-foreground/20 hover:bg-secondary",
+          "border border-border bg-card text-foreground hover:border-[var(--border-strong)] hover:scale-[1.02]",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/85",
-        ghost: "text-muted-foreground hover:bg-secondary hover:text-foreground font-medium",
+        ghost: "text-muted-foreground hover:bg-muted hover:text-foreground",
       },
       size: {
-        default: "h-8 px-3.5",
-        sm: "h-[30px] rounded-md px-2.5 text-xs font-medium",
-        icon: "size-8",
+        default: "h-9 px-3.5",
+        sm: "h-[30px] rounded-lg px-2.5 text-[12.5px]",
+        icon: "size-[30px] rounded-lg",
       },
     },
     defaultVariants: {
@@ -77,9 +79,10 @@ function Button({
 
 const badgeVariants = cva(
   [
-    "group/badge inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1",
+    /* gap 5px 对齐 demo（原本 gap-1=4px）：徽章里有点标时这 1px 看得出来 */
+    "group/badge inline-flex h-[21px] w-fit shrink-0 items-center justify-center gap-[5px]",
     "overflow-hidden rounded-full border border-transparent px-2 py-0.5",
-    "text-xs font-medium whitespace-nowrap",
+    "text-[11.5px] font-medium whitespace-nowrap",
     "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
     "has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5",
     "aria-invalid:border-destructive aria-invalid:ring-destructive/20",
@@ -89,21 +92,26 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default:
-          "bg-primary text-primary-foreground [a]:hover:bg-primary/80",
-        secondary:
-          "bg-secondary text-secondary-foreground [a]:hover:bg-secondary/80",
+        /* 语义徽章一律走 tokens.css 里成对的 bg/border/text 三件套，
+           而不是把文字色按 alpha 混出底色——深色文字混出来的底必然发灰：
+           warning 的 #b45309@10% ≈ 米灰 #f8eee6，而 demo 是浅黄 #fffbeb，
+           success 是灰绿 #e6f1ee vs #ecfdf5。同一套值早已在 tokens.css 里
+           （为 toast 定的），深浅两套主题都跟着走。
+           另：[a]:hover 系列规则已删——全项目没有任何 Badge 在 <a> 里，是死代码。 */
+        default: "bg-primary text-primary-foreground",
+        secondary: "bg-muted text-muted-foreground border-border",
         destructive:
-          "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
-        outline:
-          "border-border text-foreground [a]:hover:bg-muted [a]:hover:text-muted-foreground",
+          "bg-[var(--error-bg)] text-[var(--error-text)] border-[var(--error-border)] focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40",
+        outline: "border-border text-foreground",
         /** 业务扩展：健康 / 成功 */
-        success: "bg-ok/10 text-ok [a]:hover:bg-ok/15 dark:bg-ok/15",
+        success:
+          "bg-[var(--success-bg)] text-[var(--success-text)] border-[var(--success-border)]",
         /** 业务扩展：警告 / 待处理 */
-        warning: "bg-warn/10 text-warn [a]:hover:bg-warn/15 dark:bg-warn/15",
+        warning:
+          "bg-[var(--warning-bg)] text-[var(--warning-text)] border-[var(--warning-border)]",
         /** 业务扩展：与 destructive 同语义（兼容旧调用） */
         danger:
-          "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
+          "bg-[var(--error-bg)] text-[var(--error-text)] border-[var(--error-border)] focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40",
       },
     },
     defaultVariants: {
@@ -874,7 +882,7 @@ function Table({
   const table = (
     <table
       data-slot="table"
-      className={cn("w-full caption-bottom text-sm", className)}
+      className={cn("w-full caption-bottom text-[13px]", className)}
       {...props}
     />
   );
@@ -914,8 +922,10 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
     <tr
       data-slot="table-row"
       className={cn(
-        "border-b border-border/70 transition-colors duration-150",
-        /* 选中/悬停底色由 pool-table 单元格实色接管，避免 tr 半透明透底 */
+        "border-b transition-colors duration-150",
+        /* 行分隔线的颜色由 base.css 的 [data-slot="table-row"] 规则统一给（--hairline）；
+           不写在这里是因为 border-b-[var(--x)] 在 Tailwind 里宽度/颜色有歧义，
+           而内联 style 会挡住调用方的 className 覆盖 */
         className,
       )}
       {...props}
@@ -928,7 +938,9 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        "text-muted-foreground h-9 px-3 text-left align-middle text-xs font-semibold tracking-[0.08em] uppercase whitespace-nowrap",
+        /* 不做 uppercase：本项目列头中英混排（「7d 请求」「24h tokens」），
+           强制大写会渲染成「7D 请求」这种半截大写的怪样子 */
+        "text-fg-subtle h-9 bg-[var(--table-header)] px-3.5 text-left align-middle text-[11.5px] font-semibold whitespace-nowrap",
         "[&:has([role=checkbox])]:w-10 [&:has([role=checkbox])]:pr-0 [&:has([role=checkbox])]:pl-3",
         className,
       )}
@@ -942,7 +954,8 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
     <td
       data-slot="table-cell"
       className={cn(
-        "px-3 py-0 align-middle h-10",
+        /* py 11px 对齐 demo 的 td padding；不用固定 h-10，双行单元格要自适应 */
+        "px-3.5 py-[11px] align-middle",
         "[&:has([role=checkbox])]:w-10 [&:has([role=checkbox])]:pr-0 [&:has([role=checkbox])]:pl-3",
         className,
       )}

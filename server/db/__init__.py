@@ -58,6 +58,7 @@ class RequestRecord:
     client_ip: str = ""            # 发起端 IP（优先 X-Forwarded-For/X-Real-IP）
     client_ua: str = ""            # 客户端 User-Agent 原文
     # 结果
+    first_byte_ms: int = 0         # 首字耗时（上游首个非空字节，0 = 未采到/失败请求）
     duration_ms: int = 0
     error_message: str | None = None
     http_status: int = 0           # 上游 HTTP 状态码（0 = 未到达上游）

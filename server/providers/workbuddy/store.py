@@ -54,11 +54,25 @@ CREATE TABLE IF NOT EXISTS accounts (
     idle_boost           REAL NOT NULL DEFAULT 0,
     -- 运行态备忘（统计由 requests 表按 account_uid 汇总，见 docs §7.2）
     last_error           TEXT NOT NULL DEFAULT '',
+    -- 签到台账（last_checkin_day = 北京日期 YYYY-MM-DD，见 checkin.py）
+    last_checkin_day     TEXT NOT NULL DEFAULT '',
+    checkin_streak       INTEGER NOT NULL DEFAULT 0,
+    checkin_total_credits REAL,
+    checkin_updated_ms   INTEGER NOT NULL DEFAULT 0,
     -- 时间
     created_ms           INTEGER NOT NULL,
     updated_ms           INTEGER NOT NULL
 );
 """
+
+# 后加列的补列清单（CREATE TABLE IF NOT EXISTS 不会给已存在的表加列）。
+# 每项与 _DDL 中的定义保持一致；按 PRAGMA table_info 去重，可反复执行。
+_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("last_checkin_day", "TEXT NOT NULL DEFAULT ''"),
+    ("checkin_streak", "INTEGER NOT NULL DEFAULT 0"),
+    ("checkin_total_credits", "REAL"),
+    ("checkin_updated_ms", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 # 账号级生命周期状态（与冷却/熔断正交）：active 可派号；paused 人工暂停；
 # disabled 终态（session 失效/refresh 耗尽），需人工 revive。
@@ -97,6 +111,10 @@ class Account:
     used_seq: int = 0
     idle_boost: float = 0.0
     last_error: str = ""
+    last_checkin_day: str = ""
+    checkin_streak: int = 0
+    checkin_total_credits: float | None = None
+    checkin_updated_ms: int = 0
     created_ms: int = 0
     updated_ms: int = 0
 
@@ -112,6 +130,10 @@ class Account:
     def model_cooldown_active(self, model: str, now_ms: int) -> bool:
         entry = self.model_cooldowns.get(model)
         return bool(entry) and int(entry.get("until_ms") or 0) > now_ms
+
+    def checked_in_on(self, day: str) -> bool:
+        """本地签到台账是否已记录该北京日期（day 由 checkin.beijing_today 给出）。"""
+        return bool(day) and self.last_checkin_day == day
 
     def public_dict(self) -> dict[str, Any]:
         """面板可见视图：凭证脱敏（长度提示代替原文）。"""
@@ -137,6 +159,10 @@ class Account:
             "used_seq": self.used_seq,
             "idle_boost": self.idle_boost,
             "last_error": self.last_error,
+            "last_checkin_day": self.last_checkin_day,
+            "checkin_streak": self.checkin_streak,
+            "checkin_total_credits": self.checkin_total_credits,
+            "checkin_updated_ms": self.checkin_updated_ms,
             "created_ms": self.created_ms,
             "updated_ms": self.updated_ms,
         }
@@ -148,6 +174,7 @@ _ACCOUNT_COLUMNS = (
     "cooldown_until_ms", "cooldown_kind", "breaker_count", "breaker_until_ms",
     "model_cooldowns", "consecutive_failures", "credits_total", "credits_remain",
     "credits_updated_ms", "used_seq", "idle_boost", "last_error",
+    "last_checkin_day", "checkin_streak", "checkin_total_credits", "checkin_updated_ms",
     "created_ms", "updated_ms",
 )
 
@@ -183,6 +210,10 @@ def _row_to_account(row: sqlite3.Row) -> Account:
         used_seq=int(data.get("used_seq") or 0),
         idle_boost=float(data.get("idle_boost") or 0.0),
         last_error=data.get("last_error") or "",
+        last_checkin_day=data.get("last_checkin_day") or "",
+        checkin_streak=int(data.get("checkin_streak") or 0),
+        checkin_total_credits=data.get("checkin_total_credits"),
+        checkin_updated_ms=int(data.get("checkin_updated_ms") or 0),
         created_ms=int(data.get("created_ms") or 0),
         updated_ms=int(data.get("updated_ms") or 0),
     )
@@ -202,7 +233,17 @@ class WorkBuddyStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         with self._lock:
             self._conn.executescript(_DDL)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """给老库补 _ADDED_COLUMNS（调用方持锁）。"""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(accounts)")}
+        for name, decl in _ADDED_COLUMNS:
+            if name in existing:
+                continue
+            self._conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {decl}")
+            logger.info(f"[workbuddy] accounts 补列: {name}")
 
     def close(self) -> None:
         try:
@@ -245,7 +286,9 @@ class WorkBuddyStore:
             account.breaker_until_ms, json.dumps(account.model_cooldowns, ensure_ascii=False),
             account.consecutive_failures, account.credits_total, account.credits_remain,
             account.credits_updated_ms, account.used_seq, account.idle_boost,
-            account.last_error, account.created_ms, account.updated_ms,
+            account.last_error, account.last_checkin_day, account.checkin_streak,
+            account.checkin_total_credits, account.checkin_updated_ms,
+            account.created_ms, account.updated_ms,
         )
         with self._lock:
             self._conn.execute(
@@ -281,7 +324,7 @@ class WorkBuddyStore:
             self._conn.commit()
 
     def update_runtime(self, uid: str, **fields: Any) -> None:
-        """运行态字段增量更新（冷却/熔断/权重/used_seq/last_error）。
+        """运行态字段增量更新（冷却/熔断/权重/used_seq/签到台账/last_error）。
 
         model_cooldowns 传 dict 自动序列化；白名单外字段直接忽略（防注入面）。
         """
@@ -289,6 +332,8 @@ class WorkBuddyStore:
             "cooldown_until_ms", "cooldown_kind", "breaker_count", "breaker_until_ms",
             "model_cooldowns", "consecutive_failures", "credits_total", "credits_remain",
             "credits_updated_ms", "used_seq", "idle_boost", "last_error",
+            "last_checkin_day", "checkin_streak", "checkin_total_credits",
+            "checkin_updated_ms",
             "status", "status_reason",
         }
         sets: list[str] = []

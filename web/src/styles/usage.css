@@ -231,6 +231,11 @@
   gap: 10px 14px;
 }
 
+/* ── 请求明细单元格 ──────────────────────────────
+   一律对齐 demo 的形态：纯文字 / 色点 / 色条，不做带边框的胶囊。
+   旧实现把「流式」「思考强度」都做成了描边胶囊，在 12 列的密集行里
+   和真正的状态徽章抢视觉重量，一行里全是框，读起来没有主次。 */
+
 .usage-client-ua,
 .usage-ip {
   display: inline-block;
@@ -245,63 +250,67 @@
   color: var(--foreground);
 }
 
+/* 流式：色点 + 文字（demo 的 .stream） */
 .usage-stream {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.usage-stream > i {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 .usage-stream.is-on {
-  color: var(--signal);
-  border-color: color-mix(in srgb, var(--signal) 35%, var(--border));
-  background: color-mix(in srgb, var(--signal) 10%, transparent);
+  color: var(--ok);
 }
 .usage-stream.is-off {
-  color: var(--muted-foreground);
-  background: color-mix(in srgb, var(--elevated) 80%, transparent);
+  color: var(--fg-subtle);
+}
+.usage-stream.is-on > i {
+  background: var(--meter-high);
+}
+.usage-stream.is-off > i {
+  background: var(--border-strong);
 }
 
+/* 思考强度：纯文字色阶（demo 的 .effort） */
 .usage-effort {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--elevated) 80%, transparent);
-  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 500;
   text-transform: lowercase;
 }
-.usage-effort.is-low {
-  color: var(--muted-foreground);
-}
-.usage-effort.is-medium {
-  color: var(--signal);
-  border-color: color-mix(in srgb, var(--signal) 35%, var(--border));
-  background: color-mix(in srgb, var(--signal) 8%, transparent);
+.usage-effort.is-max {
+  color: var(--destructive);
 }
 .usage-effort.is-high {
-  color: var(--signal);
-  border-color: color-mix(in srgb, var(--signal) 50%, var(--border));
-  background: color-mix(in srgb, var(--signal) 13%, transparent);
+  color: var(--warn);
 }
-.usage-effort.is-max {
-  color: var(--primary);
-  border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
-  background: color-mix(in srgb, var(--primary) 10%, transparent);
+.usage-effort.is-medium {
+  color: var(--muted-foreground);
+}
+.usage-effort.is-low {
+  color: var(--fg-subtle);
 }
 
-.usage-col-reason {
-  width: 240px;
-  min-width: 240px;
-  max-width: 240px;
-}
+/* 原因列刻意不设宽度：原先固定 240px，而整页清一色 200（原因全是「—」）时
+   这一列每行都空出两百多像素，表格右侧看着像缺了一块。现在不预占宽度，
+   列宽交给自动布局——错误文本由 .usage-reason 的 26ch 封顶，多余的宽度按
+   各列的内容宽度分配，这一列窄、拿到的份额也小（demo 同款：.reason 只给
+   max-width，从不给列宽）。 */
 .usage-reason {
   display: block;
-  max-width: 100%;
+  max-width: 26ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: default;
+  font-size: 12px;
+  color: var(--destructive);
 }
 .usage-http-status {
   font-variant-numeric: tabular-nums;
@@ -333,44 +342,42 @@
   background: var(--secondary);
 }
 
+/* Token 对：入/出 双行（上输入 下输出）。旧版只并排两个数字、靠颜色区分，
+   哪条是入哪条是出得先记住配色；标签落到脸上才不用记。
+   两行同号——字号不一致时右对齐的两行左边缘会参差不齐。 */
 .usage-token-pair {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
   cursor: default;
   font-variant-numeric: tabular-nums;
 }
-.usage-token-pair em {
-  font-style: normal;
-  color: var(--muted-foreground);
-  opacity: 0.65;
-  margin: 0 1px;
+.usage-token-pair .in {
+  color: var(--primary);
 }
-.usage-token-block {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 5px;
-}
-.usage-token-block .usage-cache-cell {
-  justify-content: flex-end;
+.usage-token-pair .out {
+  color: var(--ok);
 }
 
+/* 缓存命中：色条 + 百分比（demo 的 .cache）。
+   旧实现只有条、没有数字——命中率必须悬停才看得到，等于白给。 */
 .usage-cache-cell {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-width: 76px;
   cursor: default;
   vertical-align: middle;
 }
 .usage-cache-track {
-  flex: 1 1 40px;
-  min-width: 36px;
-  max-width: 52px;
-  height: 3px;
+  flex: none;
+  width: 46px;
+  height: 4px;
   border-radius: 999px;
-  background: var(--elevated);
+  background: var(--muted);
   overflow: hidden;
 }
 .usage-cache-track > i {
@@ -381,20 +388,21 @@
   transition: width var(--ap-dur) var(--ap-ease-out);
 }
 .usage-cache-cell.is-high .usage-cache-track > i {
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--ok) 70%, var(--primary)),
-    var(--ok)
-  );
+  background: var(--meter-high);
 }
 .usage-cache-cell.is-mid .usage-cache-track > i {
-  background: var(--warn);
+  background: var(--meter-mid);
 }
 .usage-cache-cell.is-low .usage-cache-track > i {
-  background: color-mix(in srgb, var(--destructive) 75%, var(--warn));
+  background: var(--meter-low);
 }
 .usage-cache-cell.is-miss .usage-cache-track > i {
   width: 0 !important;
+}
+.usage-cache-num {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted-foreground);
 }
 
 .usage-empty {
@@ -462,7 +470,7 @@
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--popover) 96%, transparent);
   backdrop-filter: blur(8px);
-  box-shadow: 0 8px 24px color-mix(in srgb, #000 28%, transparent);
+  box-shadow: var(--shadow-pop);
   pointer-events: none;
 }
 
@@ -688,78 +696,4 @@
   .usage-skel {
     animation: none;
   }
-}
-
-/* ── 请求明细：客户端 / IP / Token 对 + 缓存命中条（与 grok-rego 同款） ── */
-
-.usage-client-ua,
-.usage-ip {
-  display: inline-block;
-  white-space: nowrap;
-  color: var(--foreground);
-  cursor: default;
-}
-
-.usage-token-pair {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 3px;
-  cursor: default;
-  font-variant-numeric: tabular-nums;
-}
-.usage-token-pair em {
-  font-style: normal;
-  color: var(--muted-foreground);
-  opacity: 0.65;
-  margin: 0 1px;
-}
-.usage-token-block {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 5px;
-}
-.usage-token-block .usage-cache-cell {
-  justify-content: flex-end;
-}
-
-.usage-cache-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 76px;
-  cursor: default;
-  vertical-align: middle;
-}
-.usage-cache-track {
-  flex: 1 1 40px;
-  min-width: 36px;
-  max-width: 52px;
-  height: 3px;
-  border-radius: 999px;
-  background: var(--elevated);
-  overflow: hidden;
-}
-.usage-cache-track > i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--muted-foreground);
-  transition: width var(--ap-dur-fast, 140ms) ease;
-}
-.usage-cache-cell.is-high .usage-cache-track > i {
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--ok) 70%, var(--primary)),
-    var(--ok)
-  );
-}
-.usage-cache-cell.is-mid .usage-cache-track > i {
-  background: var(--warn);
-}
-.usage-cache-cell.is-low .usage-cache-track > i {
-  background: color-mix(in srgb, var(--destructive) 75%, var(--warn));
-}
-.usage-cache-cell.is-miss .usage-cache-track > i {
-  width: 0 !important;
 }

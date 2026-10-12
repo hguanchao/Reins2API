@@ -7,7 +7,7 @@
 - **流转码**:同协议 SSE 透传;跨协议 parser → BridgeStreamEvent → emitter 转码;客户端要 JSON 而上游被强制流式时自动折叠
 - **免费档自动塑形**:上游对免费档强制"流式 + agent 工具集",网关补齐后把强制流折叠回客户端要的形态,客户端完全无感
 - **分库遥测**:每个上游一个 SQLite 文件(`server/data/opencode.db`、`server/data/workbuddy.db`),用量与请求日志同源
-- **WorkBuddy 号池**:多账号加权选号、冷却/熔断、会话粘性、token 自动刷新、OAuth 设备码登录、DSML 工具调用标记还原(见 `docs/workbuddy-provider-design.md`)
+- **WorkBuddy 号池**:多账号加权选号、冷却/熔断、会话粘性、token 自动刷新、每日签到、OAuth 设备码登录、DSML 工具调用标记还原(见 `docs/workbuddy-provider-design.md`)
 - **管理台**:OpenCode 状态页、WorkBuddy 号池页、系统配置页
 - **插件轴**:`providers/` 按上游分包,后期加新上游 = 一个包 + 一行注册
 
@@ -57,15 +57,17 @@ curl http://127.0.0.1:8787/v1/messages \
 | `GET /api/{provider}/requests` | 遥测明细分页 |
 | `GET /api/{provider}/usage` | 用量聚合(`1h/24h/7d/30d`,含 by_account) |
 | `GET/POST/DELETE /api/workbuddy/accounts[/{uid}]` | 账号列表 / 手动导入 / 删除 |
-| `POST /api/workbuddy/accounts/{uid}/action` | pause / resume / disable / revive / refresh / credits |
+| `POST /api/workbuddy/accounts/{uid}/action` | pause / resume / disable / revive / refresh |
+| `POST /api/workbuddy/accounts/{uid}/checkin` | 立即签到(force 绕过本地台账,上游幂等兜底) |
+| `POST /api/workbuddy/checkin/run-all` | 一键全签(串行 + 账号间错峰;跳过 global/企业号) |
 | `POST /api/workbuddy/login/start`、`GET .../login/poll` | OAuth 设备码登录(浏览器授权 → 自动入池) |
 
-Web 管理台:构建前端后访问 `http://127.0.0.1:8787/`(SPA)。开发态 `cd web && npm run dev`(5274,代理到后端)。
+Web 管理台:构建前端后访问 `http://127.0.0.1:8787/`(SPA;根路径会 replace 重定向到 `/opencode`,三页各有独立地址 `/opencode`、`/workbuddy`、`/settings`,可直接进、可刷新——服务端对非 API 路径回退 index.html)。开发态 `cd web && npm run dev`(5274,代理到后端)。
 
 ## 凭证与安全
 
 - **OpenCode**:凭证体系固定为**单一 `public` 匿名凭证**:只服务免费档模型(路由层拦截非免费模型,上游对它们一律回 "Missing API key")。
-- **WorkBuddy**:多账号号池,凭证存 `server/data/workbuddy.db` 的 accounts 表(明文,与 wb2api 同款取舍);通过管理台「添加账号」走 OAuth 设备码登录,或手动粘贴 token;token 过期前 10 分钟自动刷新。参数(冷却/熔断/超时等)写死在 `server/core/settings.py` 的 `WB_*` 常量。
+- **WorkBuddy**:多账号号池,凭证存 `server/data/workbuddy.db` 的 accounts 表(明文,与 wb2api 同款取舍);通过管理台「添加账号」走 OAuth 设备码登录,或手动粘贴 token;token 过期前 10 分钟自动刷新。**每日签到**按北京时间 `WB_CHECKIN_HOURS`(默认 9/21 点)各跑一轮,每轮账号间错峰;上游只对 CN 个人号开放,global 域与企业号在发请求前跳过;领取结果落 accounts 表(本地台账),接口本身幂等,重复调用只会返回"已签"。参数(冷却/熔断/超时/签到等)写死在 `server/core/settings.py` 的 `WB_*` 常量。
 - **管理 API 与推理端点都无鉴权**,安全姿态是默认只监听 `127.0.0.1`。对外暴露前请自己加反代鉴权(WorkBuddy 号池有真实凭证,务必先加)。
 - 运行时可持久化配置只有代理三档(`server/config.json`);其余值写死在 `server/core/settings.py` 与各 provider。
 
@@ -88,7 +90,7 @@ server/
 │   ├── inference.py     编排:前缀路由→转换→塑形→上游→回译→遥测
 │   └── base.py          Provider 接口 + registry(插件轴,前缀路由)
 ├── providers/opencode/  OpenCode Zen 接入:routing/discovery/upstream/identity
-├── providers/workbuddy/ WorkBuddy 号池接入:pool/store/classify/shape/dsml/streamwrap/upstream/login
+├── providers/workbuddy/ WorkBuddy 号池接入:pool/store/classify/shape/dsml/streamwrap/upstream/login/checkin
 ├── net/proxy.py         direct/system(环境变量→WinINET 注册表)/manual
 └── db/                  分库遥测:每 provider 一个 SQLite(requests 表 + 用量聚合;workbuddy 另有 accounts 表)
 web/                     React 管理台(OpenCodePage / WorkBuddyPage / SettingsPage),构建产物落 web/dist/
@@ -100,5 +102,6 @@ web/                     React 管理台(OpenCodePage / WorkBuddyPage / Settings
 
 - 会话亲和:首条 user 消息哈希成规范 `ses_` 形态,跨轮次稳定,保住上游 prompt cache。
 - 遥测只进不出(无保留期清理),涨大后需再加 janitor。
+- 首字耗时:遥测记 `requests.first_byte_ms`(上游首个非空字节)。workbuddy 打上游恒流式,该列恒有值;opencode 的 curl 流模式跟随客户端意图——客户端要**非流式**时整包被 curl 缓冲,网关看不到"第一个字节",该列为 0(界面显示「—」)。不拿"整包到齐"冒充首字:那等于总耗时,是条错数据。
 - 日志/时间戳强制北京时间(与 SQLite 字符串比较一致)。
 - 错误透传:上游 4xx(如限流 429、凭证 401)原样带回,客户端需能区分上游与本地错误(看 `error.type`)。

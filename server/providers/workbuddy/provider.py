@@ -27,6 +27,7 @@ from core.settings import (
     WB_BREAKER_BASE_S,
     WB_BREAKER_MAX_S,
     WB_BREAKER_THRESHOLD,
+    WB_CHECKIN_STAGGER_MS,
     WB_COOLDOWN_404,
     WB_COOLDOWN_SOFT_BASE,
     WB_COOLDOWN_SOFT_MAX,
@@ -44,7 +45,7 @@ from gateway.base import (
     UpstreamUnavailable,
 )
 from providers.opencode.identity import derive_request_ids  # 通用会话派生（复用）
-from providers.workbuddy import classify, dsml, shape
+from providers.workbuddy import checkin, classify, dsml, shape
 from providers.workbuddy import upstream as wb_upstream
 from providers.workbuddy.pool import Pool
 from providers.workbuddy.store import (
@@ -512,6 +513,102 @@ class WorkBuddyProvider:
             uid, credits_remain=remain, credits_total=total,
             credits_updated_ms=int(time.time() * 1000),
         )
+
+    # ── 签到（billing 域每日一次；接口契约与跳过规则见 checkin.py）──
+
+    def checkin(self, uid: str, *, force: bool = False) -> dict[str, Any]:
+        """单账号签到。幂等，自动调度与「立即签到」共用。
+
+        本地台账命中今天即短路，不发任何请求——一天多个触发档靠它压成零成本。
+        force 供人工按钮使用，绕过短路交给上游幂等兜底：台账与上游不一致时
+        （换机导入、客户端自己领过）以调用上游为准。
+        """
+        account = self._store.get_account(uid)
+        if account is None:
+            raise KeyError(f"账号不存在: {uid}")
+        today = checkin.beijing_today()
+        if not force and account.checked_in_on(today):
+            return {
+                "uid": uid, "local": True, "state": checkin.STATE_ALREADY,
+                "message": f"{today} 已签到（本地台账）",
+                "credit": None, "streak_days": account.checkin_streak,
+                "total_credits": account.checkin_total_credits,
+                "is_streak_day": False, "http_status": 0,
+            }
+        # 签到是一条独立路径，不能指望聊天流量顺带续命：到期前先刷新 token
+        self._maybe_refresh(account)
+        try:
+            outcome = checkin.run_checkin(account)
+        except checkin.CheckinError as exc:
+            logger.warning(f"[workbuddy] uid={uid[:8]} 签到失败: {exc}")
+            return {
+                "uid": uid, "local": False, "state": checkin.STATE_ERROR,
+                "message": str(exc), "credit": None,
+                "streak_days": account.checkin_streak,
+                "total_credits": account.checkin_total_credits,
+                "is_streak_day": False, "http_status": 0,
+            }
+        # 只有真的对上过上游才落台账：跳过/未开启不写，免得把"没签"记成"已签"
+        if outcome.state in (checkin.STATE_CLAIMED, checkin.STATE_ALREADY):
+            fields: dict[str, Any] = {
+                "last_checkin_day": today,
+                "checkin_updated_ms": int(time.time() * 1000),
+            }
+            if outcome.streak_days is not None:
+                fields["checkin_streak"] = outcome.streak_days
+            if outcome.total_credits is not None:
+                fields["checkin_total_credits"] = outcome.total_credits
+            self._store.update_runtime(uid, **fields)
+        if outcome.state == checkin.STATE_CLAIMED:
+            logger.info(f"[workbuddy] uid={uid[:8]} {outcome.message}")
+            # 签到直接改余额：拉一次让面板与选号权重立刻跟上（失败只记日志）
+            self._refresh_credits_async(uid)
+        return {"uid": uid, "local": False, **outcome.to_dict()}
+
+    def checkin_all(self, *, force: bool = False) -> dict[str, Any]:
+        """全池签到：只动 active 号，账号间错峰，串行执行。
+
+        串行而非并发：签到是低频后台动作，"不像机器"比吞吐重要——并发打上游
+        既是风控特征，也会和聊天流量抢连接与代理。暂停/禁用的号是人工决定，
+        不代签。
+        """
+        accounts = [a for a in self._store.list_accounts() if a.status == STATUS_ACTIVE]
+        items: list[dict[str, Any]] = []
+        tally = dict.fromkeys(
+            (checkin.STATE_CLAIMED, checkin.STATE_ALREADY, checkin.STATE_SKIPPED,
+             checkin.STATE_INACTIVE, checkin.STATE_ERROR),
+            0,
+        )
+        for index, account in enumerate(accounts):
+            if index:
+                time.sleep(WB_CHECKIN_STAGGER_MS / 1000.0)
+            try:
+                result = self.checkin(account.uid, force=force)
+            except Exception as exc:  # 单号异常不中断整轮
+                logger.warning(
+                    f"[workbuddy] uid={account.uid[:8]} 签到异常: {type(exc).__name__}: {exc}"
+                )
+                result = {"uid": account.uid, "state": checkin.STATE_ERROR,
+                          "message": f"{type(exc).__name__}: {exc}"}
+            state = result.get("state") or checkin.STATE_ERROR
+            tally[state] = tally.get(state, 0) + 1
+            items.append(result)
+        return {
+            "total": len(accounts),
+            "claimed": tally[checkin.STATE_CLAIMED],
+            "already": tally[checkin.STATE_ALREADY],
+            "skipped": tally[checkin.STATE_SKIPPED],
+            "inactive": tally[checkin.STATE_INACTIVE],
+            "failed": tally[checkin.STATE_ERROR],
+            "credits": sum(float(item.get("credit") or 0) for item in items),
+            "summary": (
+                f"共 {len(accounts)} 号：领取 {tally[checkin.STATE_CLAIMED]}，"
+                f"已签 {tally[checkin.STATE_ALREADY]}，"
+                f"不适用 {tally[checkin.STATE_SKIPPED] + tally[checkin.STATE_INACTIVE]}，"
+                f"失败 {tally[checkin.STATE_ERROR]}"
+            ),
+            "items": items,
+        }
 
     # ── 罚号与记账 ──
 

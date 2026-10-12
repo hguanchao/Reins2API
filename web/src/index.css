@@ -1,10 +1,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* 本地字体：不依赖 Google Fonts */
-@import "@fontsource/space-grotesk/400.css";
-@import "@fontsource/space-grotesk/500.css";
-@import "@fontsource/space-grotesk/600.css";
+/* 本地字体：不依赖 Google Fonts。
+   正文字体换成 Geist（landing 的语言）；等宽仍用 JetBrains Mono，
+   只服务标识符（uid / token / 模型 id / IP / UA），比例字体下这些字符对不齐。 */
+@import "@fontsource-variable/geist";
 @import "@fontsource/jetbrains-mono/400.css";
 @import "@fontsource/jetbrains-mono/500.css";
 

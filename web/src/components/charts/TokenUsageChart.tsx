@@ -18,12 +18,15 @@ import {
   type UsageSummary,
 } from "@/lib/api";
 import { Empty, ToggleGroup, ToggleGroupItem } from "@/components/ui";
-import { fmtCompact, fmtInt, shortModelName } from "@/lib/utils";
+import { fmtCompact, fmtInt } from "@/lib/utils";
 
-/** 面积/线配色(固定 hex,明暗主题下都可读) */
-const C_INPUT = "#6366f1"; // 面积:输入 token
-const C_OUTPUT = "#10b981"; // 面积:输出 token(堆叠在输入之上)
-const C_REQ = "#f59e0b"; // 折线:请求次数(右轴)
+/** 面积/线配色走 CSS 变量（见 tokens.css 的 --chart-*），深浅主题各自一套。
+    两个坑：① 这些值只能经 inline style 落到 SVG 上——fill/stroke 作为「表现属性」
+    不参与 var() 替换，写 fill="var(--x)" 会渲染成空；② 输出序列不能用绿，
+    它与主色 #0d9f6e 色相只差约 3°，两条堆叠面积会糊成一条。 */
+const C_INPUT = "var(--chart-in)"; // 面积:输入 token（= 主色绿）
+const C_OUTPUT = "var(--chart-out)"; // 面积:输出 token（蓝，堆叠在输入之上）
+const C_REQ = "var(--chart-req)"; // 折线:请求次数(右轴)
 
 const W = 640;
 const H = 240;
@@ -196,16 +199,17 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
       .filter((p) => p.requests > 0)
       .map((p) => ({ cx: p.x, cy: yReq(p.requests), requests: p.requests, label: p.label }));
 
-    // 刻度按档位定数(两端必含,位置 round(i*(n-1)/(count-1)) 均匀分布):
-    //   今日(24 桶)→12 个;14天→7 个;30天→14 个;其余(兼容档)默认 12 个。
-    //   7天(8 桶)不均分——桶数少放得下,逐桶全标。
+    // 刻度两端必含，位置 round(i*(n-1)/(count-1)) 均匀分布：
+    //   7天档只有 8 个桶，放得下就逐桶全标（不变）。
+    //   今日(24 桶)/14天(14)/30天(30) 原来每 2 桶就一个刻度，连成一条密集刻度带；
+    //   改成"至少隔 3 桶、最多 8 个"，刻度带打散后间距与 7天档同量级。
     let tickIdx: number[];
     if (n === 1) {
       tickIdx = [0];
     } else if (n <= 8) {
       tickIdx = Array.from({ length: n }, (_, i) => i);
     } else {
-      const count = Math.min(n === 30 ? 14 : n === 14 ? 7 : 12, n);
+      const count = Math.min(Math.floor((n - 1) / 3) + 1, 8, n);
       tickIdx = Array.from({ length: count }, (_, i) =>
         Math.round((i * (n - 1)) / (count - 1)),
       );
@@ -219,8 +223,8 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
     return { pts, tokMax, reqMax, innerW, innerH, base, yTok, yReq, inputPath, outputPath, reqPath, reqDots, xTicks };
   }, [series, W, H]);
 
-  // 横向虚线网格:8 等分;左右轴标签只标 0/中点/峰值(非整数跳过)
-  const gridY = Array.from({ length: 9 }, (_, i) => i / 8);
+  // 横向虚线网格:4 等分（对齐 demo 的疏度——原来的 8 等分网格线太密，抢数据的注意力）
+  const gridY = Array.from({ length: 5 }, (_, i) => i / 4);
   const n = series.length;
   const innerW = W - PAD_L - PAD_R;
   const hoverX = (i: number) =>
@@ -283,9 +287,11 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
             const gy = PAD_T + (1 - f) * geo.innerH;
             const tokV = geo.tokMax * f;
             const reqV = geo.reqMax * f;
-            // 只标 0/中点/峰值,且值为整数才画(避免 .5 这类刻度)
-            const showTok = f === 0 || f === 1 || Number.isInteger(tokV);
-            const showReq = f === 0 || f === 1 || Number.isInteger(reqV);
+            // 只标 0 / 中点 / 峰值。原判据是 Number.isInteger(tokV)，但 tokV 在 M 量级
+            // 恒为整数，等于没过滤——9 条网格线会全部挂上标签（实测 1.3M/2.5M/3.8M…）。
+            const isEdgeOrMid = f === 0 || f === 1 || Math.abs(f - 0.5) < 1e-9;
+            const showTok = isEdgeOrMid;
+            const showReq = isEdgeOrMid;
             return (
               <g key={f}>
                 <line
@@ -293,7 +299,8 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
                   x2={W - PAD_R}
                   y1={gy}
                   y2={gy}
-                  className="stroke-border"
+                  // demo：网格虚线用 --border，基线单独用 --border-strong 压住它
+                  style={{ stroke: f === 0 ? "var(--border-strong)" : "var(--border)" }}
                   strokeWidth={1}
                   strokeDasharray={f === 0 ? undefined : "3 4"}
                 />
@@ -302,8 +309,8 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
                     x={PAD_L - 6}
                     y={gy + 3.5}
                     textAnchor="end"
-                    className="fill-muted-foreground font-mono"
-                    fontSize={11}
+                    style={{ fill: "var(--fg-subtle)" }}
+                    fontSize={10}
                   >
                     {fmtCompact(tokV)}
                   </text>
@@ -313,8 +320,8 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
                     x={W - PAD_R + 6}
                     y={gy + 3.5}
                     textAnchor="start"
-                    className="fill-muted-foreground font-mono"
-                    fontSize={11}
+                    style={{ fill: "var(--fg-subtle)" }}
+                    fontSize={10}
                   >
                     {Math.round(reqV)}
                   </text>
@@ -322,26 +329,63 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
               </g>
             );
           })}
-          {/* 堆叠面积:输入贴底,输出叠上 */}
-          <path d={geo.inputPath} fill={C_INPUT} fillOpacity={0.25} stroke={C_INPUT} strokeWidth={1.5} />
-          <path d={geo.outputPath} fill={C_OUTPUT} fillOpacity={0.25} stroke={C_OUTPUT} strokeWidth={1.5} />
+          {/* 堆叠面积:输入贴底,输出叠上。样式走 style 才能吃到 CSS 变量。
+              填充不透明度、线宽、点半径全部取 demo 的值 */}
+          <path
+            d={geo.inputPath}
+            style={{ fill: C_INPUT, stroke: C_INPUT, fillOpacity: 0.14 }}
+            strokeWidth={1.6}
+          />
+          <path
+            d={geo.outputPath}
+            style={{ fill: C_OUTPUT, stroke: C_OUTPUT, fillOpacity: 0.14 }}
+            strokeWidth={1.6}
+          />
           {/* 请求次数折线(右轴) */}
-          <path d={geo.reqPath} fill="none" stroke={C_REQ} strokeWidth={1.8} strokeLinejoin="round" strokeLinecap="round" />
+          <path
+            d={geo.reqPath}
+            style={{ fill: "none", stroke: C_REQ }}
+            strokeWidth={1.7}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
           {geo.reqDots.map((d, di) => (
-            <circle key={di} cx={d.cx} cy={d.cy} r={3} fill={C_REQ}>
+            <circle key={di} cx={d.cx} cy={d.cy} r={2.6} style={{ fill: C_REQ }}>
               <title>{`${d.label}: ${d.requests} 次`}</title>
             </circle>
           ))}
           {hover !== null ? (
-            <line
-              x1={hoverX(hover)}
-              x2={hoverX(hover)}
-              y1={PAD_T}
-              y2={H - PAD_B}
-              className="stroke-muted-foreground/50"
-              strokeWidth={1}
-              strokeDasharray="2 3"
-            />
+            <>
+              <line
+                x1={hoverX(hover)}
+                x2={hoverX(hover)}
+                y1={PAD_T}
+                y2={H - PAD_B}
+                style={{ stroke: "var(--border-strong)" }}
+                strokeWidth={1}
+                strokeDasharray="3 3"
+              />
+              {/* 悬停桶在三条序列上的落点（demo 的 r=3.4 圆点）：
+                  输入点在输入线，输出点在堆叠顶（输入+输出），请求点在右轴折线上 */}
+              <circle
+                cx={hoverX(hover)}
+                cy={geo.yTok(series[hover].input_tokens)}
+                r={3.4}
+                style={{ fill: C_INPUT }}
+              />
+              <circle
+                cx={hoverX(hover)}
+                cy={geo.yTok(series[hover].input_tokens + series[hover].output_tokens)}
+                r={3.4}
+                style={{ fill: C_OUTPUT }}
+              />
+              <circle
+                cx={hoverX(hover)}
+                cy={geo.yReq(series[hover].requests)}
+                r={3.4}
+                style={{ fill: C_REQ }}
+              />
+            </>
           ) : null}
           {geo.xTicks.map((t) => (
             <text
@@ -349,8 +393,8 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
               x={t.x}
               y={H - 8}
               textAnchor="middle"
-              className="fill-muted-foreground font-mono"
-              fontSize={11}
+              style={{ fill: "var(--fg-subtle)" }}
+              fontSize={10}
             >
               {t.label}
             </text>
@@ -359,30 +403,18 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
 
         {hover !== null && tip && hovered ? (
           <div
-            className="pointer-events-none absolute z-10 w-64 rounded-md border border-border bg-popover p-2 text-xs shadow-md"
+            className="gw-chart-tip"
             style={tip.side === "right" ? { right: tip.x, top: tip.top } : { left: tip.x, top: tip.top }}
           >
-            <div className="mb-1 font-mono text-[10px] text-muted-foreground">{hovered.label}</div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-                <span className="inline-block size-2 shrink-0 rounded-sm" style={{ background: C_INPUT }} aria-hidden />
-                输入
-              </span>
-              <span className="shrink-0 text-right font-mono tabular-nums">{fmtInt(hovered.input_tokens)}</span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-                <span className="inline-block size-2 shrink-0 rounded-sm" style={{ background: C_OUTPUT }} aria-hidden />
-                输出
-              </span>
-              <span className="shrink-0 text-right font-mono tabular-nums">{fmtInt(hovered.output_tokens)}</span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-                <span className="inline-block h-0.5 w-3 shrink-0 rounded" style={{ background: C_REQ }} aria-hidden />
-                请求
-              </span>
-              <span className="shrink-0 text-right font-mono tabular-nums">
+            <div className="gw-chart-tip-date">{hovered.label}</div>
+            {/* 总量三行：左标签右数值的两列格（demo 的 auto auto / 3px 14px） */}
+            <div className="gw-chart-tip-grid">
+              <span className="k">输入</span>
+              <span className="v">{fmtInt(hovered.input_tokens)}</span>
+              <span className="k">输出</span>
+              <span className="v">{fmtInt(hovered.output_tokens)}</span>
+              <span className="k">请求</span>
+              <span className="v">
                 {fmtInt(hovered.requests)} 次
                 {hovered.failed > 0 ? (
                   <span className="text-destructive"> · 失败 {hovered.failed}</span>
@@ -390,16 +422,14 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
               </span>
             </div>
             {hoverModels.length > 0 ? (
-              <div className="mt-1 border-t border-border pt-1">
+              <div className="gw-chart-tip-models">
                 {hoverModels.map((s) => (
-                  <div key={s.model} className="flex items-center gap-2" title={s.model}>
-                    {/* 模型名：定宽靠左，超出省略（悬停 title 看全名） */}
-                    <span className="inline-flex w-32 shrink-0 items-center gap-1.5 text-muted-foreground">
-                      <span className="inline-block size-1.5 shrink-0 rounded-full bg-muted-foreground/50" aria-hidden />
-                      <span className="truncate font-mono">{shortModelName(s.model)}</span>
+                  <div key={s.model} className="gw-chart-tip-row">
+                    {/* 模型名用别名（与最近请求表同一套名字），过长省略、悬停看全名 */}
+                    <span className="gw-chart-tip-model" title={s.model}>
+                      {s.model}
                     </span>
-                    {/* 用量/次数：靠右对齐 */}
-                    <span className="ml-auto shrink-0 text-right font-mono tabular-nums">
+                    <span className="gw-chart-tip-val">
                       {s.input_tokens + s.output_tokens > 0
                         ? `${fmtCompact(s.input_tokens + s.output_tokens)} tok · `
                         : ""}
@@ -413,27 +443,27 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
         ) : null}
       </div>
 
-      <div className="flex shrink-0 flex-wrap items-center justify-center gap-x-4 gap-y-1.5 px-1">
-        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="inline-block size-2.5 rounded-sm" style={{ background: C_INPUT, opacity: 0.65 }} aria-hidden />
+      <div className="gw-chart-legend shrink-0">
+        <span className="gw-legend-item">
+          <span className="gw-legend-swatch" style={{ background: C_INPUT }} aria-hidden />
           输入 token
         </span>
-        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="inline-block size-2.5 rounded-sm" style={{ background: C_OUTPUT, opacity: 0.65 }} aria-hidden />
+        <span className="gw-legend-item">
+          <span className="gw-legend-swatch" style={{ background: C_OUTPUT }} aria-hidden />
           输出 token
         </span>
-        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="inline-block h-0.5 w-3.5 rounded" style={{ background: C_REQ }} aria-hidden />
+        <span className="gw-legend-item">
+          <span className="gw-legend-line" style={{ background: C_REQ }} aria-hidden />
           请求次数(右轴)
         </span>
-        <span className="text-[10px] text-muted-foreground/70">悬停可看各模型拆分</span>
+        <span className="gw-legend-hint">悬停可看各模型拆分</span>
       </div>
     </>
   ) : null;
 
   return (
     <div
-      className="gw-chart relative flex flex-col gap-3"
+      className="gw-chart relative flex flex-col"
       onMouseMove={handleMove}
       onMouseLeave={() => {
         setHover(null);

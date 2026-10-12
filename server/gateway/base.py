@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -63,6 +63,29 @@ class ModelInfo:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+class _FirstChunkStamp:
+    """首个非空块到达时回调一次（一次性），其余一切透传给原 raw。
+
+    iter_content 是流式与非流式两条路径的共同终点——read_body() 在 curl 的
+    stream 模式下也回退到它——所以只包这一处就够，不必在两个调用点各埋一次。
+    """
+
+    def __init__(self, raw: Any, stamp: Callable[[], None]):
+        self._raw = raw
+        self._stamp = stamp
+        self._fired = False
+
+    def iter_content(self, chunk_size: int = 8192):
+        for chunk in self._raw.iter_content(chunk_size=chunk_size):
+            if chunk and not self._fired:
+                self._fired = True
+                self._stamp()
+            yield chunk
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._raw, name)
+
+
 class UpstreamResponse:
     """provider 拥有的上游 HTTP 响应的统一视图（内部持有 curl_cffi Response）。"""
 
@@ -71,6 +94,14 @@ class UpstreamResponse:
         self.headers = headers
         self._raw = raw
         self.account = account  # 服务本响应的账号 uid（provider 填写；遥测分账用）
+
+    def stamp_first_chunk(self, stamp: Callable[[], None]) -> None:
+        """给 raw 包一层：首个非空块到达时回调一次 stamp()（用于首字耗时打点）。
+
+        放在这里而不是调用方直接改写 raw——raw 是本类的私有实现细节，
+        外部拿到的是 read_body()/iter_chunks() 这层视图。
+        """
+        self._raw = _FirstChunkStamp(self._raw, stamp)
 
     def read_body(self) -> bytes:
         """整包读取响应体。

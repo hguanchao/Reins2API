@@ -9,21 +9,12 @@
 }[data-sonner-toaster][data-x-position="right"] {
   right: 16px !important;
 }[data-sonner-toast].ap-toast, [data-sonner-toast] {
-  --normal-bg: var(--card);
-  --normal-border: var(--border);
-  --normal-text: var(--foreground);
-  --success-bg: color-mix(in srgb, var(--ok) 12%, var(--card));
-  --success-border: color-mix(in srgb, var(--ok) 35%, transparent);
-  --success-text: var(--foreground);
-  --error-bg: color-mix(in srgb, var(--destructive) 12%, var(--card));
-  --error-border: color-mix(in srgb, var(--destructive) 35%, transparent);
-  --error-text: var(--foreground);
-  --warning-bg: color-mix(in srgb, var(--warn) 12%, var(--card));
-  --warning-border: color-mix(in srgb, var(--warn) 35%, transparent);
-  --warning-text: var(--foreground);
-  --info-bg: color-mix(in srgb, var(--signal) 12%, var(--card));
-  --info-border: color-mix(in srgb, var(--signal) 35%, transparent);
-  --info-text: var(--foreground);
+  /* 语义色不在这里就地推导。
+     这里曾用 color-mix(主题色 12%, 卡片色) 现算底色、并把文字色压成 --foreground，
+     等于同一套语义色有了第二份定义——而且那份更灰（#b45309@12% 混出来是米灰，
+     不是设计稿的浅黄），文字也丢掉了语义色。
+     tokens.css 里已有成对的 bg/border/text，删掉本地覆盖即全局单源，
+     toast 自动落到与徽章、提示条同一套色上。 */
 
   width: var(--width) !important;
   max-width: min(356px, calc(100vw - 32px)) !important;
@@ -123,7 +114,7 @@
 /* 浅色投影更轻 */:root:not(.dark):not([data-theme="dark"]) [data-sonner-toast], [data-theme="light"]:not(.dark) [data-sonner-toast] {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--foreground) 6%, transparent),
-    0 12px 28px -14px rgba(12, 18, 32, 0.28) !important;
+    0 12px 28px -14px rgba(17, 24, 39, 0.24) !important;
 }
 
 /* 账号详情弹窗 */

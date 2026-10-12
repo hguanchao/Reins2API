@@ -70,3 +70,16 @@ export function shortClientUa(ua: string | null | undefined): string {
   const product = t.split(/\s+/)[0] || t;
   return product.length > 24 ? `${product.slice(0, 24)}…` : product;
 }
+
+/**
+ * 最近请求的时间列："YYYY-MM-DD HH:MM:SS" → "HH:MM:SS"。
+ * 列表按时间倒序，"哪天"在相邻行之间几乎没有信息量，日期反而占宽还把行高撑起来；
+ * 完整值挂在单元格的 title 上，需要时悬停即可。
+ * 格式不符时原样返回——不猜、也不吞掉异常数据。
+ */
+export function fmtClock(createdAt: string | null | undefined): string {
+  const raw = (createdAt || "").trim();
+  if (!raw) return "—";
+  const clock = raw.split(" ")[1] ?? "";
+  return /^\d{2}:\d{2}:\d{2}$/.test(clock) ? clock : raw;
+}

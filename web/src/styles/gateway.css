@@ -2,88 +2,266 @@
    Gateway — 网关运维（对齐 acorn 参考项目 UI）
    ============================================== */
 
-/* 工作区：页面根 = 卡片(panel) + 纵向布局，KPI/网格/表格以 1px 缝分隔 */
-.gw-workspace {
+/* 页面头：landing 的 section-header 模式（24px semibold 标题 + 一行 muted 副标题）。
+   原设计三个页面都直接进入数据、没有页面级标题，是最明显的一处信息层级缺失。 */
+.gw-page-head {
   display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  /* 正常视口下内容恰好铺满（不出现滚动条）；窗口压到极矮时改为整体滚动而非裁切 */
-  overflow: auto;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 16px;
+  flex-shrink: 0;
+  margin-bottom: 20px;
+}
+.gw-page-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--foreground);
+}
+.gw-page-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+/* 页头或面板头右侧的动作区：自动推到最右（页头、面板头都用同一个类，
+   所以不叫 page-actions——号池那两个按钮就挂在号池面板头上） */
+.gw-head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-/* 内容区：左配置 · 右运行态（与 usage-grid 同 1px 缝） */
+/* 状态徽章内的圆点：有圆点的是「状态」（可用/暂停/禁用），
+   没有的是「分类」（协议/档位/免费）——两者用不同的视觉重量区分开。 */
+.badge-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* 双行单元格：上行主标识（别名规范名 / uid），下行次标识（上游裸名 / label）。
+   次行统一更小更浅，保证一眼分得出主次。 */
+.cell-2 {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.35;
+}
+.cell-2 > small {
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+
+/* 紧凑双行：耗时、Token 这类纯数据格。两行同号 11px（比表格正文 12px 小一档）；
+   字号不一致时两行左边缘会对不齐——主次只靠颜色区分。 */
+.cell-2.is-compact {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.cell-2.is-compact > small {
+  font-size: inherit;
+}
+
+/* 模型名：可点开详情弹窗。不加常驻下划线（密集表里每行一道线太吵），
+   靠主色 + 悬停加深表达可交互；去掉下划线后焦点提示更重要，故补 focus-visible。 */
+.model-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--primary);
+  cursor: pointer;
+}
+.model-link:hover {
+  color: var(--primary-hover);
+}
+.model-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* 轻量状态标记：色点 + 文字，不带药丸底。
+   主色是绿，「可用」徽章与「今日已签」徽章会长得一模一样——
+   一行两个同色药丸是纯噪音，故签到态降级为点标，每行只留一个药丸。 */
+.mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.mark i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.mark.is-ok {
+  color: var(--ok);
+}
+
+/* 工作区：页面根。文档滚动模型下它不再自己滚——页面随内容自然变长，
+   滚动交给浏览器（详见 base.css 顶部的说明）。flex: 1 0 auto 只是让内容不足一屏时
+   仍撑满，内容超出时不被压缩。 */
+.gw-workspace {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 内容区：左配置 · 右运行态。间距 20px 的独立卡片，不再用 1px 缝拼成连续面。
+   双列网格（模型列表 | 图表）用确定行高：两侧内容高度差太大（N 行目录 vs 定高图表），
+   按内容排布时网格项会被拉伸到较高那侧，矮的一侧就多出一大片空白。
+   行高钳在一个区间里：矮屏不至于挤扁，高屏也不至于让图表失控。
+   区间按 demo 的图表比例定：绘图区拿到约 210–270px，与 demo 的 ~230px 同一量级；
+   上限再往上（曾试 520）图表会拉得比 demo 高得多，反而不像。 */
 .gw-grid {
   display: grid;
+  --gw-mid-h: clamp(340px, 34svh, 430px);
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: 1px;
-  background: var(--border);
+  grid-template-rows: var(--gw-mid-h);
+  gap: 20px;
   min-width: 0;
-  flex: 1 1 auto;
-  min-height: 0;
 }
 .gw-grid-split {
-  /* 模型目录与 Token 用量左右等宽 */
+  /* 模型列表与 Token 用量左右等宽 */
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
-/* ── 工作区高度分配 ──
-   大屏（2K/4K）下 KPI 条固定，中段（模型目录 | Token 用量）与最近请求平分剩余高度。
-   此前只有 .gw-grid 独占剩余高度、两个面板内部又各自被 max-h-80 封顶，
-   高分辨率屏上就出现"面板撑满、内容缩在顶部、整屏留白"的观感。
-   选择器带 .gw-workspace 前缀：需压过下方 .gw-panel / .gw-grid 的 min-height:0；
-   整段放在窄屏断点之前，堆叠态的重置才能按源码顺序覆盖它。 */
-.gw-workspace > .gw-grid {
-  flex: 1 1 0;
-  min-height: 200px;
+/* 单列网格：承载整块全宽面板（账号池 8 列挤不进半宽栅格）。
+   行高必须回到 auto——账号池要按号数自然增高，固定高度会让号少时留白、号多时被裁。
+   用两个类名叠写而不是单类名 + 源码顺序：同权重时靠顺序决胜太脆，这样是确定性的。 */
+.gw-grid-1 {
+  grid-template-columns: minmax(0, 1fr);
 }
-.gw-workspace > .gw-panel-grow {
-  flex: 1 1 0;
-  min-height: 130px;
+.gw-grid.gw-grid-1 {
+  grid-template-rows: auto;
+}
+/* 堆叠段落之间留出间距：原来是 1px 缝拼接，靠相邻即贴合，现在必须显式给 */
+.gw-workspace > .gw-grid {
+  margin-bottom: 20px;
 }
 
 @media (max-width: 960px) {
-  /* 窄屏：改为纵向堆叠，由工作区整体滚动（同 usage-workspace 的处理） */
-  .gw-workspace {
-    overflow: auto;
-  }
+  /* 窄屏：栅格改纵向堆叠 */
   .gw-grid,
   .gw-grid-split {
     grid-template-columns: 1fr;
-    grid-template-rows: none;
-    align-content: start;
-    overflow: visible;
-  }
-  .gw-panel {
-    min-height: min-content;
-  }
-  /* 堆叠态取消高度分配，面板回到内容高度 */
-  .gw-workspace > .gw-grid,
-  .gw-workspace > .gw-panel-grow {
-    flex: none;
-    min-height: 0;
-  }
-  .gw-fill-scroll {
-    max-height: 360px;
   }
 }
 
-/* 面板内滚动区：撑满面板剩余高度——行少不留白，行多内部滚动 */
-.gw-fill-scroll {
+/* 列表表格卡片：模型列表 / 账号池 / 最近请求共用的一张表。
+   ① 高度：面板有确定高度时撑满；按内容高的面板取内容高度，再由 62svh 兜住——
+      分页支持 100 条/页，不封顶页面会被拉到几千像素。
+   ② 宽度：吃满面板的可用宽度，表体照旧 w-full 铺满卡片。
+   ③ 外观：1px 边框 + 圆角 + 表头灰带。上边距 0——卡片紧贴页头，边框本身就是标题
+      与表体的分界；左右与下方各 8px，让卡片和面板边缘、页脚分开。
+   ④ 卡片自己不滚，滚动交给内层的 .gw-table-scroll，且**不画滚动条**（见下）。 */
+.gw-table-card {
+  /* 左右各 8px。宽度不能写 width: 100%——那等于面板全宽，再加上左右外边距会顶出
+     16px，面板的裁剪会把右边框和圆角切掉；按「100% - 左右外边距」算才严丝合缝 */
+  --gw-table-inset: 8px;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 62svh;
+  width: calc(100% - var(--gw-table-inset) * 2);
+  margin: 0 var(--gw-table-inset) var(--gw-table-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  overflow: clip;
+}
+
+/* 真正的滚动容器：占满卡片高度，内容超出时在内部滚。
+   卡片是纵向 flex，所以这里要 flex: 1 1 auto + min-height: 0 才会被 max-height 压住。
+   ── 滚动条整条隐藏：这条内滚条不该出现在表头旁边，也不该占掉列宽，
+   所以干脆不画（原生滑块没法只画一半高度，遮罩/轨道内缩那几套都是绕）。
+   滚动本身不受影响：滚轮、触控板、拖拽选择都照常；列头吸附时下方浮出的那条投影
+   （见文件末尾的 scroll-driven animation）就是"还能继续滚"的提示。
+   用标准属性 scrollbar-width: none 打底（Chrome 121+ / Firefox 都认），
+   再补 ::-webkit-scrollbar 的老写法给更早的 Chromium。 */
+.gw-table-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  scrollbar-width: none;
 }
-/* 空表：占位行撑满面板、内容居中，把留白变成"明确的空状态"而不是无指向的空白 */
-.gw-fill-scroll.is-empty {
+.gw-table-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* 列头吸附：th 上写 sticky 即生效，吸附范围就是上面这个滚动容器。两条硬要求：
+   ① 实底背景——吸附后数据行会从它下面滚过，透一点就糊了。列头本来就有
+      --table-header 的底色（TableHead 的 bg-[var(--table-header)] + 下面的
+      .gw-workspace 规则），这里不重复声明。
+   ② 表格是 border-collapse: collapse，表头那行的 border-bottom 由「表」这个盒子画，
+      不跟着 sticky 单元格走——滚动时线留在原地、列头滑走后就断了。所以这条线改在
+      th 上画（inset 阴影），与行背景同为 th 自己的绘制内容。 */
+.gw-table-card [data-slot="table-head"] {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--table-border);
+}
+/* 表头下边线只留一道。原来行边框（tr 的 border-b）与上面的 inset 阴影叠在同一处，
+   两条线各画各的、看着粗一档；而且行边框不跟 sticky 走。行这一侧直接归零。 */
+.gw-table-card [data-slot="table-header"] [data-slot="table-row"] {
+  border-bottom-width: 0;
+}
+
+/* 滚动起来之后，列头下方浮出一条投影，表示"表头飘在内容之上"。
+   开关用 scroll-driven animation 的滚动进度，不需要 JS 监听 scroll：
+   0 → 32px 的滚动量映射成投影的透明 → 实色（滚动不足 32px 就按比例给一部分）。
+   包在 @supports 里是必须的：不支持 animation-timeline 的浏览器会把它当成普通
+   0s 动画，fill: both 直接停在末帧——投影会常驻。 */
+@supports (animation-timeline: scroll()) {
+  @keyframes gw-table-head-lift {
+    from {
+      box-shadow:
+        inset 0 -1px 0 var(--table-border),
+        0 4px 8px -4px transparent;
+    }
+    to {
+      box-shadow:
+        inset 0 -1px 0 var(--table-border),
+        0 4px 8px -4px var(--table-sticky-shadow);
+    }
+  }
+  .gw-table-card [data-slot="table-head"] {
+    animation: gw-table-head-lift linear both;
+    /* 必须在 animation 简写之后：简写会把 animation-timeline 重置回 auto */
+    animation-timeline: scroll(nearest block);
+    animation-range: 0 32px;
+  }
+}
+
+/* 页头/页脚的通栏分隔线取消：卡片自带边框，再叠两道通栏线就是三条平行横线。
+   手绘稿的结构是「标题 → 卡片 → 居中分页」，横线只留卡片这一道。 */
+.gw-panel:has(> .gw-table-card) > .gw-panel-head {
+  border-bottom: 0;
+}
+.gw-panel:has(> .gw-table-card) > .gw-panel-foot {
+  border-top: 0;
+}
+/* 空表：占位行居中，把留白变成"明确的空状态"而不是无指向的空白。
+   表格现在比卡片矮一层（在 .gw-table-scroll 里），撑高的对象跟着下移一层。 */
+.gw-table-card.is-empty .gw-table-scroll {
   display: flex;
   flex-direction: column;
 }
-.gw-fill-scroll.is-empty > table {
+.gw-table-card.is-empty .gw-table-scroll > table {
   flex: 1 1 auto;
 }
-.gw-fill-scroll.is-empty [data-slot="table-empty-row"] [data-slot="table-cell"] {
+.gw-table-card.is-empty [data-slot="table-empty-row"] [data-slot="table-cell"] {
   padding: 12px 0;
   text-align: center;
   vertical-align: middle;
@@ -105,17 +283,20 @@
   min-height: 120px;
 }
 
-/* 图表面板：绘图区随面板高度等比缩放（SVG preserveAspectRatio=meet 居中），
-   不再固定 h-64 —— 面板变高时图表跟着变大，而不是留下一片空白 */
+/* 图表面板体：撑满面板剩余高度（面板在网格里是确定行高，这里有"剩余"可撑），
+   内边距由图表段自己带（面板 padding 已归零）。
+   数值照抄 demo：panel-body 18px + .chart 的 8px 4px 0 → 上 26 / 左右 22 / 下 18 */
 .gw-chart {
   flex: 1 1 auto;
   min-height: 0;
+  padding: 26px 22px 18px;
 }
-/* 绘图区撑满面板剩余高度：组件内 ResizeObserver 把 viewBox 设为容器真实像素，
-   图表随面板高度伸缩且无 letterbox 死区（悬停坐标换算零缩放误差）。 */
+/* 绘图区吃掉图例以外的全部高度：组件的 ResizeObserver 会把 viewBox 设为容器真实像素，
+   面板越高图表越大，不留 letterbox 死区（悬停坐标换算零缩放误差）。
+   min-height 是行高被 clamp 到下限（340px）时的兜底。 */
 .gw-chart-plot {
   flex: 1 1 auto;
-  min-height: 240px;
+  min-height: 180px;
 }
 .gw-chart-svg {
   display: block;
@@ -123,18 +304,117 @@
   height: 100%;
 }
 
+/* ── 图表图例与悬停浮层：结构/尺寸/间距对齐 design/demo.html 的 .legend 与浮层卡片，
+   颜色接本项目的 token（demo 的 --fg-muted/--fg-subtle/--hairline 与这里同名同值） ── */
+
+/* 图例：顶部一道 hairline 把图与图例分开；末项（悬停提示）推到最右 */
+.gw-chart-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+.gw-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+/* 色块用原色：面积已经压到 0.14 的不透明度，图例再跟着淡就看不出是什么色了 */
+.gw-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.gw-legend-line {
+  width: 14px;
+  height: 2px;
+  border-radius: 2px;
+}
+.gw-legend-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+}
+
+/* 悬停浮层：250px 宽 / 11px 13px 内边距 / shadow-pop（demo 浮层卡片的原尺寸） */
+.gw-chart-tip {
+  position: absolute;
+  z-index: 10;
+  width: 250px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--popover);
+  box-shadow: var(--shadow-pop);
+  pointer-events: none;
+}
+.gw-chart-tip-date {
+  margin-bottom: 7px;
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+}
+.gw-chart-tip-grid {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 3px 14px;
+  font-size: 12px;
+}
+.gw-chart-tip-grid > .k {
+  color: var(--muted-foreground);
+}
+.gw-chart-tip-grid > .v {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.gw-chart-tip-models {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+.gw-chart-tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.5px;
+}
+.gw-chart-tip-row + .gw-chart-tip-row {
+  margin-top: 3px;
+}
+/* 模型名可能是 28 字符的长别名：定宽左格省略，右格数字不缩 */
+.gw-chart-tip-model {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+}
+.gw-chart-tip-val {
+  flex: none;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
 .gw-panel {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 0;
-  padding: 14px 16px 16px;
+  /* padding 归零：表头灰带与表格要贴着卡片边缘，内边距交给各分段自己带 */
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
   background: var(--card);
-}
-.gw-col {
-  flex: 1 1 auto;
-  overflow: auto;
-  min-height: 0;
+  box-shadow: var(--shadow-panel);
+  /* 裁掉表头灰带/表尾的直角，让它们跟着卡片圆角走。
+     面板本身按内容高度排布，不存在把自己内容裁掉的情况。
+     用 clip 而不是 hidden：单纯裁剪、不建滚动容器，卡片里的 sticky 列头只认
+     真正的滚动容器（.gw-table-scroll），不被这一层抢走。 */
+  overflow: clip;
 }
 
 .gw-panel-head {
@@ -142,7 +422,8 @@
   flex-shrink: 0;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--hairline);
   color: var(--muted-foreground);
 }
 .gw-panel-head > svg {
@@ -158,10 +439,8 @@
 }
 .gw-panel-meta {
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--fg-subtle);
 }
 /* 面板底部固定条（分页等）：不参与滚动区高度分配 */
 .gw-panel-foot {
@@ -169,9 +448,9 @@
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
+  margin-top: 0;
+  padding: 12px 18px;
+  border-top: 1px solid var(--hairline);
 }
 .gw-panel-action {
   margin-left: auto;
@@ -183,6 +462,32 @@
   font-size: 11px;
   line-height: 1.45;
   color: var(--muted-foreground);
+}
+
+/* ── 系统配置页的标签与输入框：规格取自 demo 的 .label / .input（12.5px、36px 高、
+   10px 圆角、surface 底色、mono 12.5px、聚焦 3px --ring 光环）。
+   这两个类只服务这一页：组件库的 Input/Label 是通用件，用工具类去改它的
+   height / border-radius / 焦点环会跟组件自带的同名工具类打架（谁在产物 CSS 里
+   靠后谁赢，不可控），所以在这里用未分层的 CSS 明确压住。 */
+.gw-settings-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.gw-settings-input {
+  height: 36px;
+  padding-inline: 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  font-size: 12.5px;
+}
+.gw-settings-input::placeholder {
+  color: var(--fg-subtle);
+}
+.gw-settings-input:focus-visible {
+  outline: 0;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 
 .gw-empty {
@@ -586,32 +891,42 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* KPI 基础布局：横向网格、1px 缝分隔（与 gw-grid 同质感）。
-   页面此前只引用了 .mission-strip 而样式只定义了 -gw/-usage 变体，导致 KPI 竖排。 */
+/* KPI：六张独立统计卡（不再是 1px 缝拼接的连续条）。
+   灰底页面上白卡要浮起来，靠细线 + 轻阴影分层——这是新语言的主要质地。 */
 .mission-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 1px;
-  background: var(--border);
-  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  background: transparent;
   flex-shrink: 0;
+  margin-bottom: 20px;
 }
 .mission-strip .metric {
   min-width: 0;
-  padding: 10px 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
   background: var(--card);
+  box-shadow: var(--shadow-panel);
+  transition: border-color 0.18s ease;
+}
+.mission-strip .metric:hover {
+  border-color: var(--border-strong);
 }
 .mission-strip .metric-k {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: var(--muted-foreground);
 }
 .mission-strip .metric-v {
-  margin-top: 3px;
-  font-family: var(--font-mono);
-  font-size: 20px;
+  margin-top: 8px;
+  /* 大数字改走正文字体 + 等宽数字：landing 的语言里没有第二套字体，
+     tabular-nums 已经保证列对齐 */
+  font-family: var(--font-sans);
+  font-size: 26px;
   font-weight: 600;
+  letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
 }
@@ -628,16 +943,15 @@
   color: var(--destructive);
 }
 .mission-strip .metric-sub {
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--muted-foreground);
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--fg-subtle);
 }
 
 /* KPI 行：6 列（3、2 列断点都能整除，不会出现孤卡） */
 .mission-strip-gw {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   flex-shrink: 0;
-  border-radius: 0;
 }
 @media (max-width: 1100px) {
   .mission-strip-gw {
@@ -661,19 +975,12 @@
   opacity: 0.7;
 }
 
-/* 失败率配色 */
+/* 失败率：对齐 demo 的 .stat-sub——副行一律浅色，不做红黄绿分级。
+   分级看着有用，但 KPI 副行同时承载"失败 N · 未路由 M"这类中性信息，
+   整行跟着一个数字变色会让主次颠倒。 */
 .gw-fail-rate {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-}
-.gw-fail-rate.is-ok {
-  color: var(--ok);
-}
-.gw-fail-rate.is-warn {
-  color: var(--warn);
-}
-.gw-fail-rate.is-bad {
-  color: var(--destructive);
 }
 
 /* 首载骨架屏 */

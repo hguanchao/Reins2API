@@ -6,23 +6,50 @@
   --ap-dur-fast: 140ms;
   --ap-dur: 220ms;
   --ap-dur-slow: 320ms;
+  /* 控制台比落地页要快一档：落地页 600ms/20px 是给"读一屏文案"的节奏，
+     表格页每 10s 轮询，动画拖长了会显得迟滞 */
+  --ap-reveal-dur: 460ms;
 }
 /* 仅 opacity：结束后不留 transform，避免困住子树里的 position:fixed */
 /* 弹窗：仅 opacity（Edge 上 scale/translate 大面板易卡；关闭也不留 transform） */
 
 /* 路由切换(进场淡入) */.route-enter {
   display: flex;
-  flex: 1 1 auto;
+  /* 1 0 auto：撑满、不被压缩（同 .app-frame 的文档滚动模型） */
+  flex: 1 0 auto;
   flex-direction: column;
   min-width: 0;
-  min-height: 0;
-  overflow: hidden;
   animation: ap-route-enter var(--ap-dur) var(--ap-ease-out) both;
 }
 
-/* 顶栏导航指示条出现 */.nav-tab[data-state="active"]::after {
+/* ── 入场 reveal（landing 语言：上移 + 淡入，错峰）─────────────────
+   与上面的 route-enter 不同，这里**不用 fill-mode: both**：both 会把
+   translateY(0) 永久留在元素上，形成 containing block，困住子树里的
+   position: fixed。改用 backwards——动画播放前用 from 状态遮住首帧，
+   播放结束后元素自然回到无 transform 的状态。 */
+.reveal {
+  animation: ap-reveal var(--ap-reveal-dur) var(--ap-ease-out) backwards;
+}
+/* 统计卡与面板网格自动错峰，页面无需逐个挂类 */
+.mission-strip > .metric,
+.gw-grid > .gw-panel {
+  animation: ap-reveal var(--ap-reveal-dur) var(--ap-ease-out) backwards;
+}
+.mission-strip > .metric:nth-child(1) { animation-delay: 0ms; }
+.mission-strip > .metric:nth-child(2) { animation-delay: 40ms; }
+.mission-strip > .metric:nth-child(3) { animation-delay: 80ms; }
+.mission-strip > .metric:nth-child(4) { animation-delay: 120ms; }
+.mission-strip > .metric:nth-child(5) { animation-delay: 160ms; }
+.mission-strip > .metric:nth-child(6) { animation-delay: 200ms; }
+.gw-grid > .gw-panel:nth-child(1) { animation-delay: 60ms; }
+.gw-grid > .gw-panel:nth-child(2) { animation-delay: 120ms; }
+
+/* 顶栏导航指示胶囊：位置由 layout 量出后写进 inline transform，这里只管动的方式。
+   过渡只作用在 transform 上——胶囊宽度固定，不存在宽度动画。
+   prefers-reduced-motion 下由文末的全局规则关掉，直接跳位。 */
+.nav-indicator {
+  transition: transform var(--ap-dur) var(--ap-ease);
   animation: ap-indicator-in var(--ap-dur) var(--ap-ease-out) both;
-  transform-origin: center;
 }
 
 /* 进度条宽度 */.mission-progress > i {
@@ -102,7 +129,7 @@
   .route-enter,
   .ap-dialog-overlay,
   .ap-dialog-content,
-  .nav-tab[data-state="active"]::after,
+  .nav-indicator,
   .pool-skel,
   .pool-progress.is-done .pool-progress-track > i,
   .metric-v.is-pulse {
@@ -111,45 +138,18 @@
     filter: none !important;
     text-shadow: none !important;
   }
-  .route-enter,
-  .nav-tab[data-state="active"]::after {
+  /* 只清 route-enter 的 transform。
+     .nav-indicator 的 transform 是它的定位坐标（不是动效），
+     这里若一并清掉，胶囊会掉回 left:0。它的过渡已由上面的
+     `transition: none !important` 关掉，直接跳位即可。 */
+  .route-enter {
     transform: none !important;
   }
 }
 
-/* 短视口（笔记本）：收紧壳层与指标，把高度留给表格 / 日志 */
-@media (max-height: 820px) {
-  .app-frame {
-    padding: 10px 16px;
-  }
-  .metric {
-    padding: 8px 12px;
-  }
-  .metric-k {
-    margin-bottom: 2px;
-  }
-  .metric-v {
-    font-size: 18px;
-  }
-  .metric-sub {
-    margin-top: 2px;
-  }
-  .usage-toolbar {
-    padding: 10px 14px;
-  }
-  .usage-title {
-    font-size: 16px;
-  }
-  .control-rail {
-    padding: 12px;
-  }
-  .rail-actions {
-    bottom: -12px;
-    margin-inline: -12px;
-    margin-bottom: -12px;
-    padding: 10px 12px 12px;
-  }
-}
+/* 原先这里有一段 @media (max-height: 820px)：矮屏下收紧壳层内边距与 KPI 尺寸，
+   「把高度留给表格 / 日志」。那是固定高度时代的产物——面板要凑满视口、只好压缩其他块。
+   改文档滚动后高度不再需要凑，压缩就没有理由了，整段移除。 */
 
 /* ══════════════════════════════════════════════
    Keyframes — 上述动画引用的帧定义
@@ -162,6 +162,15 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+/* 收尾回到自然状态（无 transform），故不写 to{transform:none}——
+   backwards 填充在结束后会让位给元素自身的计算样式 */
+@keyframes ap-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
   }
 }
 

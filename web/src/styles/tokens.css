@@ -1,17 +1,26 @@
 /* ══════════════════════════════════════════════
-   Aperture Console — design tokens
-   ══════════════════════════════════════════════ */@theme inline {
+   设计令牌
+   ──────────────────────────────────────────────
+   语言取自 saas-landing：白底 / gray 阶细线 / 单色强调 / 12px 圆角 /
+   两枚极轻阴影 / 无渐变无发光。主色沿用项目既有的绿（浅 #0d9f6e、深 #2ee6a6）。
+   浅色为默认；深色是同一套 gray 阶的忠实反相（gray-900 作页面、gray-800 作卡片）。
+
+   变量名保持与旧版一致——它们大多被 styles/*.css 与 components/ui 引用，
+   改名会造成静默失效。只换值 + 追加新令牌。
+   ══════════════════════════════════════════════ */
+@theme inline {
   --font-sans:
-    "Space Grotesk", "Segoe UI", system-ui, -apple-system, "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   --font-mono:
     "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas,
     "Liberation Mono", monospace;
 
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 10px;
+  /* 圆角三档收敛：卡片/按钮/弹窗 12 · 输入框/分段控件 10 · 小控件 8 */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -25,6 +34,8 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  /* 暴露成工具类，让 TSX 能用 text-fg-subtle（比 text-[color:var(--fg-subtle)] 干净） */
+  --color-fg-subtle: var(--fg-subtle);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
@@ -41,104 +52,176 @@
   --color-surface: var(--surface);
   --color-signal: var(--signal);
 }
-/* 暗色默认（Aperture） */:root, .dark, [data-theme="dark"] {
-  --radius: 6px;
-  --background: #07090d;
-  --foreground: #e8eef7;
-  --card: #0d1118;
-  --card-foreground: #e8eef7;
-  --popover: #141b26;
-  --popover-foreground: #e8eef7;
-  --primary: #2ee6a6;
-  --primary-foreground: #04120c;
-  --secondary: #141b26;
-  --secondary-foreground: #e8eef7;
-  --muted: #141b26;
-  --muted-foreground: #8b9bb0;
-  --accent: rgba(46, 230, 166, 0.12);
-  --accent-foreground: #2ee6a6;
-  --destructive: #ff5c7a;
-  --border: rgba(232, 238, 247, 0.08);
-  --input: rgba(232, 238, 247, 0.1);
-  --ring: #2ee6a6;
-  --sidebar: #0d1118;
-  --sidebar-foreground: #e8eef7;
-  --sidebar-border: rgba(232, 238, 247, 0.08);
-  --sidebar-accent: rgba(123, 108, 255, 0.14);
-  --sidebar-accent-foreground: #c4bfff;
-  --ok: #2ee6a6;
-  --warn: #f5c542;
-  --surface: #07090d;
-  --signal: #7b6cff;
-  --elevated: #141b26;
-  --grid-line: rgba(232, 238, 247, 0.035);
-  --terminal-bg: #05070a;
-  --terminal-fg: #b7c2d0;
-  --terminal-muted: #6b7a8d;
-  --terminal-faint: #4a5568;
-  --terminal-border: rgba(232, 238, 247, 0.06);
-  --terminal-hover: rgba(255, 255, 255, 0.03);
-  --header-bg: color-mix(in srgb, #07090d 88%, transparent);
-  --shadow-card: none;
-  /* 主工作区轻微 elevation，避免面板糊成一片 */
-  --shadow-panel: 0 1px 0 color-mix(in srgb, #e8eef7 4%, transparent);
-  --table-header: #141b26;
-  --table-cell: #0d1118;
-  --table-hover: #121820;
-  /* 必须不透明：sticky 操作列叠在横滚内容上，半透明会透出背面文字 */
-  --table-selected: #1a2030;
-  --table-border: rgba(232, 238, 247, 0.08);
-  --table-sticky-shadow: rgba(0, 0, 0, 0.45);
-  --border-strong: rgba(46, 230, 166, 0.28);
-  --top-h: 48px;
+
+/* ── 浅色（默认）─────────────────────────────── */
+:root,
+[data-theme="light"] {
+  --radius: 10px;
+
+  /* 面：灰底白卡，靠细线 + 轻阴影分层 */
+  --background: #f9fafb;
+  --foreground: #111827;
+  --card: #ffffff;
+  --card-foreground: #111827;
+  --popover: #ffffff;
+  --popover-foreground: #111827;
+  --surface: #f9fafb;
+  --elevated: #f3f4f6;
+
+  /* 品牌：沿用既有绿 */
+  --primary: #0d9f6e;
+  --primary-foreground: #ffffff;
+  --primary-hover: #0b8a5f;
+  --primary-border: #a7e0cb;
+  --ring: rgba(13, 159, 110, 0.28);
+
+  --secondary: #f3f4f6;
+  --secondary-foreground: #111827;
+  --muted: #f3f4f6;
+  --muted-foreground: #6b7280;
+  --fg-subtle: #9ca3af;
+  --accent: #e8f6f1; /* primary 的浅底，用于选中态 */
+  --accent-foreground: #0d9f6e;
+
+  /* 语义 */
+  --destructive: #b91c1c;
+  --ok: #047857;
+  --warn: #b45309;
+  /* 次强调：新语言只有单一强调色，signal 统一指回 primary 以免旧样式残留出第二种色相 */
+  --signal: #0d9f6e;
+
+  /* 线 */
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --hairline: #f3f4f6;
+  --input: #d1d5db;
+
+  /* 表格 */
+  --table-header: #f9fafb;
+  --table-cell: #ffffff;
+  --table-hover: #f9fafb;
+  --table-selected: #e8f6f1;
+  /* 表头行下边框：数据行之间是更浅的 --hairline，表头要压得住它 */
+  --table-border: #e5e7eb;
+  --table-sticky-shadow: rgba(17, 24, 39, 0.12);
+
+  /* 顶栏 */
+  --header-bg: color-mix(in srgb, #f9fafb 88%, transparent);
+
+  /* 阴影：两级高度且必须单调（卡片 < 浮层）。
+     landing 原值只有 4% 黑，白卡在灰底上浮不起来、多面板堆叠像线框图；
+     上抬到 10% 但严格低于 --shadow-pop，真弹窗才保得住「在最上层」的信号。 */
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px -6px rgba(0, 0, 0, 0.1);
+  --shadow-pop: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 12px 32px -8px rgba(0, 0, 0, 0.14);
+
+  /* 图表序列：输入=主色绿、输出=蓝、请求=琥珀。
+     输出不能用 emerald——它与主色 #0d9f6e 色相只差约 3°，堆叠面积会糊成一条。 */
+  --chart-in: #0d9f6e;
+  --chart-out: #3b82f6;
+  --chart-req: #f59e0b;
+
+  /* 指示物填充色（色点 / 细条）。小面积色块需要 500 级的饱和度——
+     700 级的语义色（--ok #047857、--warn #b45309、--destructive #b91c1c）
+     在 5px 圆点、4px 细条上会糊成灰。语义色只服务文字，指示物用这一组。 */
+  --meter-high: #10b981;
+  --meter-mid: #f59e0b;
+  --meter-low: #f43f5e;
+
+  /* toast */
+  --normal-bg: #ffffff;
+  --normal-border: #e5e7eb;
+  --normal-text: #111827;
+  --success-bg: #ecfdf5;
+  --success-border: #a7f3d0;
+  --success-text: #047857;
+  --error-bg: #fef2f2;
+  --error-border: #fecaca;
+  --error-text: #b91c1c;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+  --warning-text: #b45309;
+  --info-bg: #f9fafb;
+  --info-border: #e5e7eb;
+  --info-text: #6b7280;
+
+  --grid-line: rgba(17, 24, 39, 0.04);
+  --top-h: 56px;
   --rail-w: 380px;
 }
 
-/* 浅色：反相控制台 */:root:not(.dark):not([data-theme="dark"]), [data-theme="light"]:not(.dark) {
-  --background: #f4f6f9;
-  --foreground: #0c1220;
-  --card: #ffffff;
-  --card-foreground: #0c1220;
-  --popover: #ffffff;
-  --popover-foreground: #0c1220;
-  --primary: #0d9f6e;
-  --primary-foreground: #f4fffa;
-  --secondary: #eef1f6;
-  --secondary-foreground: #0c1220;
-  --muted: #eef1f6;
-  --muted-foreground: #5a6b80;
-  --accent: rgba(13, 159, 110, 0.1);
-  --accent-foreground: #0d9f6e;
-  --destructive: #e11d48;
-  --border: rgba(12, 18, 32, 0.1);
-  --input: rgba(12, 18, 32, 0.12);
-  --ring: #0d9f6e;
-  --sidebar: #ffffff;
-  --sidebar-foreground: #0c1220;
-  --sidebar-border: rgba(12, 18, 32, 0.1);
-  --sidebar-accent: rgba(91, 79, 214, 0.1);
-  --sidebar-accent-foreground: #5b4fd6;
-  --ok: #0d9f6e;
-  --warn: #c9920a;
-  --surface: #f4f6f9;
-  --signal: #5b4fd6;
-  --elevated: #eef1f6;
-  --grid-line: rgba(12, 18, 32, 0.04);
-  /* 浅色：终端跟面板，不再强制黑底 */
-  --terminal-bg: #f7f8fb;
-  --terminal-fg: #1a2333;
-  --terminal-muted: #5a6b80;
-  --terminal-faint: #94a0b0;
-  --terminal-border: rgba(12, 18, 32, 0.08);
-  --terminal-hover: rgba(12, 18, 32, 0.04);
-  --header-bg: color-mix(in srgb, #f4f6f9 88%, transparent);
-  --shadow-panel: 0 1px 0 rgba(12, 18, 32, 0.04), 0 8px 24px -20px rgba(12, 18, 32, 0.18);
-  --table-header: #eef1f6;
-  --table-cell: #ffffff;
-  --table-hover: #f0f3f8;
-  /* 不透明选中色（浅色） */
-  --table-selected: #e8eaf8;
-  --table-border: rgba(12, 18, 32, 0.1);
-  --table-sticky-shadow: rgba(12, 18, 32, 0.14);
-  --border-strong: rgba(13, 159, 110, 0.35);
+/* ── 深色：同灰阶反相 ────────────────────────── */
+.dark,
+[data-theme="dark"] {
+  --radius: 10px;
+
+  --background: #111827;
+  --foreground: #f9fafb;
+  --card: #1f2937;
+  --card-foreground: #f9fafb;
+  --popover: #1f2937;
+  --popover-foreground: #f9fafb;
+  --surface: #111827;
+  --elevated: #374151;
+
+  --primary: #2ee6a6;
+  --primary-foreground: #052e20;
+  --primary-hover: #5cebbd;
+  --primary-border: rgba(46, 230, 166, 0.3);
+  --ring: rgba(46, 230, 166, 0.35);
+
+  --secondary: #374151;
+  --secondary-foreground: #f9fafb;
+  --muted: #374151;
+  --muted-foreground: #9ca3af;
+  --fg-subtle: #6b7280;
+  --accent: rgba(46, 230, 166, 0.13);
+  --accent-foreground: #2ee6a6;
+
+  --destructive: #f87171;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --signal: #2ee6a6;
+
+  --border: #374151;
+  --border-strong: #4b5563;
+  --hairline: #2b3544;
+  --input: #4b5563;
+
+  --table-header: #1a2334;
+  --table-cell: #1f2937;
+  --table-hover: #263242;
+  --table-selected: #24352f;
+  --table-border: #374151;
+  --table-sticky-shadow: rgba(0, 0, 0, 0.45);
+
+  --header-bg: color-mix(in srgb, #111827 88%, transparent);
+
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px -8px rgba(0, 0, 0, 0.45);
+  --shadow-pop: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 16px 40px -8px rgba(0, 0, 0, 0.5);
+
+  --chart-in: #2ee6a6;
+  --chart-out: #60a5fa;
+  --chart-req: #fbbf24;
+
+  --meter-high: #34d399;
+  --meter-mid: #fbbf24;
+  --meter-low: #fb7185;
+
+  --normal-bg: #1f2937;
+  --normal-border: #374151;
+  --normal-text: #f9fafb;
+  --success-bg: rgba(52, 211, 153, 0.12);
+  --success-border: rgba(52, 211, 153, 0.3);
+  --success-text: #34d399;
+  --error-bg: rgba(248, 113, 113, 0.12);
+  --error-border: rgba(248, 113, 113, 0.3);
+  --error-text: #f87171;
+  --warning-bg: rgba(251, 191, 36, 0.12);
+  --warning-border: rgba(251, 191, 36, 0.3);
+  --warning-text: #fbbf24;
+  --info-bg: #1a2334;
+  --info-border: #374151;
+  --info-text: #9ca3af;
+
+  --grid-line: rgba(249, 250, 251, 0.04);
 }

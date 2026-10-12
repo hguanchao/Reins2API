@@ -7,14 +7,17 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from providers.workbuddy import classify, dsml, shape
+from providers.workbuddy import checkin, classify, dsml, shape
 from providers.workbuddy.pool import Pool
 from providers.workbuddy.provider import WorkBuddyProvider, _parse_prefix
 from providers.workbuddy.store import Account, WorkBuddyStore
@@ -344,7 +347,12 @@ def test_classify_table():
 
 
 def test_classify_6004_reset_parsing():
-    result = classify.classify(429, '{"code":"6004","msg":"将在 2026-10-12 04:00:00 重置"}')
+    # 重置时刻动态取未来时间：写死日期会随开发推进变成过去式，断言必然失败（曾踩）。
+    future = datetime.now(timezone(timedelta(hours=8))) + timedelta(hours=2)
+    stamp = future.strftime("%Y-%m-%d %H:%M:%S")
+    result = classify.classify(429, json.dumps(
+        {"code": "6004", "msg": f"将在 {stamp} 重置"}, ensure_ascii=False
+    ))
     assert result.model_rate_limit is True
     assert result.model_reset_at_ms > int(time.time() * 1000)
     result = classify.classify(429, '{"msg":"rate limit exceeded"}')
@@ -512,6 +520,234 @@ def test_registry_alias_routing():
     only_oc.register(_Fake("opencode"))
     assert only_oc.route_target("cn:x") == (None, "cn")
     assert only_oc.route_target("oc:x")[0] is only_oc.get("opencode")
+
+
+# ── 签到（checkin.py / provider.checkin）──
+
+
+class _StubCall:
+    """替换 checkin._call：按顺序吐出 (http_status, body)，并记录实际打过的路径。"""
+
+    def __init__(self, *responses):
+        self._responses = list(responses)
+        self.paths: list[str] = []
+
+    def __call__(self, account, path, *, retries):
+        self.paths.append(path)
+        if not self._responses:
+            raise AssertionError(f"多余的上游调用: {path}")
+        return self._responses.pop(0)
+
+
+@contextmanager
+def _stub_upstream(*responses):
+    stub = _StubCall(*responses)
+    original = checkin._call
+    checkin._call = stub
+    try:
+        yield stub
+    finally:
+        checkin._call = original
+
+
+def test_checkin_skip_rules():
+    assert checkin.skip_reason(Account(uid="u", realm="cn", access_token="at")) == ""
+    assert checkin.skip_reason(
+        Account(uid="u", realm="cn", access_token="at", enterprise_id="ent")
+    ) == "企业账号不支持签到"
+    assert checkin.skip_reason(
+        Account(uid="u", realm="global", access_token="at")
+    ) == "global 域无签到体系"
+    assert checkin.skip_reason(Account(uid="u", realm="cn")) == "缺少 access_token"
+    # 不适用账号直接出 skipped，一个请求都不发
+    with _stub_upstream() as stub:
+        out = checkin.run_checkin(Account(uid="u", realm="global", access_token="at"))
+    assert out.state == checkin.STATE_SKIPPED and out.ok and stub.paths == []
+
+
+def test_checkin_status_parsing_enveloped_and_flat():
+    # 新口径：{code,msg,data} 信封
+    with _stub_upstream((200, {"code": 0, "msg": "ok", "data": {
+        "active": True, "today_checked_in": True, "today_credit": 100,
+        "streak_days": 7, "total_credits": 1200, "is_streak_day": True,
+        "activity_name": "每日签到",
+    }})):
+        status = checkin.checkin_status(Account(uid="u", realm="cn", access_token="at"))
+    assert status.active and status.today_checked_in
+    assert status.today_credit == 100.0 and status.streak_days == 7
+    assert status.total_credits == 1200.0 and status.is_streak_day
+    assert "连续 7 天" in status.describe()
+
+    # 旧口径：裸负载 + daily_credit 别名 + streak 对象；缺 active 不能判成活动关闭
+    with _stub_upstream((200, {"daily_credit": "50", "streak": {"days": 3}})):
+        status = checkin.checkin_status(Account(uid="u", realm="cn", access_token="at"))
+    assert status.active is True and status.today_credit == 50.0
+    assert status.streak_days == 3 and status.today_checked_in is False
+
+
+def test_checkin_run_flow():
+    account = Account(uid="u", realm="cn", access_token="at")
+
+    # 未签 → 领取成功 → 回读连签/累计
+    with _stub_upstream(
+        (200, {"active": True, "today_checked_in": False}),
+        (200, {"credit": 100}),
+        (200, {"today_checked_in": True, "streak_days": 8, "total_credits": 1300}),
+    ) as stub:
+        out = checkin.run_checkin(account)
+    assert out.state == checkin.STATE_CLAIMED and out.credit == 100.0 and out.ok
+    assert out.streak_days == 8 and out.total_credits == 1300.0
+    assert stub.paths == [checkin.STATUS_PATH, checkin.CLAIM_PATH, checkin.STATUS_PATH]
+
+    # 已签：状态直接判定，绝不打领取接口（幂等靠上游，省请求靠这里）
+    with _stub_upstream(
+        (200, {"active": True, "today_checked_in": True, "streak_days": 9})
+    ) as stub:
+        out = checkin.run_checkin(account)
+    assert out.state == checkin.STATE_ALREADY and out.streak_days == 9
+    assert stub.paths == [checkin.STATUS_PATH]
+
+    # 竞态：状态说未签、领取却回 null 或 code 10001 → 按已签处理，不是失败
+    for body in (None, {"code": 10001, "msg": "今天已签到，请明天再来"}):
+        with _stub_upstream((200, {"active": True, "today_checked_in": False}), (400, body)) as stub:
+            out = checkin.run_checkin(account)
+        assert out.state == checkin.STATE_ALREADY and out.ok
+        assert stub.paths == [checkin.STATUS_PATH, checkin.CLAIM_PATH]
+
+    # 活动未开启
+    with _stub_upstream((200, {"active": False, "activity_name": "签到节"})):
+        out = checkin.run_checkin(account)
+    assert out.state == checkin.STATE_INACTIVE and out.ok and "签到节" in out.message
+
+    # 回读失败不能把"已领取"改写成失败
+    with _stub_upstream(
+        (200, {"active": True, "today_checked_in": False}),
+        (200, {"credit": 30}),
+        (500, {"msg": "internal error"}),
+    ):
+        out = checkin.run_checkin(account)
+    assert out.state == checkin.STATE_CLAIMED and out.credit == 30.0
+
+    # 硬失败必须抛 CheckinError，不能静默成"已签"
+    for responses in (((500, {"msg": "internal error"}),), ((200, {"code": 1, "msg": "boom"}),)):
+        with _stub_upstream(*responses):
+            try:
+                checkin.run_checkin(account)
+                raise AssertionError("应抛出 CheckinError")
+            except checkin.CheckinError:
+                pass
+
+
+def test_checkin_provider_ledger_short_circuit():
+    """台账命中即短路（不发请求）；force 绕过台账去打上游，且失败收进 state=error。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            today = checkin.beijing_today()
+            store.upsert_account(Account(
+                uid="u_1", realm="cn", access_token="at",
+                last_checkin_day=today, checkin_streak=5, checkin_total_credits=600,
+            ))
+            provider = WorkBuddyProvider(store=store)
+
+            def _explode(*args, **kwargs):
+                raise checkin.CheckinError("stub: 不应发起请求")
+
+            original = checkin._call
+            checkin._call = _explode
+            try:
+                cached = provider.checkin("u_1")
+                forced = provider.checkin("u_1", force=True)
+            finally:
+                checkin._call = original
+
+            assert cached["state"] == checkin.STATE_ALREADY and cached["local"] is True
+            assert cached["streak_days"] == 5 and cached["total_credits"] == 600.0
+            assert forced["state"] == checkin.STATE_ERROR and "stub" in forced["message"]
+        finally:
+            store.close()
+
+
+def test_checkin_all_only_active_accounts():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(uid="u_a", realm="cn", access_token="at"))
+            store.upsert_account(Account(uid="u_p", realm="cn", access_token="at",
+                                         status="paused"))
+            store.upsert_account(Account(uid="u_g", realm="global", access_token="at"))
+            provider = WorkBuddyProvider(store=store)
+            # 领到积分后 provider 会起线程拉余额：测试里禁掉，别真打上游
+            provider._refresh_credits_async = lambda uid: None
+
+            # u_a 走完整领取；u_g 不适用；u_p 根本不进这一轮
+            with _stub_upstream(
+                (200, {"active": True, "today_checked_in": False}),
+                (200, {"credit": 20}),
+                (200, {"streak_days": 1, "total_credits": 20}),
+            ):
+                summary = provider.checkin_all()
+
+            assert summary["total"] == 2  # active 的 u_a + global 的 u_g
+            assert summary["claimed"] == 1 and summary["skipped"] == 1
+            assert summary["credits"] == 20.0
+            assert {item["uid"] for item in summary["items"]} == {"u_a", "u_g"}
+            # 领到的号落台账，且顺带刷新积分
+            assert store.get_account("u_a").last_checkin_day == checkin.beijing_today()
+            assert store.get_account("u_p").last_checkin_day == ""
+        finally:
+            store.close()
+
+
+def test_store_migrates_legacy_accounts_table():
+    """老库（无签到列）打开后自动补列：CREATE TABLE IF NOT EXISTS 不会给旧表加列。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "wb.db"
+        legacy = sqlite3.connect(str(path))
+        legacy.execute(
+            "CREATE TABLE accounts (uid TEXT PRIMARY KEY, label TEXT NOT NULL DEFAULT '', "
+            "realm TEXT NOT NULL DEFAULT 'cn', access_token TEXT NOT NULL DEFAULT '', "
+            "refresh_token TEXT NOT NULL DEFAULT '', enterprise_id TEXT NOT NULL DEFAULT '', "
+            "device_token TEXT NOT NULL DEFAULT '', token_expires_ms INTEGER NOT NULL DEFAULT 0, "
+            "status TEXT NOT NULL DEFAULT 'active', status_reason TEXT NOT NULL DEFAULT '', "
+            "cooldown_until_ms INTEGER NOT NULL DEFAULT 0, cooldown_kind TEXT NOT NULL DEFAULT '', "
+            "breaker_count INTEGER NOT NULL DEFAULT 0, "
+            "breaker_until_ms INTEGER NOT NULL DEFAULT 0, "
+            "model_cooldowns TEXT NOT NULL DEFAULT '{}', "
+            "consecutive_failures INTEGER NOT NULL DEFAULT 0, credits_total REAL, credits_remain REAL, "
+            "credits_updated_ms INTEGER NOT NULL DEFAULT 0, used_seq INTEGER NOT NULL DEFAULT 0, "
+            "idle_boost REAL NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', "
+            "created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL)"
+        )
+        legacy.execute(
+            "INSERT INTO accounts (uid, label, access_token, created_ms, updated_ms) "
+            "VALUES ('u_old', '老号', 'at', 1, 1)"
+        )
+        legacy.commit()
+        legacy.close()
+
+        store = WorkBuddyStore(path)
+        try:
+            account = store.get_account("u_old")
+            assert account is not None and account.label == "老号"
+            assert account.last_checkin_day == "" and account.checkin_streak == 0
+            assert account.checkin_total_credits is None
+
+            store.update_runtime("u_old", last_checkin_day="2026-10-12", checkin_streak=3,
+                                 checkin_total_credits=600, checkin_updated_ms=42)
+            again = store.get_account("u_old")
+            assert again.checked_in_on("2026-10-12") and not again.checked_in_on("2026-10-13")
+            assert again.checkin_streak == 3 and again.checkin_total_credits == 600.0
+            assert again.checkin_updated_ms == 42
+
+            # 补列后整体 upsert 仍要对得上 _ACCOUNT_COLUMNS 的顺序与个数
+            again.label = "改名"
+            store.upsert_account(again)
+            reloaded = store.get_account("u_old")
+            assert reloaded.label == "改名" and reloaded.checkin_streak == 3
+            assert reloaded.checkin_total_credits == 600.0
+        finally:
+            store.close()
 
 
 # ── 内建运行入口（无 pytest 环境直接跑）──

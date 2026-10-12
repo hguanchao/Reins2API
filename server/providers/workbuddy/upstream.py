@@ -206,7 +206,7 @@ def refresh_headers(account: Account) -> dict[str, str]:
 # ── 请求发起 ──
 
 
-def _short_rpc_timeout() -> tuple[float, float]:
+def short_rpc_timeout() -> tuple[float, float]:
     """短 RPC（refresh/models/credits）：curl_cffi tuple → TIMEOUT_MS = connect+read。"""
     return (float(WB_TIMEOUT_CONNECT), float(WB_TIMEOUT_TTFB - WB_TIMEOUT_CONNECT))
 
@@ -240,7 +240,7 @@ def refresh_request(account: Account) -> dict[str, Any]:
     response = crequests.post(
         url,
         headers=refresh_headers(account),
-        timeout=_short_rpc_timeout(),
+        timeout=short_rpc_timeout(),
         proxies=proxies_for(url),
         impersonate="chrome",
     )
@@ -277,7 +277,7 @@ def fetch_models(account: Account) -> list[dict[str, Any]]:
             "user-agent": V3_CONFIG_UA_GLOBAL if account.realm == "global" else V3_CONFIG_UA_CN,
             "x-codebuddy-request": "1",
         },
-        timeout=_short_rpc_timeout(),
+        timeout=short_rpc_timeout(),
         proxies=proxies_for(url),
         impersonate="chrome",
     )
@@ -460,7 +460,7 @@ def fetch_credits(account: Account) -> tuple[float, float]:
             url,
             headers=billing_headers(account),
             json=body,
-            timeout=_short_rpc_timeout(),
+            timeout=short_rpc_timeout(),
             proxies=proxies_for(url),
             impersonate="chrome",
         )

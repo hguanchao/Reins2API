@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode, SVGProps } from "react";
 import { Bot, Monitor, Moon, Settings, Sun } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -39,7 +40,7 @@ function WorkBuddyMark({ strokeWidth: _strokeWidth, ...rest }: SVGProps<SVGSVGEl
 }
 
 const nav = [
-  { to: "/", label: "OpenCode", icon: Bot },
+  { to: "/opencode", label: "OpenCode", icon: Bot },
   { to: "/workbuddy", label: "WorkBuddy", icon: WorkBuddyMark },
   { to: "/settings", label: "系统配置", icon: Settings },
 ] as const;
@@ -96,20 +97,42 @@ export function ThemeToggle({ className }: { className?: string }) {
 }
 
 function resolveTab(pathname: string): string {
-  // 命中导航表才高亮该 tab，未知路径回落首页
-  return nav.some((item) => item.to === pathname) ? pathname : "/";
+  // 命中导航表才高亮该 tab，未知路径回落 OpenCode 页（与 / 的重定向目标一致）
+  return nav.some((item) => item.to === pathname) ? pathname : "/opencode";
 }
 
 /** Aperture Console 壳层：顶栏 + 全幅内容 */
 export function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
+  const activeTab = resolveTab(location.pathname);
+  const tabsListRef = useRef<HTMLDivElement>(null);
+  /** 指示胶囊的水平中心（相对 .header-nav 的 padding box）。
+      null = 还没量到，此时不渲染——否则它会带着 transform 过渡从 left:0 飞进来。 */
+  const [indicatorCenter, setIndicatorCenter] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const list = tabsListRef.current;
+    if (!list) return;
+    const measure = () => {
+      const el = list.querySelector<HTMLElement>('[data-state="active"]');
+      if (!el) return;
+      setIndicatorCenter(el.offsetLeft + el.offsetWidth / 2);
+    };
+    measure();
+    // 只量一次会在字体加载完成后失准：Geist 换入前按回退字体算出的宽度与之后不同，
+    // 胶囊会停在错位的 tab 下。ResizeObserver 顺带兜住窗口缩放引起的轨宽变化。
+    document.fonts.ready.then(measure).catch(() => {});
+    const observer = new ResizeObserver(measure);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [activeTab]);
 
   return (
     <div className="app-shell">
       <header className="top-rail">
         <div>
-          <NavLink to="/" className="brand-lockup" aria-label="Reins2API">
+          <NavLink to="/opencode" className="brand-lockup" aria-label="Reins2API">
             <span className="brand-mark" aria-hidden>
               <Bot strokeWidth={1.6} />
             </span>
@@ -119,24 +142,32 @@ export function AppShell() {
           </NavLink>
         </div>
 
-        <Tabs
-          value={resolveTab(location.pathname)}
-          onValueChange={(value) => navigate(value)}
-          className="header-nav"
-        >
-          <TabsList className="nav-tabs">
-            {nav.map((item) => (
-              <TabsTrigger key={item.to} value={item.to} className="nav-tab">
-                <item.icon
-                  className="nav-tab-icon"
-                  aria-hidden
-                  strokeWidth={1.6}
-                />
-                <span>{item.label}</span>
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        {/* .header-nav 既是指示胶囊的定位上下文，也是测量的坐标系 */}
+        <div className="header-nav">
+          <Tabs value={activeTab} onValueChange={(value) => navigate(value)}>
+            <TabsList className="nav-tabs" ref={tabsListRef}>
+              {nav.map((item) => (
+                <TabsTrigger key={item.to} value={item.to} className="nav-tab">
+                  <item.icon
+                    className="nav-tab-icon"
+                    aria-hidden
+                    strokeWidth={1.6}
+                  />
+                  <span>{item.label}</span>
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+          {/* 刻意放在 tablist 之外：tablist 的子元素只应是 tab，
+              装饰元素塞进去是 ARIA 违规。绝对定位，不参与上面的 flex 布局。 */}
+          {indicatorCenter !== null ? (
+            <span
+              className="nav-indicator"
+              aria-hidden
+              style={{ transform: `translateX(${indicatorCenter}px)` }}
+            />
+          ) : null}
+        </div>
 
         <div className="header-actions">
           <ThemeToggle />

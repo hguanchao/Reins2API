@@ -313,6 +313,27 @@ def _handle_workbuddy_api(
         send_json(handler, 200, {"ok": True, "data": updated})
         return True
 
+    if method == "POST" and action == "accounts" and len(parts) == 6 and parts[5] == "checkin":
+        # 立即签到：force 绕过本地台账，交给上游幂等兜底（失败以 state=error 返回）
+        uid = parts[4]
+        try:
+            result = provider.checkin(uid, force=True)
+        except KeyError as exc:
+            send_json(handler, 404, {"ok": False, "error": str(exc)})
+            return True
+        send_json(handler, 200, {"ok": True, "data": result})
+        return True
+
+    if method == "POST" and action == "checkin" and len(parts) == 5 and parts[4] == "run-all":
+        # 一键全签：串行 + 账号间错峰，号多时耗时随号数线性增长
+        try:
+            summary = provider.checkin_all()
+        except Exception as exc:
+            send_json(handler, 502, {"ok": False, "error": f"签到失败: {type(exc).__name__}: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": summary})
+        return True
+
     if method == "GET" and action == "accounts" and len(parts) == 6 and parts[5] == "models":
         # 按账号实时查询可用模型（用该账号 token 打上游 /v3/config，不缓存）
         uid = parts[4]

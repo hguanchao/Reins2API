@@ -73,3 +73,12 @@ WB_IDLE_BOOST_MAX = 5.0
 WB_CREDIT_FLOOR = 0            # credits_remain ≤ 该值不再派号；0 = 关闭
 WB_CREDITS_REFRESH_MIN = 30    # 余额刷新周期（分钟）
 WB_NEGATIVE_CACHE_S = 600      # 11102 (uid,model) 负缓存避让时长
+
+# ── 签到（billing 域，每日一次；CN 专属，见 providers/workbuddy/checkin.py）──
+# global 域没有签到活动、企业号上游直接拒绝，两者都在发请求前短路。
+WB_CHECKIN_ENABLED = True      # 关掉只停后台线程；手动「立即签到」不受影响
+WB_CHECKIN_HOURS = (9, 21)     # 每日触发小时（北京时间）；多档 = 一天多次补救机会
+WB_CHECKIN_JITTER_S = 300      # 触发点后随机 0..该值 秒错峰，避免整点齐射
+WB_CHECKIN_STAGGER_MS = 800    # 全池签到时账号之间的间隔
+WB_CHECKIN_TICK_S = 60         # 调度线程墙钟检查周期
+WB_CHECKIN_ATTEMPT_LIMIT = 2   # 单个触发档最多尝试轮数（首轮撞上刚开机时留一次补救）

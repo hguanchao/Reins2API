@@ -139,6 +139,8 @@ export interface RequestRow {
   cached_tokens: number;
   client_ip: string;
   client_ua: string;
+  /** 首字耗时（上游首个非空字节，ms）。0 = 未采到或该请求失败 */
+  first_byte_ms: number;
   duration_ms: number;
   error_message: string | null;
   http_status: number;
@@ -293,6 +295,11 @@ export interface WorkBuddyAccount {
   used_seq: number;
   idle_boost: number;
   last_error: string;
+  /** 签到台账：last_checkin_day 是北京日期 YYYY-MM-DD（签到按 UTC+8 结算一天） */
+  last_checkin_day: string;
+  checkin_streak: number;
+  checkin_total_credits: number | null;
+  checkin_updated_ms: number;
   created_ms: number;
   updated_ms: number;
   stats_7d?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
@@ -340,6 +347,45 @@ export function workBuddyAccountAction(
     `/api/workbuddy/accounts/${encodeURIComponent(uid)}/action`,
     { method: "POST", body: JSON.stringify({ action }) },
   );
+}
+
+/** 单号签到结论（state 为 error 时 message 是失败原因，其余都是正常结论）。 */
+export interface WorkBuddyCheckinResult {
+  uid: string;
+  state: "claimed" | "already" | "inactive" | "skipped" | "error";
+  message: string;
+  credit: number | null;
+  streak_days: number | null;
+  total_credits: number | null;
+  is_streak_day: boolean;
+  http_status: number;
+  /** true = 命中本地台账短路，未发请求；force 调用不会出现 */
+  local?: boolean;
+}
+
+/** 立即签到（后端 force：绕过本地台账，交给上游幂等兜底）。 */
+export function runWorkBuddyCheckin(uid: string): Promise<WorkBuddyCheckinResult> {
+  return request<WorkBuddyCheckinResult>(
+    `/api/workbuddy/accounts/${encodeURIComponent(uid)}/checkin`,
+    { method: "POST" },
+  );
+}
+
+/** 全池签到汇总（后端串行 + 账号间错峰，号多时耗时随号数线性增长）。 */
+export interface WorkBuddyCheckinSummary {
+  total: number;
+  claimed: number;
+  already: number;
+  skipped: number;
+  inactive: number;
+  failed: number;
+  credits: number;
+  summary: string;
+  items: WorkBuddyCheckinResult[];
+}
+
+export function runWorkBuddyCheckinAll(): Promise<WorkBuddyCheckinSummary> {
+  return request<WorkBuddyCheckinSummary>("/api/workbuddy/checkin/run-all", { method: "POST" });
 }
 
 export interface WorkBuddyLoginStart {

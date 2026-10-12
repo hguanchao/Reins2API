@@ -19,10 +19,13 @@ export default function App() {
     <Suspense fallback={null}>
       <Routes>
         <Route element={<AppShell />}>
-          <Route index element={<OpenCodePage />} />
+          {/* 首页有自己的一节地址：/ 只做重定向（replace，不占历史）。
+              这样 OpenCode 页在地址栏里可辨识、可直连、可收藏，刷新也不会掉回来 */}
+          <Route index element={<Navigate to="/opencode" replace />} />
+          <Route path="opencode" element={<OpenCodePage />} />
           <Route path="workbuddy" element={<WorkBuddyPage />} />
           <Route path="settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/opencode" replace />} />
         </Route>
       </Routes>
     </Suspense>

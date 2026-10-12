@@ -125,10 +125,18 @@ export function SettingsPage() {
     : "正在探测上游看到的出口地址…";
 
   return (
-    <section className="panel gw-workspace" aria-label="系统配置">
+    <section className="gw-workspace" aria-label="系统配置">
       {!config ? (
         <div className="gw-skeleton" aria-hidden />
       ) : (
+        <>
+        <div className="gw-page-head">
+          <div>
+            <h1 className="gw-page-title">系统配置</h1>
+            <p className="gw-page-sub">出站链路与运行参数</p>
+          </div>
+        </div>
+
         <section className="gw-panel">
           <div className="gw-panel-head">
             <Network className="size-3.5" strokeWidth={1.6} aria-hidden />
@@ -138,13 +146,13 @@ export function SettingsPage() {
             </span>
           </div>
 
-          <div className="flex flex-col gap-4 p-4">
-            <p className="text-xs text-muted-foreground">
-              代理用于请求上游（模型目录与推理流量），保存后立即生效，无需重启服务。
+          <div className="flex flex-col gap-4 p-[18px]">
+            <p className="text-[12.5px] text-fg-subtle">
+              代理用于请求上游（模型列表与推理流量），保存后立即生效，无需重启服务。
             </p>
 
             <div
-              className="grid gap-3 sm:grid-cols-3"
+              className="grid gap-3 min-[860px]:grid-cols-3"
               role="radiogroup"
               aria-label="代理模式"
             >
@@ -159,15 +167,15 @@ export function SettingsPage() {
                     aria-checked={active}
                     onClick={() => setMode(option.mode)}
                     className={cn(
-                      "cursor-pointer rounded-lg border p-4 text-left transition-colors outline-none",
-                      "focus-visible:ring-2 focus-visible:ring-ring/50",
+                      "cursor-pointer rounded-xl border bg-surface px-4 py-3.5 text-left transition-colors outline-none",
+                      "focus-visible:ring-[3px] focus-visible:ring-ring",
                       active
-                        ? "border-primary bg-primary/5"
-                        : "border-border hover:bg-muted/50",
+                        ? "border-primary bg-[var(--primary-soft)]"
+                        : "border-border hover:border-[var(--border-strong)]",
                     )}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-2 text-sm font-medium">
+                      <span className="inline-flex items-center gap-2 text-[13.5px] font-medium">
                         <Icon
                           className={cn("size-4", active ? "text-primary" : "text-muted-foreground")}
                           strokeWidth={1.75}
@@ -177,17 +185,17 @@ export function SettingsPage() {
                       </span>
                       <span
                         className={cn(
-                          "grid size-4 place-items-center rounded-full border",
-                          active ? "border-primary" : "border-border",
+                          "grid size-[15px] place-items-center rounded-full border-[1.5px]",
+                          active ? "border-primary" : "border-[var(--border-strong)]",
                         )}
                         aria-hidden
                       >
                         {active ? (
-                          <span className="size-2 rounded-full bg-primary" />
+                          <span className="size-[7px] rounded-full bg-primary" />
                         ) : null}
                       </span>
                     </div>
-                    <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+                    <p className="mt-[5px] text-[11.5px] leading-[1.5] text-muted-foreground">
                       {option.desc}
                     </p>
                   </button>
@@ -196,17 +204,20 @@ export function SettingsPage() {
             </div>
 
             {mode === "manual" ? (
-              <div className="flex max-w-md flex-col gap-1.5">
-                <Label htmlFor="proxy-url">代理地址</Label>
+              <div className="flex max-w-[520px] flex-col gap-1.5">
+                <Label htmlFor="proxy-url" className="gw-settings-label">
+                  代理地址
+                </Label>
                 <Input
                   id="proxy-url"
+                  className="gw-settings-input"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="127.0.0.1:7890 或 http://user:pass@host:port"
                   autoComplete="off"
                   spellCheck={false}
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-[11.5px] leading-[1.5] text-fg-subtle">
                   支持 host:port 与完整 URL（http/https/socks）；不走代理的地址由环境变量 NO_PROXY 控制。
                   {manualInvalid ? (
                     <span className="text-destructive"> 手动模式必须填写代理地址。</span>
@@ -215,39 +226,43 @@ export function SettingsPage() {
               </div>
             ) : null}
 
-            <div className="flex items-center gap-3">
-              <Button onClick={handleSave} disabled={saving || manualInvalid}>
-                <Save className="size-3.5" aria-hidden />
-                {saving ? "保存中…" : "保存配置"}
-              </Button>
-              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span>当前生效：{config.proxy_status}</span>
-                <span aria-hidden>·</span>
-                {/* 出口 IP：上游实际看到的地址；悬停看探测详情（经代理/直连 + 探测时刻） */}
-                <span className={cn(egress && !egress.ok && "text-destructive")} title={egressCaption}>
-                  出口 IP {egressText}
-                </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-6"
-                  disabled={probing}
-                  onClick={() => void probeEgress(true)}
-                  title="重新探测出口 IP"
-                  aria-label="重新探测出口 IP"
-                  aria-busy={probing}
-                >
-                  <RefreshCw
-                    className={cn("size-3", probing && "animate-spin")}
-                    strokeWidth={1.6}
-                    aria-hidden
-                  />
-                </Button>
+          </div>
+
+          {/* 页脚：保存按钮靠左，「当前生效 · 出口 IP」靠右（对齐 demo 的 .panel-foot）。
+              出口 IP 数值用等宽字体，和 demo 里 <span class="mono"> 的那格一致 */}
+          <div className="gw-panel-foot">
+            <Button size="sm" onClick={handleSave} disabled={saving || manualInvalid}>
+              <Save className="size-3.5" aria-hidden />
+              {saving ? "保存中…" : "保存配置"}
+            </Button>
+            <span className="ml-auto flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
+              <span>当前生效：{config.proxy_status}</span>
+              <span aria-hidden>·</span>
+              {/* 出口 IP：上游实际看到的地址；悬停看探测详情（经代理/直连 + 探测时刻） */}
+              <span className={cn(egress && !egress.ok && "text-destructive")} title={egressCaption}>
+                出口 IP <span className="mono text-foreground">{egressText}</span>
               </span>
-            </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                disabled={probing}
+                onClick={() => void probeEgress(true)}
+                title="重新探测出口 IP"
+                aria-label="重新探测出口 IP"
+                aria-busy={probing}
+              >
+                <RefreshCw
+                  className={cn("size-3", probing && "animate-spin")}
+                  strokeWidth={1.6}
+                  aria-hidden
+                />
+              </Button>
+            </span>
           </div>
         </section>
+        </>
       )}
     </section>
   );

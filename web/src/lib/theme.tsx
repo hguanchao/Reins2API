@@ -37,7 +37,7 @@ function applyDomTheme(resolved: 'light' | 'dark') {
   root.style.colorScheme = resolved
   const meta = document.querySelector('meta[name="theme-color"]')
   if (meta) {
-    meta.setAttribute('content', resolved === 'dark' ? '#07090d' : '#f4f6f9')
+    meta.setAttribute('content', resolved === 'dark' ? '#111827' : '#f9fafb')
   }
 }
 
@@ -48,7 +48,8 @@ function readStoredTheme(): ThemeMode {
   } catch {
     /* ignore */
   }
-  return 'dark'
+  // 新设计语言是白底，默认跟随浅色；用户显式选过则永久记住
+  return 'light'
 }
 
 /** 主题 Provider：支持 light / dark / system，持久化到 localStorage */

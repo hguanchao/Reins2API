@@ -253,6 +253,19 @@ def _serve_inner(
         return _copy_upstream_error(handler, external, result, record, extra)
 
     record.account_uid = result.account
+    # 首字耗时：上游首个非空字节到达的时刻。
+    # workbuddy 打上游恒 stream=True，第一个块就是首字；
+    # opencode 的 curl 流模式跟随客户端意图——客户端要非流式时整包被 curl 缓冲，
+    # 网关侧看不到"第一个字节"，此时留 0（前端显示「—」）。
+    # 不拿"整包到齐"的时刻冒充首字：那等于总耗时，是条错数据，比空着更糟。
+    # 失败响应同理留 0——它没有"模型首字"可言。
+    def _stamp_first_byte() -> None:
+        # 基准取 record.created_ms 而不是 _serve 的 started：这个闭包活在
+        # _serve_inner 里，started 是 _serve 的局部变量，不在作用域内。
+        # created_ms 正是由 started 算出的（见 _serve），所以基准一致。
+        record.first_byte_ms = int(time.time() * 1000) - record.created_ms
+
+    result.stamp_first_chunk(_stamp_first_byte)
     logger.info(
         f"[推理] request={ids.request} model={model} proto={route.protocol} "
         f"stream={client_stream} shaped={shaped} status={result.status}"

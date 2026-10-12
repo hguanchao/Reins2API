@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS requests (
     client_ip          VARCHAR(45)  NOT NULL DEFAULT '',
     client_ua          VARCHAR(255) NOT NULL DEFAULT '',
     -- 结果：状态字段紧挨时间字段之前
+    first_byte_ms      INTEGER      NOT NULL DEFAULT 0,  -- 首字耗时（0 = 未采到/失败请求）
     duration_ms        INTEGER      NOT NULL DEFAULT 0,
     error_message      VARCHAR(255),
     http_status        INTEGER      NOT NULL DEFAULT 0,
@@ -80,4 +81,6 @@ ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("client_ua", "TEXT NOT NULL DEFAULT ''"),
     ("reasoning_effort", "TEXT NOT NULL DEFAULT ''"),
     ("account_uid", "TEXT NOT NULL DEFAULT ''"),
+    # 首字耗时晚于以上各列加入；老库整列缺失，默认 0 = 无数据（前端显示「—」）
+    ("first_byte_ms", "INTEGER NOT NULL DEFAULT 0"),
 )
