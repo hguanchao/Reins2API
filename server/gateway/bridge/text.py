@@ -33,10 +33,3 @@ def bridge_blocks_text(blocks: list[BridgeBlock]) -> str:
         if block.kind == "text":
             text += block.text
     return text
-
-
-def first_non_empty(*values: str) -> str:
-    for value in values:
-        if value != "":
-            return value
-    return ""

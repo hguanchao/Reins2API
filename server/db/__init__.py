@@ -167,6 +167,37 @@ class ProviderStore:
             logger.warning(f"[遥测] {self.name} 明细查询失败: {exc}")
             return 0, []
 
+    def account_totals(self) -> dict[str, dict[str, int]]:
+        """按账号的**全时段**聚合（历史用量列）。
+
+        在 SQL 侧 GROUP BY，不把整表读进内存——遥测只进不出，表会一直长。
+        返回 {uid: {requests, failed, input_tokens, output_tokens, last_used_ms}}。
+        """
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT account_uid,"
+                    " COUNT(*) AS requests,"
+                    " SUM(CASE WHEN http_status < 200 OR http_status >= 300 THEN 1 ELSE 0 END) AS failed,"
+                    " SUM(input_tokens) AS input_tokens,"
+                    " SUM(output_tokens) AS output_tokens,"
+                    " MAX(created_ms) AS last_used_ms"
+                    " FROM requests WHERE account_uid != '' GROUP BY account_uid"
+                ).fetchall()
+        except Exception as exc:
+            logger.warning(f"[遥测] {self.name} 全时段聚合失败: {exc}")
+            return {}
+        return {
+            str(row["account_uid"]): {
+                "requests": int(row["requests"] or 0),
+                "failed": int(row["failed"] or 0),
+                "input_tokens": int(row["input_tokens"] or 0),
+                "output_tokens": int(row["output_tokens"] or 0),
+                "last_used_ms": int(row["last_used_ms"] or 0),
+            }
+            for row in rows
+        }
+
     def close(self) -> None:
         try:
             with self._lock:

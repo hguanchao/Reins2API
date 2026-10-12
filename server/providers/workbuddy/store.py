@@ -118,9 +118,6 @@ class Account:
     created_ms: int = 0
     updated_ms: int = 0
 
-    def active(self, now_ms: int) -> bool:
-        return self.status == STATUS_ACTIVE
-
     def account_cooldown_active(self, now_ms: int) -> bool:
         return self.cooldown_until_ms > now_ms
 

@@ -30,12 +30,12 @@ _FEATURES = (
 )
 
 # 剥离层：header 键名即触发（与值无关），连同值整段删除。
-_RE_BILLING_KV = re.compile(r"(?i)x-anthropic-billing-header:[^;\n]*;?\s*")
+_RE_BILLING_KV = re.compile(r"(?i)x-anthropic-billing-header\s*[:=][^;\n]*;?\s*")
 # 尾随裸键值（cc_version=...; cc_entrypoint=...;）循环清理。
 _RE_CC_KV = re.compile(r"(?i)\bcc_[a-z0-9_]+=[^;\n]*;?\s*")
 # 兜底：键值形态删完后残留的裸键名（引用/示例文本形态）做最小缩写——破坏逐字
-# 匹配、语义不变、保留可读性。本正则不要求冒号（是上面那条的超集），大小写
-# 变体与无冒号形态一并覆盖。
+# 匹配、语义不变、保留可读性。去掉 x- 前缀即可：既不再等于逐字原文，又读得出是同一个键。
+# 注意上面那条 KV 正则要求分隔符 [: =]——没有分隔符时键值匹配会贪婪吃光整行。
 _RE_BARE_BILLING = re.compile(r"(?i)x-anthropic-billing-header")
 
 # 改写层：模板句整句替换（每句只换一个词，语义不变）。匹配串**不带结尾标点**：
@@ -89,7 +89,7 @@ def sanitize_text(text: str) -> str:
         while previous != text:  # 清尾随裸 kv，直到不再变化
             previous = text
             text = _RE_CC_KV.sub("", text)
-    text = _RE_BARE_BILLING.sub("x-anthropic-billing-hdr", text)
+    text = _RE_BARE_BILLING.sub("anthropic-billing-header", text)
     return text.strip()
 
 

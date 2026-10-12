@@ -170,7 +170,7 @@ export function SettingsPage() {
                       "cursor-pointer rounded-xl border bg-surface px-4 py-3.5 text-left transition-colors outline-none",
                       "focus-visible:ring-[3px] focus-visible:ring-ring",
                       active
-                        ? "border-primary bg-[var(--primary-soft)]"
+                        ? "border-primary bg-accent"
                         : "border-border hover:border-[var(--border-strong)]",
                     )}
                   >

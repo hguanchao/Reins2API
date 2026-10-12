@@ -15,7 +15,6 @@ class StreamUsageObserver:
     def __init__(self, protocol: str) -> None:
         self._parser = stream_parser(protocol)
         self._usage = Usage()
-        self._reported = False
         self._normal = False
         self._error = False
         self._parse_err: Exception | None = None
@@ -35,7 +34,6 @@ class StreamUsageObserver:
             elif event.kind == "error":
                 self._error = True
             if event.usage is not None:
-                self._reported = True
                 merge_bridge_usage(self._usage, event.usage)
 
     def push(self, chunk: bytes) -> None:
@@ -46,9 +44,6 @@ class StreamUsageObserver:
     def finish(self) -> Usage:
         self._splitter.end()
         return self._usage
-
-    def reported(self) -> bool:
-        return self._reported
 
     def normal_termination(self) -> bool:
         return self._normal

@@ -504,13 +504,18 @@ def test_registry_alias_routing():
     reg = Registry()
     reg.register(_Fake("opencode"))
     reg.register(_Fake("workbuddy"))
+    reg.register(_Fake("codex"))
     # 别名前缀表本身
-    assert ALIAS_PREFIXES == {"oc": "opencode", "cn": "workbuddy", "glb": "workbuddy"}
+    assert ALIAS_PREFIXES == {
+        "oc": "opencode", "cn": "workbuddy", "glb": "workbuddy", "cx": "codex",
+    }
     assert reg.resolve("oc:big-pickle").provider == "opencode"
     assert reg.resolve("cn:x").provider == "workbuddy"
     assert reg.resolve("glb:x").provider == "workbuddy"
+    assert reg.resolve("cx:gpt-5-codex").provider == "codex"
     # route_target：命中前缀 → provider；未注册前缀 → (None, prefix)
     assert reg.route_target("cn:x") == (reg.get("workbuddy"), None)
+    assert reg.route_target("cx:gpt-5-codex") == (reg.get("codex"), None)
     assert reg.route_target("nope:x")[0] is None and reg.route_target("nope:x")[1] == "nope"
     assert reg.route_target("nope/x")[0] is None and reg.route_target("nope/x")[1] == "nope"
     # 裸名 → 默认 provider（首个注册）
@@ -958,15 +963,16 @@ def test_sanitize_keeps_clean_text_untouched():
 
 
 def test_sanitize_strips_billing_header_forms():
-    """键值形态整段删除（含值）；裸键名（引用/示例文本）只做最小缩写。"""
-    text = "x-anthropic-billing-header: cc_version=1.2.3; cc_entrypoint=cli; tail"
-    cleaned = sanitize.sanitize_text(text)
-    assert cleaned == "tail"
+    """键值形态整段删除（含值）；裸键名（引用/示例文本）只做最小缩写。
 
-    # 裸键名不带冒号：缩写而非删除（破坏逐字匹配、保留可读性）
-    assert sanitize.sanitize_text("see X-Anthropic-Billing-Header for details") == \
-        "see x-anthropic-billing-hdr for details"
-
+    真实字面量从模块取（sanitize._FEATURES 里的那条特征），避免测试与实现各写一份。
+    """
+    token = sanitize._FEATURES[4]
+    # 键值形态（带 : 或 = 分隔符）：连同值整段删除
+    assert sanitize.sanitize_text(f"{token}: abc; tail") == "tail"
+    assert sanitize.sanitize_text(f"{token}=1;") == ""
+    # 裸键名不带分隔符：最小缩写（去掉 x- 前缀），且绝不误删整行
+    assert sanitize.sanitize_text(f"see {token} for details") == f"see {token[2:]} for details"
 
 def test_sanitize_covers_reasoning_and_tool_arguments():
     """reasoning / reasoning_content / tool_calls.arguments / 多模态 text part 全是盲区。
@@ -1067,6 +1073,62 @@ def test_send_sanitizes_body_before_upstream():
             assert b"official CLI tool for Claude." in seen[0]
         finally:
             store.close()
+
+
+def test_send_injects_account_scoped_cache_key():
+    """prompt_cache_key 按账号隔离：注入发生在选号之后（uid 已知），而非 shape 阶段。
+
+    回归点：shape() 阶段 uid 为空会让键退化成全局常量（wb2a--<常量>），
+    跨账号复用同一前缀缓存键，与 cache_key.go 的"uid 是硬隔离因子"相悖。
+    """
+    import providers.workbuddy.upstream as wb_upstream
+    from gateway.base import RequestIDs
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(
+                uid="acct0001", realm="cn", access_token="at",
+                token_expires_ms=int(time.time() * 1000) + 3_600_000,
+            ))
+            provider = _provider_with_catalog(store, ["cn-only"], [])
+            provider._refresh_credits_async = lambda uid: None
+
+            class _Resp:
+                status_code = 200
+
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+                def iter_content(self, chunk_size: int = 8192):
+                    yield json.dumps({"id": "x", "choices": []}).encode()
+
+                def close(self) -> None:
+                    pass
+
+            seen: list[bytes] = []
+
+            def fake_chat(account, body, **kwargs):
+                seen.append(body)
+                return _Resp()
+
+            original = wb_upstream.chat_request
+            wb_upstream.chat_request = fake_chat
+            try:
+                provider.send(
+                    provider.route("cn:cn-only"), "chat",
+                    json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode(),
+                    RequestIDs(session="s", request="r", project="p"), stream=True,
+                )
+            finally:
+                wb_upstream.chat_request = original
+
+            assert seen
+            key = json.loads(seen[0])["prompt_cache_key"]
+            assert key.startswith("wb2a-acct0001-"), key
+        finally:
+            store.close()
+
 
 
 # ── 内建运行入口（无 pytest 环境直接跑）──

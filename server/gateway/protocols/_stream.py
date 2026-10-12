@@ -16,8 +16,8 @@ from typing import Any
 
 from gateway.base import random_id
 from gateway.bridge.reasoning import anthropic_redacted_thinking_placeholder
-from gateway.bridge.stop import is_tool_stop
-from gateway.jsonutil import is_object, string_at
+from gateway.bridge.stop import ERROR_STOPS, is_tool_stop
+from gateway.jsonutil import first_non_empty, is_object, string_at
 from gateway.stream.errors import UpstreamStreamFailure
 from gateway.stream.sse import StreamSink
 from gateway.types import BridgeStreamEvent, Usage, merge_bridge_usage
@@ -57,7 +57,6 @@ class StreamEmitterBase:
         self.done = False
         self.stop = ""
         self.usage = Usage()
-        self.usage_reported = False
         self.reasoning_encrypted = ""
         self.text = ""
         self.reasoning = ""
@@ -143,7 +142,6 @@ class StreamEmitterBase:
 
     def _on_usage(self, event: BridgeStreamEvent) -> None:
         if event.usage is not None:
-            self.usage_reported = True
             merge_bridge_usage(self.usage, event.usage)
 
     def _on_finish(self, event: BridgeStreamEvent) -> None:
@@ -367,13 +365,6 @@ class StreamParserBase:
 # ── 共享小工具（原 parser.py 的模块级函数）──
 
 
-def first_non_empty(*values: str) -> str:
-    for value in values:
-        if value != "":
-            return value
-    return ""
-
-
 def js_string(value: Any, fallback: str = "") -> str:
     """近似 JS 的 String(x ?? '')：null/undefined 落到 fallback，其余照 JS 字符串化。"""
     if value is None:
@@ -386,7 +377,7 @@ def js_string(value: Any, fallback: str = "") -> str:
 
 
 def is_stream_error_finish(stop: str) -> bool:
-    return stop.strip().lower() in ("error", "network_error", "server_error")
+    return stop.strip().lower() in ERROR_STOPS
 
 
 def merge_tool_name(current: str, fragment: str) -> str:

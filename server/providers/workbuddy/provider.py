@@ -47,7 +47,7 @@ from gateway.base import (
 )
 from providers import profiles
 from providers.capabilities import as_flag, capability_block
-from providers.opencode.identity import derive_request_ids  # 通用会话派生（复用）
+from providers.identity import derive_request_ids  # 通用会话派生（provider 共享层）
 from providers.workbuddy import checkin, classify, dsml, sanitize, shape
 from providers.workbuddy import upstream as wb_upstream
 from providers.workbuddy.pool import Pool
@@ -131,6 +131,14 @@ class WorkBuddyProvider:
 
     def refresh(self) -> None:
         """拉每个 realm 的模型目录(各需一个该域可用账号的 Bearer);失败保留旧册。"""
+        from providers import models_snapshot
+
+        # 快照按 realm 别名分键(cn/glb);某域本轮没拉到就保留上一次的好数据。
+        current = models_snapshot.read().get("workbuddy")
+        raw_by_alias: dict[str, Any] = {
+            "cn": list((current or {}).get("cn") or []) if isinstance(current, dict) else [],
+            "glb": list((current or {}).get("glb") or []) if isinstance(current, dict) else [],
+        }
         seen_realm = False
         for realm in ("cn", "global"):
             account = self._any_active_account(realm)
@@ -145,6 +153,7 @@ class WorkBuddyProvider:
                     f"{type(exc).__name__}: {exc}"
                 )
                 continue
+            raw_by_alias[_REALM_ALIAS[realm]] = entries  # 上游原样条目(快照用)
             models: dict[str, dict[str, Any]] = {}
             efforts: dict[str, list[str]] = {}
             default_efforts: dict[str, str] = {}
@@ -169,6 +178,7 @@ class WorkBuddyProvider:
             logger.info(f"[workbuddy] {realm} 模型目录刷新完成 models={len(models)}")
         if not seen_realm:
             logger.info("[workbuddy] 无可用账号,跳过模型目录刷新")
+        models_snapshot.write("workbuddy", raw_by_alias)
 
     def _any_active_account(self, realm: str | None = None) -> Account | None:
         for account in self._store.list_accounts():
@@ -322,7 +332,8 @@ class WorkBuddyProvider:
         # 模型名此刻是客户端规范名(cn:xxx / workbuddy/xxx),efforts 表按裸名索引——先剥再查。
         body["model"] = bare
         changed = shape.shape_workbuddy_body(body, efforts, default_efforts)
-        changed = shape.inject_prompt_cache_key(body, "", "") or changed
+        # prompt_cache_key 不在这里注入：缓存键按账号硬隔离，而账号要到 send() 选号后
+        # 才知道（shape 阶段 uid 为空会让键退化成全局常量，跨账号复用同一前缀缓存）。
         return body, changed
 
     def send(
@@ -363,6 +374,7 @@ class WorkBuddyProvider:
         soft_retried: set[str] = set()
         last_error: UpstreamResponse | None = None
         attempts = 0
+        body_dirty = False
         while attempts < WB_ROTATE_ATTEMPTS:
             account = self._pool.pick(bare_model, ids.session, exclude, realm=realm)
             if account is None:
@@ -376,11 +388,17 @@ class WorkBuddyProvider:
                 continue
             try:
                 self._maybe_refresh(account)
-                # global 域兜底 system 注入（幂等）：首条非 system 时前置中性 system
-                attempt_body = body
-                if account.realm == "global":
-                    shape.ensure_console_system(body_dict)
-                    attempt_body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+                # 出站请求体在拿到账号后才最终定形：prompt_cache_key 需要 uid 做隔离，
+                # global 域还要补 system——两者都改 body_dict，因此按需重新序列化。
+                if shape.inject_prompt_cache_key(body_dict, account.uid, conversation_id):
+                    body_dirty = True
+                if account.realm == "global" and shape.ensure_console_system(body_dict):
+                    body_dirty = True
+                attempt_body = (
+                    json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+                    if body_dirty
+                    else body
+                )
                 try:
                     response = wb_upstream.chat_request(
                         account, attempt_body,
@@ -686,8 +704,8 @@ class WorkBuddyProvider:
             fields["cooldown_until_ms"] = classify.hard_cooldown_until_ms()
             fields["cooldown_kind"] = "hard"
         elif kind == classify.SOFT_RATE:
-            failures = max(self._store.get_account(account.uid).consecutive_failures
-                           if self._store.get_account(account.uid) else 0, 0)
+            current = self._store.get_account(account.uid)
+            failures = max(current.consecutive_failures if current else 0, 0)
             if classified.retry_after_s > 0:
                 cooldown_s = classified.retry_after_s
             else:

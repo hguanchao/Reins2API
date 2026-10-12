@@ -21,14 +21,22 @@ from gateway.bridge.reasoning import reasoning_budget, reasoning_effort, with_re
 from gateway.bridge.stop import canonical_chat_stop, chat_stop
 from gateway.bridge.text import as_prefix, schema_or_default
 from gateway.bridge.usage import decode_openai_usage, open_ai_usage
-from gateway.errors import BridgeError
-from gateway.jsonutil import first_any, int_at, is_object, map_at, put, slice_at, string_at
+from gateway.errors import BridgeError, error_payload
+from gateway.jsonutil import (
+    first_any,
+    first_non_empty,
+    int_at,
+    is_object,
+    map_at,
+    put,
+    slice_at,
+    string_at,
+)
 from gateway.protocols._common import new_bridge_request, new_bridge_response, response_text_blocks
 from gateway.protocols._stream import (
     EmitterTool,
     StreamEmitterBase,
     StreamParserBase,
-    first_non_empty,
     is_stream_error_finish,
     js_string,
     merge_tool_name,
@@ -557,10 +565,7 @@ class ChatStreamEmitter(StreamEmitterBase):
 
     def _error_frames(self, message: str, error_type: str) -> None:
         # Chat：错误体 + [DONE] 收尾。
-        self._sse(
-            "",
-            {"error": {"message": message, "type": error_type, "param": None, "code": None}},
-        )
+        self._sse("", error_payload(PROTOCOL_CHAT, message, error_type))
         self._raw_sse("", "[DONE]")
 
     def _finish_frames(self) -> None:

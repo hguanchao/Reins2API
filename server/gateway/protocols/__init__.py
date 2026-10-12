@@ -64,24 +64,24 @@ def decode_bridge_response(protocol: str, input: dict[str, Any]) -> BridgeRespon
 
 
 def encode_bridge_response(protocol: str, response: BridgeResponse) -> dict[str, Any]:
-    prepare_response_for_encode(response)
     codec = _CODECS.get(protocol)
     if codec is None:
-        return {}
+        raise BridgeError(f'unsupported output protocol "{protocol}"')
+    prepare_response_for_encode(response)
     return codec.encode_response(response)
 
 
 def stream_emitter(sink: StreamSink, target: str, model: str):
     cls = _EMITTERS.get(target)
     if cls is None:
-        raise RuntimeError(f'unsupported stream target "{target}"')
+        raise BridgeError(f'unsupported stream target "{target}"')
     return cls(sink, model)
 
 
 def stream_parser(protocol: str):
     cls = _PARSERS.get(protocol)
     if cls is None:
-        raise ValueError(f'unsupported stream protocol "{protocol}"')
+        raise BridgeError(f'unsupported stream protocol "{protocol}"')
     return cls()
 
 

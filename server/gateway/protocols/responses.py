@@ -22,13 +22,12 @@ from gateway.bridge.stop import canonical_responses_incomplete, responses_incomp
 from gateway.bridge.text import (
     as_prefix,
     bridge_blocks_text,
-    first_non_empty,
     normalize_responses_role,
     schema_or_default,
 )
 from gateway.bridge.usage import decode_openai_usage
 from gateway.errors import BridgeError
-from gateway.jsonutil import first_any, is_object, map_at, put, slice_at, string_at
+from gateway.jsonutil import first_any, first_non_empty, is_object, map_at, put, slice_at, string_at
 from gateway.protocols._common import (
     append_bridge_block,
     new_bridge_request,

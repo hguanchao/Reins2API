@@ -1,7 +1,4 @@
 import * as React from "react";
-import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog";
-import * as CheckboxPrimitive from "@radix-ui/react-checkbox";
-import * as CollapsiblePrimitive from "@radix-ui/react-collapsible";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as LabelPrimitive from "@radix-ui/react-label";
 import * as SelectPrimitive from "@radix-ui/react-select";
@@ -141,70 +138,6 @@ function Badge({
   );
 }
 
-// ---------- Checkbox ----------
-
-function Checkbox({
-  className,
-  ...props
-}: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
-  return (
-    <CheckboxPrimitive.Root
-      data-slot="checkbox"
-      className={cn(
-        "peer border-border dark:bg-input/30 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground data-[state=checked]:border-primary focus-visible:border-ring focus-visible:ring-ring/30 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive size-4 shrink-0 rounded-[4px] border shadow-xs outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50",
-        className,
-      )}
-      {...props}
-    >
-      <CheckboxPrimitive.Indicator
-        data-slot="checkbox-indicator"
-        className="grid place-content-center text-current"
-      >
-        <Check className="size-3.5" strokeWidth={2.5} />
-      </CheckboxPrimitive.Indicator>
-    </CheckboxPrimitive.Root>
-  );
-}
-
-// ---------- Collapsible ----------
-
-function Collapsible({
-  className,
-  ...props
-}: React.ComponentProps<typeof CollapsiblePrimitive.Root>) {
-  return (
-    <CollapsiblePrimitive.Root
-      data-slot="collapsible"
-      className={className}
-      {...props}
-    />
-  );
-}
-
-function CollapsibleTrigger({
-  ...props
-}: React.ComponentProps<typeof CollapsiblePrimitive.CollapsibleTrigger>) {
-  return (
-    <CollapsiblePrimitive.CollapsibleTrigger
-      data-slot="collapsible-trigger"
-      {...props}
-    />
-  );
-}
-
-function CollapsibleContent({
-  className,
-  ...props
-}: React.ComponentProps<typeof CollapsiblePrimitive.CollapsibleContent>) {
-  return (
-    <CollapsiblePrimitive.CollapsibleContent
-      data-slot="collapsible-content"
-      className={cn("overflow-hidden", className)}
-      {...props}
-    />
-  );
-}
-
 // ---------- Dialog ----------
 
 function Dialog({
@@ -309,152 +242,6 @@ function DialogTitle({
         "text-base leading-none font-semibold tracking-tight",
         className,
       )}
-      {...props}
-    />
-  );
-}
-
-function DialogDescription({
-  className,
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Description>) {
-  return (
-    <DialogPrimitive.Description
-      data-slot="dialog-description"
-      className={cn("text-muted-foreground text-sm", className)}
-      {...props}
-    />
-  );
-}
-
-// ---------- AlertDialog ----------
-
-function AlertDialog({
-  ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Root>) {
-  return <AlertDialogPrimitive.Root data-slot="alert-dialog" {...props} />;
-}
-
-function AlertDialogPortal({
-  ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Portal>) {
-  return (
-    <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" {...props} />
-  );
-}
-
-function AlertDialogOverlay({
-  className,
-  ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Overlay>) {
-  return (
-    <AlertDialogPrimitive.Overlay
-      data-slot="alert-dialog-overlay"
-      className={cn(
-        "ap-dialog-overlay fixed inset-0 z-[70] bg-black/50",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
-function AlertDialogContent({
-  className,
-  ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
-  return (
-    <AlertDialogPortal>
-      <AlertDialogOverlay />
-      <AlertDialogPrimitive.Content
-        data-slot="alert-dialog-content"
-        className={cn(
-          /* 与 Dialog 相同：定位由 motion.css 的 .ap-dialog-content 接管。
-             同样不要加 -translate-y-1/2（translate 属性会与 transform 叠加成 -100%） */
-          "ap-dialog-content bg-card text-card-foreground fixed z-[70] grid h-fit w-full max-h-[min(90vh,920px)] max-w-[calc(100%-2rem)] gap-4 overflow-y-auto rounded-lg border border-border p-5 shadow-none sm:max-w-md",
-          "before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:rounded-t-lg before:bg-primary",
-          className,
-        )}
-        {...props}
-      />
-    </AlertDialogPortal>
-  );
-}
-
-function AlertDialogHeader({
-  className,
-  ...props
-}: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="alert-dialog-header"
-      className={cn("flex flex-col gap-2 text-center sm:text-left", className)}
-      {...props}
-    />
-  );
-}
-
-function AlertDialogFooter({
-  className,
-  ...props
-}: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="alert-dialog-footer"
-      className={cn(
-        "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
-function AlertDialogTitle({
-  className,
-  ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Title>) {
-  return (
-    <AlertDialogPrimitive.Title
-      data-slot="alert-dialog-title"
-      className={cn("text-lg font-semibold", className)}
-      {...props}
-    />
-  );
-}
-
-function AlertDialogDescription({
-  className,
-  ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Description>) {
-  return (
-    <AlertDialogPrimitive.Description
-      data-slot="alert-dialog-description"
-      className={cn("text-muted-foreground text-sm", className)}
-      {...props}
-    />
-  );
-}
-
-function AlertDialogAction({
-  className,
-  ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Action>) {
-  return (
-    <AlertDialogPrimitive.Action
-      className={cn(buttonVariants(), className)}
-      {...props}
-    />
-  );
-}
-
-function AlertDialogCancel({
-  className,
-  ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Cancel>) {
-  return (
-    <AlertDialogPrimitive.Cancel
-      className={cn(buttonVariants({ variant: "outline" }), className)}
       {...props}
     />
   );
@@ -1199,24 +986,11 @@ function TooltipContent({
 // ---------- 导出 ----------
 
 export {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogFooter,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogAction,
-  AlertDialogCancel,
   Badge,
   Button,
   buttonVariants,
-  Checkbox,
-  Collapsible,
-  CollapsibleTrigger,
-  CollapsibleContent,
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,

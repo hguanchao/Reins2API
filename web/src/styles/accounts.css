@@ -1,0 +1,289 @@
+/* ── 账号池行列表（Codex 页）────────────────────────────────────────────
+   版式参考 codex2api 控制台：一行一个账号，而不是 7 列宽表。
+   视觉上跟 app 既有的表格语言对齐——**一张卡片 + 行间细线**，不是每行一张带边框的卡
+   （那会在 gw-panel 里套出双层边框）。绿只用在状态与指示条上，头像等非语义元素保持中性。
+   */
+
+.acct-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 一行 = 7 列栅格。没有列头，所以列宽按内容给、间距收紧，
+   避免短内容（套餐/状态）在宽列里"飘"。 */
+.acct-row {
+  display: grid;
+  /* 凭证列封顶（邮箱就 190px 上下），富余宽度留给额度条与用量——否则宽屏下
+     凭证列吃掉 350px、中间空一大片，额度条反而很短。 */
+  grid-template-columns:
+    minmax(200px, 264px)    /* 凭证（够放下完整邮箱，不截断） */
+    52px                    /* 套餐 */
+    108px                   /* 可用状态 */
+    118px                   /* 最近请求 */
+    minmax(170px, 1fr)      /* 历史用量（全时段） */
+    minmax(230px, 1.4fr)    /* 额度 */
+    148px;                  /* 操作 */
+  gap: 16px;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--hairline);
+  transition: background-color var(--ap-dur-fast) ease;
+}
+.acct-row:last-child {
+  border-bottom: 0;
+}
+.acct-row:hover {
+  background: var(--table-hover);
+}
+.acct-row.is-busy {
+  opacity: 0.55;
+}
+
+/* ── 凭证 ── */
+.acct-cred {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+/* 中性头像：主色是"状态与强调"的专用色，一列实心绿圆会跟品牌标抢视觉 */
+.acct-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.acct-cred-main {
+  min-width: 0;
+}
+.acct-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.acct-uid {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+}
+
+/* ── 套餐 ── */
+.acct-plan {
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+/* ── 可用状态 ── */
+.acct-state {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.acct-state b {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.acct-state small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+}
+.acct-state.is-ok b {
+  color: var(--ok);
+}
+.acct-state.is-warn b {
+  color: var(--warning-text);
+}
+.acct-state.is-bad b {
+  color: var(--destructive);
+}
+
+/* ── 最近请求 + 迷你柱状图 ── */
+.acct-when {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--foreground);
+}
+.acct-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+  margin-top: 5px;
+}
+.acct-spark i {
+  display: block;
+  width: 3px;
+  border-radius: 1px;
+  background: var(--border);
+}
+.acct-spark i.is-on {
+  background: var(--meter-high);
+}
+.acct-spark i.is-today {
+  background: var(--primary);
+}
+
+/* ── 历史用量：左标签右数值的迷你规格表（只有图标看不出是什么）── */
+.acct-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 14px;
+}
+.acct-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.acct-stat-k {
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+.acct-stat-v {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.acct-stat-v.is-bad {
+  color: var(--destructive);
+}
+
+/* ── 额度 ── */
+.acct-quota {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.acct-quota-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+.acct-quota-head b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.acct-quota-head b.is-warn {
+  color: var(--warning-text);
+}
+.acct-quota-head b.is-bad {
+  color: var(--destructive);
+}
+.acct-quota-foot {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.acct-quota-empty {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  cursor: help;
+}
+.acct-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--muted);
+  overflow: hidden;
+}
+.acct-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--meter-high);
+  transition: width var(--ap-dur) var(--ap-ease-out);
+}
+.acct-bar.is-warn > i {
+  background: var(--meter-mid);
+}
+.acct-bar.is-bad > i {
+  background: var(--meter-low);
+}
+
+/* ── 操作 ── */
+.acct-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.acct-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+/* 去掉药丸外框：边框只留给"一张卡片"，控件之间靠 hover 底区分（与 app 的图标按钮一致） */
+.acct-act {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-md);
+  color: var(--fg-subtle);
+  transition:
+    background-color var(--ap-dur-fast) ease,
+    color var(--ap-dur-fast) ease;
+}
+.acct-act:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.acct-act:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.acct-act.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--destructive) 12%, transparent);
+  color: var(--destructive);
+}
+.acct-expiry {
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+}
+
+/* 窄屏：降级为两栏堆叠，避免 7 列被压成一条 */
+@media (max-width: 1080px) {
+  .acct-row {
+    grid-template-columns: 1fr auto;
+    row-gap: 10px;
+    padding: 14px 16px;
+  }
+  .acct-cred,
+  .acct-stats,
+  .acct-quota {
+    grid-column: 1;
+  }
+  .acct-actions {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+  }
+}

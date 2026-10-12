@@ -7,6 +7,13 @@ stop_reason / status 字段。
 
 from __future__ import annotations
 
+# 表示"这一轮以错误收尾"的规范停止原因（各协议投影时都要识别）。
+ERROR_STOPS = frozenset({"error", "network_error", "server_error"})
+
+
+def is_error_stop(stop: str) -> bool:
+    return stop in ERROR_STOPS
+
 
 def is_tool_stop(stop: str) -> bool:
     """规范停止原因是否承诺下游还有工具调用。"""
@@ -40,7 +47,7 @@ def canonical_chat_stop(stop: str) -> str:
         return "length"
     if stop == "content_filter":
         return "content_filter"
-    if stop in ("error", "network_error", "server_error"):
+    if is_error_stop(stop):
         return "error"
     return "stop"
 
@@ -52,7 +59,7 @@ def canonical_anthropic_stop(stop: str) -> str:
         return "length"
     if stop in ("stop_sequence", "pause_turn", "refusal"):
         return stop
-    if stop in ("error", "network_error", "server_error"):
+    if is_error_stop(stop):
         return "error"
     return "stop"
 

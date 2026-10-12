@@ -153,7 +153,7 @@ export function fetchOpenCodeOps(): Promise<OpenCodeOps> {
   return request<OpenCodeOps>("/api/opencode/ops");
 }
 
-export interface OpenCodeRefreshResult {
+export interface ProviderRefreshResult {
   status: {
     upstream: string;
     refreshed_at: string | null;
@@ -162,9 +162,9 @@ export interface OpenCodeRefreshResult {
   models: number;
 }
 
-/** 手动重新拉取 OpenCode 模型目录。 */
-export function refreshOpenCodeModels(): Promise<OpenCodeRefreshResult> {
-  return request<OpenCodeRefreshResult>("/api/opencode/refresh", { method: "POST" });
+/** 手动重新拉取某 provider 的模型目录（后端 POST /api/{provider}/refresh 通用）。 */
+export function refreshProviderModels(provider: string): Promise<ProviderRefreshResult> {
+  return request<ProviderRefreshResult>(`/api/${provider}/refresh`, { method: "POST" });
 }
 
 /** Provider 最近请求明细（分页；provider ∈ registry.names）。 */
@@ -304,6 +304,8 @@ export interface WorkBuddyAccount {
   updated_ms: number;
   stats_7d?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
   last_used_ms?: number;
+  /** 近 14 天逐日请求数（最旧在前；账号行迷你柱状图） */
+  daily_14d?: number[];
 }
 
 export function fetchWorkBuddyOps(): Promise<WorkBuddyOps> {
@@ -312,24 +314,6 @@ export function fetchWorkBuddyOps(): Promise<WorkBuddyOps> {
 
 export function fetchWorkBuddyAccounts(): Promise<WorkBuddyAccount[]> {
   return request<WorkBuddyAccount[]>("/api/workbuddy/accounts");
-}
-
-export interface WorkBuddyAccountInput {
-  uid: string;
-  label?: string;
-  realm?: string;
-  access_token?: string;
-  refresh_token?: string;
-  enterprise_id?: string;
-  device_token?: string;
-}
-
-/** 手动导入凭证。 */
-export function addWorkBuddyAccount(payload: WorkBuddyAccountInput): Promise<WorkBuddyAccount> {
-  return request<WorkBuddyAccount>("/api/workbuddy/accounts", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
 }
 
 export function deleteWorkBuddyAccount(uid: string): Promise<{ deleted: string }> {
@@ -418,30 +402,166 @@ export function pollWorkBuddyLogin(state: string): Promise<WorkBuddyLoginPoll> {
   );
 }
 
-/** 单账号可用模型一行（实时查询，不缓存）。credits 是牌价；promo_* 是当前生效的
- *  限时优惠（生效价 = promo_credits，徽章 = promo_label；错峰类无 factor 仅标签）。 */
-export interface WorkBuddyAccountModel {
-  id: string;
-  name: string;
-  context_window: number;
-  max_output_tokens: number;
-  credits: string;
-  efforts: string[];
-  tags: string[];
-  promo_label: string;
-  promo_credits: string;
-  promo_factor: number | null;
-  promo_note: string;
-}
-
-/** 按账号实时查询其可用模型（用该账号 token 打上游 /v3/config）。 */
-export function fetchWorkBuddyAccountModels(uid: string): Promise<WorkBuddyAccountModel[]> {
-  return request<WorkBuddyAccountModel[]>(
-    `/api/workbuddy/accounts/${encodeURIComponent(uid)}/models`,
-  );
-}
-
 /** WorkBuddy 最近请求明细（分页）。 */
 export function fetchWorkBuddyRequests(limit = 50, offset = 0) {
   return fetchProviderRequests("workbuddy", limit, offset);
+}
+
+// ─── Codex 号池 ────────────────────────────────────────
+
+export interface CodexPoolStatus {
+  accounts: number;
+  active: number;
+  paused: number;
+  disabled: number;
+  cooldown: number;
+  breaker: number;
+  in_flight: number;
+  sticky_sessions: number;
+}
+
+export interface CodexOps {
+  service: string;
+  provider: string;
+  status: {
+    upstream: string;
+    refreshed_at: string | null;
+    models: number;
+    pool: CodexPoolStatus;
+  };
+  models: ModelInfo[];
+  usage: UsageSummary;
+}
+
+/** 上游限流窗口快照的一条（x-codex-{primary,secondary}-* 三件套）。 */
+export interface RateLimitWindow {
+  /** 已用百分比（上游口径，0-100） */
+  used_percent: number | null;
+  /** 窗口长度（分钟）：300 = 5h，10080 = 7d */
+  window_minutes: number | null;
+  reset_after_seconds: number | null;
+  /** 由 reset_after_seconds 换算的绝对重置时刻 */
+  reset_at_ms?: number;
+}
+
+/** Codex 账号一行（后端脱敏视图；用量由 requests 表按 account_uid 汇总并入）。 */
+export interface CodexAccount {
+  uid: string;
+  account_id: string;
+  label: string;
+  email: string;
+  plan_type: string;
+  status: "active" | "paused" | "disabled";
+  status_reason: string;
+  has_access_token: boolean;
+  has_refresh_token: boolean;
+  token_expires_ms: number;
+  cooldown_until_ms: number;
+  cooldown_kind: string;
+  breaker_count: number;
+  breaker_until_ms: number;
+  consecutive_failures: number;
+  used_seq: number;
+  idle_boost: number;
+  last_error: string;
+  created_ms: number;
+  updated_ms: number;
+  stats_7d?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
+  /** 全时段用量（历史用量列；不限于 7 天） */
+  stats_total?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
+  last_used_ms?: number;
+  /** 近 14 天逐日请求数（最旧在前；账号行迷你柱状图） */
+  daily_14d?: number[];
+  /** 上游限流窗口快照（最近一次成功响应头回填；没有则说明还没跑过成功请求） */
+  rate_limit?: {
+    primary?: RateLimitWindow;
+    secondary?: RateLimitWindow;
+    plan_type?: string;
+    at_ms?: number;
+  };
+}
+
+export function fetchCodexOps(): Promise<CodexOps> {
+  return request<CodexOps>("/api/codex/ops");
+}
+
+export function fetchCodexAccounts(): Promise<CodexAccount[]> {
+  return request<CodexAccount[]>("/api/codex/accounts");
+}
+
+/** Codex 最近请求明细（分页）。 */
+export function fetchCodexRequests(limit = 50, offset = 0) {
+  return fetchProviderRequests("codex", limit, offset);
+}
+
+export function deleteCodexAccount(uid: string): Promise<{ deleted: string }> {
+  return request<{ deleted: string }>(`/api/codex/accounts/${encodeURIComponent(uid)}`, {
+    method: "DELETE",
+  });
+}
+
+/** 账号动作：pause / resume / disable / revive / refresh（刷新 token 走上游 RT 兑换）。 */
+export function codexAccountAction(
+  uid: string,
+  action: "pause" | "resume" | "disable" | "revive" | "refresh",
+): Promise<CodexAccount> {
+  return request<CodexAccount>(`/api/codex/accounts/${encodeURIComponent(uid)}/action`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+}
+
+export interface CodexLoginStart {
+  auth_url: string;
+  session_id: string;
+  state: string;
+}
+
+/** 发起 OAuth（PKCE）：返回授权 URL，用户在浏览器打开并登录。 */
+export function startCodexLogin(): Promise<CodexLoginStart> {
+  return request<CodexLoginStart>("/api/codex/login/start", { method: "POST" });
+}
+
+export interface CodexLoginResult {
+  uid: string;
+  email: string;
+  plan_type: string;
+  label: string;
+}
+
+/** 粘贴回调 URL（或其中的 code）兑换 token 并自动入池。 */
+export function exchangeCodexLogin(
+  sessionId: string,
+  callback: string,
+  state?: string,
+): Promise<CodexLoginResult> {
+  return request<CodexLoginResult>("/api/codex/login/exchange", {
+    method: "POST",
+    body: JSON.stringify({ session_id: sessionId, callback, state: state ?? "" }),
+  });
+}
+
+// ─── Codex 账号导入 / 导出（对接 CLIProxyAPI(CPA) 与 codex2api 的 JSON 形状）───
+
+export type CodexTransferFormat = "cpa" | "codex2api";
+
+/** 导出账号。cpa = 单账号 auth 文件形状（多账号为数组）；codex2api = 迁移封装。 */
+export function exportCodexAccounts(format: CodexTransferFormat): Promise<unknown> {
+  return request<unknown>(`/api/codex/accounts/export?format=${format}`);
+}
+
+export interface CodexImportSummary {
+  total: number;
+  imported: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+}
+
+/** 从 CPA / codex2api 形状的 JSON 导入账号（宽容解析：单对象 / 数组 / {"accounts":[]}）。 */
+export function importCodexAccounts(json: string): Promise<CodexImportSummary> {
+  return request<CodexImportSummary>("/api/codex/accounts/import", {
+    method: "POST",
+    body: JSON.stringify({ json }),
+  });
 }

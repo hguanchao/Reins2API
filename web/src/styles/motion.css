@@ -21,15 +21,6 @@
   min-width: 0;
   animation: ap-route-enter var(--ap-dur) var(--ap-ease-out) both;
 }
-
-/* ── 入场 reveal（landing 语言：上移 + 淡入，错峰）─────────────────
-   与上面的 route-enter 不同，这里**不用 fill-mode: both**：both 会把
-   translateY(0) 永久留在元素上，形成 containing block，困住子树里的
-   position: fixed。改用 backwards——动画播放前用 from 状态遮住首帧，
-   播放结束后元素自然回到无 transform 的状态。 */
-.reveal {
-  animation: ap-reveal var(--ap-reveal-dur) var(--ap-ease-out) backwards;
-}
 /* 统计卡与面板网格自动错峰，页面无需逐个挂类 */
 .mission-strip > .metric,
 .gw-grid > .gw-panel {
@@ -50,10 +41,6 @@
 .nav-indicator {
   transition: transform var(--ap-dur) var(--ap-ease);
   animation: ap-indicator-in var(--ap-dur) var(--ap-ease-out) both;
-}
-
-/* 进度条宽度 */.mission-progress > i {
-  transition: width var(--ap-dur-slow) var(--ap-ease);
 }
 
 /* Switch / Input / Select 焦点 */[data-slot="input"], [data-slot="select-trigger"] {
@@ -94,18 +81,6 @@
   will-change: auto;
 }
 
-/* 高级设置：取消内层再滚，交给弹窗单层 overflow */.advanced-dialog .advanced-content {
-  max-height: none;
-  overflow: visible;
-  padding-right: 0;
-}
-
-/* 抽屉头栏轻入场：只动 opacity，不在滚动容器上留 transform */
-
-/* 注册控制轨字段 */.control-rail .field-block, .control-rail .rail-section {
-  transition: opacity var(--ap-dur-fast) ease;
-}
-
 /* Badge 轻微 */[data-slot="badge"] {
   transition:
     background-color var(--ap-dur-fast) ease,
@@ -129,10 +104,7 @@
   .route-enter,
   .ap-dialog-overlay,
   .ap-dialog-content,
-  .nav-indicator,
-  .pool-skel,
-  .pool-progress.is-done .pool-progress-track > i,
-  .metric-v.is-pulse {
+  .nav-indicator {
     animation: none !important;
     opacity: 1 !important;
     filter: none !important;

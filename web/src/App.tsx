@@ -10,6 +10,10 @@ const WorkBuddyPage = lazy(() =>
   import("@/pages/WorkBuddyPage").then((module) => ({ default: module.WorkBuddyPage })),
 );
 
+const CodexPage = lazy(() =>
+  import("@/pages/CodexPage").then((module) => ({ default: module.CodexPage })),
+);
+
 const SettingsPage = lazy(() =>
   import("@/pages/SettingsPage").then((module) => ({ default: module.SettingsPage })),
 );
@@ -24,6 +28,7 @@ export default function App() {
           <Route index element={<Navigate to="/opencode" replace />} />
           <Route path="opencode" element={<OpenCodePage />} />
           <Route path="workbuddy" element={<WorkBuddyPage />} />
+          <Route path="codex" element={<CodexPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/opencode" replace />} />
         </Route>

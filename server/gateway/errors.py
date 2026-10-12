@@ -22,12 +22,12 @@ class BridgeError(Exception):
         super().__init__(message)
 
 
-def error_payload(protocol: str, status: int, message: str, kind: str) -> dict:
-    """TS errorPayload 的移植：按协议生成错误信封 body。
+def error_payload(protocol: str, message: str, kind: str) -> dict:
+    """按协议生成错误信封 body（HTTP 状态码由调用方持有，信封里不含它）。
 
     Anthropic 嵌套 {"type":"error","error":{"type":kind,"message":message}}；
-    OpenAI 形协议扁平 {"error":{"message","type","param":None,"code":None}}。
-    status 与 TS 签名同序保留，HTTP 状态码由调用方持有（返回值只含信封）。
+    OpenAI 形协议扁平 {"error":{"message","type":kind,"param":None,"code":None}}。
+    流式错误帧与整包错误响应共用本函数——此前两处各手抄一份信封，会漂移。
     """
     if protocol == PROTOCOL_ANTHROPIC:
         return {"type": "error", "error": {"type": kind, "message": message}}

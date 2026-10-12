@@ -58,8 +58,7 @@ def decode_openai_blocks_checked(value: Any) -> list[BridgeBlock]:
                     "video",
                     {
                         "url": first_string(
-                            string_at(raw, "video_url", "url"), string_at(raw, "video_url"),
-                            string_at(raw, "video_url"),
+                            string_at(raw, "video_url", "url"), string_at(raw, "video_url")
                         )
                     },
                 )

@@ -501,5 +501,5 @@ def _send_error(
     kind: str,
     extra: dict[str, str] | None = None,
 ) -> None:
-    send_json(handler, status, error_payload(protocol, status, message, kind),
+    send_json(handler, status, error_payload(protocol, message, kind),
               extra_headers=extra)

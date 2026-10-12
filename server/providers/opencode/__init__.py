@@ -14,8 +14,8 @@ from core.logger import logger
 from gateway.base import ModelInfo, RequestIDs, Route, UpstreamResponse
 from providers import profiles
 from providers.capabilities import as_flag, capability_block
+from providers.identity import derive_request_ids
 from providers.opencode.discovery import discover
-from providers.opencode.identity import derive_request_ids
 from providers.opencode.routing import ModelIndex, Router
 from providers.opencode.upstream import UPSTREAM, send_upstream, shape_free_request_body
 
@@ -36,15 +36,19 @@ class OpenCodeProvider:
 
     def refresh(self) -> None:
         """拉两源并合并；失败保留旧目录。"""
+        from providers import models_snapshot
         from providers.opencode.upstream import PUBLIC_KEY
 
-        records, available, errors = discover(UPSTREAM, PUBLIC_KEY)
+        records, available, errors, raw_models = discover(UPSTREAM, PUBLIC_KEY)
         with self._lock:
             if records:
                 self._index.replace(records)
             if available is not None:
                 self._index.set_available(available)
             self._refreshed_at = datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        # 上游原样条目落 data/models.json（能力目录拉失败时为空，不覆盖旧快照）
+        if raw_models:
+            models_snapshot.write("opencode", raw_models)
         counts = self._index.counts()
         logger.info(
             f"[目录] 刷新完成 协议记录={counts['protocols']} 凭证可见={counts['available']}"

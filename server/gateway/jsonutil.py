@@ -108,12 +108,20 @@ def int_at(obj: Any, *path: str) -> int:
     return 0
 
 
-int64_at = int_at
-
-
 def first_string(*values: str) -> str:
     for value in values:
-        trimmed = (value or "").strip()
-        if trimmed != "":
-            return trimmed
+        if (value or "").strip() != "":
+            return value.strip()
+    return ""
+
+
+def first_non_empty(*values: str | None) -> str:
+    """首个非空字符串（None 与 "" 都跳过）——原样返回，不做 strip。
+
+    与 first_string 的区别：后者按"去空白后非空"判定并返回去空白值，本函数只判空。
+    协议层拼 finish_reason / error type 时用这个（空白串是合法值，不该被吞）。
+    """
+    for value in values:
+        if value:
+            return value
     return ""

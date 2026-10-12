@@ -33,8 +33,6 @@ WB_GLOBAL_BASE = "https://www.workbuddy.ai"        # global 域（chat/refresh/m
 WB_BILLING_BASE = "https://www.codebuddy.cn"       # 余额/签到域（CN）
 WB_ORIGIN = "https://www.codebuddy.cn"             # 出站 Origin/Referer（CN）
 
-WB_API_KEY = ""                # /v1 与 /api 的 Bearer 门禁；空 = 不鉴权；/healthz 恒豁免
-
 # 出站伪装（对齐官方 WorkBuddy 桌面端分发包指纹）
 WB_CLIENT_VERSION = "5.5.4"    # UA 一二段 + X-IDE-Version
 WB_CLI_VERSION = "2.137.1"     # UA 第三段 CLI/<ver>
@@ -75,11 +73,61 @@ WB_CREDIT_FLOOR = 0            # credits_remain ≤ 该值不再派号；0 = 关
 WB_CREDITS_REFRESH_MIN = 30    # 余额刷新周期（分钟）
 WB_NEGATIVE_CACHE_S = 600      # 11102 (uid,model) 负缓存避让时长
 
-# ── 签到（billing 域，每日一次；CN 专属，见 providers/workbuddy/checkin.py）──
-# global 域没有签到活动、企业号上游直接拒绝，两者都在发请求前短路。
-WB_CHECKIN_ENABLED = True      # 关掉只停后台线程；手动「立即签到」不受影响
-WB_CHECKIN_HOURS = (9, 21)     # 每日触发小时（北京时间）；多档 = 一天多次补救机会
-WB_CHECKIN_JITTER_S = 300      # 触发点后随机 0..该值 秒错峰，避免整点齐射
-WB_CHECKIN_STAGGER_MS = 800    # 全池签到时账号之间的间隔
-WB_CHECKIN_TICK_S = 60         # 调度线程墙钟检查周期
-WB_CHECKIN_ATTEMPT_LIMIT = 2   # 单个触发档最多尝试轮数（首轮撞上刚开机时留一次补救）
+# ── 签到（billing 域；CN 专属，见 providers/workbuddy/checkin.py）──
+# 只保留手动触发（「立即签到」/「一键全签」），没有定时调度——号少时手动点一次够用，
+# 也免得整点齐射成为明显的机器特征。global 域没有签到活动、企业号上游直接拒绝，
+# 两者都在发请求前短路。
+WB_CHECKIN_STAGGER_MS = 800    # 一键全签时账号之间的间隔
+
+# ── Codex provider（ChatGPT 后端 Codex 服务；OAuth PKCE + Responses 协议）──
+CODEX_ENABLED = True
+CODEX_BASE = "https://chatgpt.com/backend-api/codex"   # 推理域（POST /responses、GET /models）
+CODEX_AUTH_BASE = "https://auth.openai.com"            # OAuth 授权/兑换/刷新域
+
+# OAuth（PKCE 授权码）。client_id 与 redirect_uri 是 Codex CLI 内置的公开固定值，
+# OpenAI 只注册了 localhost:1455 这一个回调，不可更改——所以授权必须在能访问
+# localhost:1455 的机器上完成；远程部署时用「粘贴回调 URL」的方式（见 login.py）。
+CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
+CODEX_SCOPES = "openid profile email offline_access"
+CODEX_REFRESH_SCOPES = "openid profile email"
+CODEX_LOGIN_TTL_S = 1800       # 登录会话（state/verifier）有效期
+
+# 出站身份（对齐 Codex CLI 指纹的最小可信集；取值见 docs/codex-provider-design.md §3.2）
+CODEX_CLI_VERSION = "0.153.3"
+CODEX_USER_AGENT = (
+    f"codex-tui/{CODEX_CLI_VERSION} (Mac OS 15.5.0; arm64) "
+    f"xterm-256color (codex-tui; {CODEX_CLI_VERSION})"
+)
+CODEX_ORIGINATOR = "codex_cli_rs"
+CODEX_BETA_FEATURES = "remote_compaction_v2"
+
+# 超时（秒）。推理流不设总时长上限；短 RPC（兑换/刷新/目录）走 connect+read。
+CODEX_TIMEOUT_CONNECT = 15
+CODEX_TIMEOUT_TTFB = 120
+CODEX_TIMEOUT_IDLE = 300
+
+# 池与轮换（语义同 WB_*）
+CODEX_MAX_IN_FLIGHT = 3        # 单账号在途上限
+CODEX_ROTATE_ATTEMPTS = 3      # 单请求最大换号数
+CODEX_BACKOFF_BASE_S = 0.5     # 轮换退避基数（×attempt + 抖动）
+CODEX_STICKY_ENABLED = True    # 会话粘性（ses_ → uid）
+CODEX_STICKY_TTL_S = 1800
+CODEX_STICKY_GC_S = 300
+
+# 冷却（秒）
+CODEX_COOLDOWN_SOFT_BASE = 600  # 429/限流软冷却基数，×2 指数
+CODEX_COOLDOWN_SOFT_MAX = 7200
+CODEX_COOLDOWN_AUTH = 1800      # 401/凭证失效冷却（等刷新或人工重新授权）
+CODEX_COOLDOWN_NOT_FOUND = 60   # 404
+CODEX_COOLDOWN_WAF = 600        # Cloudflare 拦截
+
+# 熔断与禁用
+CODEX_BREAKER_THRESHOLD = 3    # 连续失败次数
+CODEX_BREAKER_BASE_S = 1800    # base ×2^n
+CODEX_BREAKER_MAX_S = 21600    # 封顶 6h
+CODEX_REFRESH_AHEAD_S = 600    # token 到期前主动刷新窗口（请求路径与后台巡检同一门槛）
+
+# 权重
+CODEX_IDLE_BOOST_PER_HOUR = 0.5
+CODEX_IDLE_BOOST_MAX = 5.0

@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 
+from gateway.jsonutil import first_non_empty
 from gateway.protocols import encode_bridge_response, stream_parser
 from gateway.stream.errors import SseUnexpectedEof, StreamTerminated, UpstreamStreamFailure
 from gateway.stream.sse import read_sse
@@ -47,7 +48,7 @@ def collapse_stream(chunks: Iterable[bytes], protocol: str, model: str) -> dict:
                 terminated = True
                 raise StreamTerminated()
             if event.kind == "error":
-                message = _first_non_empty(event.error, "upstream stream failed")
+                message = first_non_empty(event.error, "upstream stream failed")
                 stream_error = UpstreamStreamFailure(message)
                 raise UpstreamStreamFailure(message)
             acc.apply(event)
@@ -138,10 +139,3 @@ class _CollapseAccumulator:
         self.response.tools.append(new_block("tool_call", {"id": tool_id, "name": name}))
         self.tools[key] = len(self.response.tools) - 1
         return self.response.tools[-1]
-
-
-def _first_non_empty(*values: str | None) -> str:
-    for value in values:
-        if value:
-            return value
-    return ""

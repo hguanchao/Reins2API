@@ -7,12 +7,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
-  ArrowRight,
   Boxes,
   Database,
   Gauge,
   Inbox,
-  RefreshCw,
   Timer,
   Zap,
 } from "lucide-react";
@@ -34,46 +32,27 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
 } from "@/components/ui";
 import {
   ApiError,
   fetchOpenCodeOps,
   fetchOpenCodeRequests,
-  refreshOpenCodeModels,
+  refreshProviderModels,
   type ModelInfo,
   type OpenCodeOps,
   type RequestRow,
   type UsageRange,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
-import { cn, fmtClock, fmtCompact, fmtInt, fmtPct, latencyMark, shortClientUa } from "@/lib/utils";
+import { RequestsTable } from "@/components/requests/RequestsTable";
+import { fmtLimit, fmtSeconds, fmtTokens, protocolTone } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 /** 自动刷新间隔 */
 const AUTO_REFRESH_MS = 10_000;
 
 /** 最近请求默认每页条数 */
 const DEFAULT_PAGE_SIZE = 20;
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
-/** 耗时统一秒显示（0.01s 粒度；精确毫秒放 title） */
-/** 毫秒 → 秒。digits 默认 2（KPI 用）；最近请求的耗时列用 1 位，
- *  与首字对齐成 0.1s / 1.0s 的同一量级。 */
-function fmtSeconds(ms: number, digits = 2): string {
-  return `${(ms / 1000).toFixed(digits)}s`;
-}
-
-/** 目录数值列:0/缺失显示 — */
-function fmtLimit(v: unknown): string {
-  return typeof v === "number" && v > 0 ? fmtTokens(v) : "—";
-}
 
 /** 布尔能力:支持 / — */
 function fmtFlag(v: unknown): string {
@@ -94,74 +73,6 @@ function fmtReasoning(metadata: Record<string, unknown>): string {
     return opts.map((option) => (option === "toggle" ? "开关" : option)).join("/");
   }
   return metadata.reasoning === true ? "支持" : "—";
-}
-
-function protocolTone(protocol: string): "success" | "warning" | "secondary" {
-  if (protocol === "anthropic") return "success";
-  if (protocol === "responses") return "warning";
-  return "secondary";
-}
-
-/** 思考强度档位配色（同 grok-rego effortTone，配合 usage.css 的 .usage-effort 分档） */
-function effortTone(effort: string): string {
-  const level = (effort || "").toLowerCase();
-  if (level === "max") return "is-max";
-  if (level === "high" || level === "xhigh") return "is-high";
-  if (level === "medium") return "is-medium";
-  if (level === "low") return "is-low";
-  return "";
-}
-
-function statusTone(status: number): "success" | "destructive" {
-  /* 4xx 与 5xx 同档：都是"这一次请求失败了"。demo 里 429 / 402 都是红色，
-     单独给 4xx 一档琥珀会让限流/额度类错误看起来只是"警告"。 */
-  return status >= 200 && status < 300 ? "success" : "destructive";
-}
-
-/** 缓存命中条：与 grok-rego 用量明细同款（命中率 ≥70% 绿 / ≥30% 黄 / 其余红） */
-function CacheCell({
-  cacheTokens,
-  promptTokens,
-}: {
-  cacheTokens: number;
-  promptTokens: number;
-}) {
-  const has = (cacheTokens || 0) > 0;
-  const rate = promptTokens > 0 ? (Math.min(cacheTokens, promptTokens) / promptTokens) * 100 : 0;
-  const tone = !has ? "is-miss" : rate >= 70 ? "is-high" : rate >= 30 ? "is-mid" : "is-low";
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div
-          className={cn("usage-cache-cell", tone)}
-          tabIndex={0}
-          aria-label={
-            has
-              ? `缓存命中 ${fmtPct(rate, 1)}，${fmtInt(cacheTokens)} / ${fmtInt(promptTokens)}`
-              : "无缓存命中"
-          }
-        >
-          <div className="usage-cache-track" aria-hidden>
-            <i style={{ width: `${has ? rate : 0}%` }} />
-          </div>
-          {/* 百分比直接显示（demo 的 .cache-num）：只有条的话命中率必须悬停才看得到 */}
-          <span className="usage-cache-num">{has ? `${Math.round(rate)}%` : "—"}</span>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="font-mono text-[11px] tabular-nums">
-        {has ? (
-          <>
-            命中 {fmtPct(rate, 1)}
-            <span className="mt-1 block">
-              缓存 {fmtInt(cacheTokens)} / 输入 {fmtInt(promptTokens)}
-            </span>
-          </>
-        ) : (
-          "无缓存命中"
-        )}
-      </TooltipContent>
-    </Tooltip>
-  );
 }
 
 /** 模型详情弹窗:排版同 grok-rego 号池账号详情(两列卡片网格 + 全宽描述 + 关闭按钮) */
@@ -336,7 +247,7 @@ export function OpenCodePage() {
     if (reloading) return;
     setReloading(true);
     try {
-      const result = await refreshOpenCodeModels();
+      const result = await refreshProviderModels("opencode");
       toast.success(`模型目录已刷新（${result.models} 个模型）`);
       await load(true, true);
     } catch (err) {
@@ -464,20 +375,14 @@ export function OpenCodePage() {
                 <h2 className="gw-panel-title">模型列表({ops?.models.length ?? 0})</h2>
                 <Button
                   type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="ml-auto size-6"
+                  variant="outline"
+                  size="sm"
+                  className="ml-auto"
                   disabled={reloading}
                   onClick={() => void reloadCatalog()}
-                  title="重新拉取 OpenCode 模型列表"
-                  aria-label="重新拉取模型列表"
                   aria-busy={reloading}
                 >
-                  <RefreshCw
-                    className={cn("size-3.5", reloading && "animate-spin")}
-                    strokeWidth={1.6}
-                    aria-hidden
-                  />
+                  {reloading ? "获取中…" : "获取模型"}
                 </Button>
               </div>
               <div className={cn("gw-table-card", !ops?.models.length && "is-empty")}>
@@ -564,220 +469,7 @@ export function OpenCodePage() {
               <Inbox className="size-3.5" strokeWidth={1.6} aria-hidden />
               <h2 className="gw-panel-title">最近请求</h2>
             </div>
-            <div className={cn("gw-table-card", !requests.length && "is-empty")}>
-              <div className="gw-table-scroll">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>时间</TableHead>
-                      <TableHead>客户端</TableHead>
-                      <TableHead>请求 IP</TableHead>
-                      <TableHead>模型</TableHead>
-                      <TableHead>协议</TableHead>
-                      <TableHead>流式</TableHead>
-                      <TableHead>思考强度</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>耗时</TableHead>
-                      <TableHead>Token</TableHead>
-                      <TableHead>缓存</TableHead>
-                      <TableHead className="usage-col-reason">原因</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {requests.length ? (
-                      requests.map((row) => {
-                        const latency = latencyMark(row);
-                        return (
-                        <TableRow key={row.id}>
-                          <TableCell
-                            className="mono whitespace-nowrap text-xs text-foreground"
-                            title={row.created_at}
-                          >
-                            {fmtClock(row.created_at)}
-                          </TableCell>
-                          <TableCell>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="usage-client-ua text-xs font-medium">
-                                  {shortClientUa(row.client_ua)}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                className="max-w-sm break-all font-mono text-[11px]"
-                              >
-                                {row.client_ua || "—"}
-                              </TooltipContent>
-                            </Tooltip>
-                          </TableCell>
-                          <TableCell>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="usage-ip mono text-xs">
-                                  {row.client_ip || "—"}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent side="top" className="font-mono text-[11px]">
-                                {row.client_ip || "—"}
-                              </TooltipContent>
-                            </Tooltip>
-                          </TableCell>
-                          {/* 格内＝客户端填的别名（与模型列表上行同一个名字），
-                              上游裸名挪进悬停提示：路由/回退换了上游时只有提示里看得出来 */}
-                          <TableCell className="max-w-40 font-mono text-xs">
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="block truncate">{row.model}</span>
-                              </TooltipTrigger>
-                              <TooltipContent side="top" className="font-mono text-[11px]">
-                                别名 {row.model}
-                                <span className="mt-1 block">上游 {row.upstream_model || "—"}</span>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TableCell>
-                          <TableCell>
-                            <span className="inline-flex items-center gap-1 text-xs">
-                              {/* 灰底实心（= demo 的 badge-neutral），不是白底描边：
-                                  协议是"分类标签"，与状态徽章同一套实心视觉 */}
-                              <Badge variant="secondary">{row.client_protocol}</Badge>
-                              {row.upstream_protocol !== row.client_protocol ? (
-                                <>
-                                  <ArrowRight className="size-3 text-fg-subtle" aria-hidden />
-                                  <Badge variant={protocolTone(row.upstream_protocol)}>
-                                    {row.upstream_protocol}
-                                  </Badge>
-                                </>
-                              ) : null}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <span
-                              className={cn(
-                                "usage-stream",
-                                row.is_stream ? "is-on" : "is-off",
-                              )}
-                            >
-                              <i />{row.is_stream ? "stream" : "buffer"}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span
-                                  className={cn(
-                                    "usage-effort",
-                                    effortTone(row.reasoning_effort),
-                                    !row.reasoning_effort && "text-muted-foreground",
-                                  )}
-                                >
-                                  {row.reasoning_effort || "—"}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                className="font-mono text-[11px] tabular-nums"
-                              >
-                                推理 {fmtInt(row.reasoning_tokens)}
-                              </TooltipContent>
-                            </Tooltip>
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={statusTone(row.http_status)}>{row.http_status || "—"}</Badge>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {/* 上首字、下总耗时（对齐 demo 的 .cell-2 双行格）。
-                               首字为 0 说明是失败请求或旧记录，显示「—」而不是 0.0s。
-                               is-compact：两行同为 11px，比邻列小一档且左右边缘对齐。
-                               分档见 lib/utils.latencyMark：首字 >10s 琥珀 / >30s 红；
-                               总耗时只在「>30s 且 <10 tok/s」时红——长而快是正常生成。
-                               注意非流式客户端的首字恒为 0（整包被缓冲），是「—」不是慢。 */}
-                            <div className="cell-2 is-compact items-end">
-                              <span
-                                className={cn(
-                                  "mono",
-                                  latency.ttft === "warn" && "text-warn",
-                                  latency.ttft === "bad" && "font-medium text-destructive",
-                                )}
-                                title={`首字 ${row.first_byte_ms}ms`}
-                              >
-                                首字 {row.first_byte_ms > 0 ? fmtSeconds(row.first_byte_ms, 1) : "—"}
-                              </span>
-                              <small
-                                className={cn("mono", latency.slow && "font-medium text-destructive")}
-                                title={`耗时 ${row.duration_ms}ms${
-                                  latency.speed != null ? ` · ${latency.speed.toFixed(1)} tok/s` : ""
-                                }`}
-                              >
-                                耗时 {fmtSeconds(row.duration_ms, 1)}
-                              </small>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-right whitespace-nowrap">
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                {/* 上输入、下输出：并排两个裸数字只看颜色认不出哪条是哪条 */}
-                                <span className="usage-token-pair">
-                                  <span className="in">输入 {fmtCompact(row.input_tokens)}</span>
-                                  <span className="out">输出 {fmtCompact(row.output_tokens)}</span>
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                className="font-mono text-[11px] tabular-nums"
-                              >
-                                输入 {fmtInt(row.input_tokens)}
-                                <span className="mt-1 block">输出 {fmtInt(row.output_tokens)}</span>
-                                <span className="mt-1 block">
-                                  总计 {fmtInt((row.input_tokens || 0) + (row.output_tokens || 0))}
-                                </span>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TableCell>
-                          {/* 缓存独立成列（对齐 demo）：命中率要能独立扫视比较，
-                              塞在 Token 格内只能靠悬停才发现 */}
-                          <TableCell>
-                            <CacheCell
-                              cacheTokens={row.cached_tokens}
-                              promptTokens={row.input_tokens}
-                            />
-                          </TableCell>
-                          {/* 原因：只有非 200 才显示上游原始报错；成功请求显示占位「—」，
-                            与 demo 一致（留空会让整列看起来缺内容） */}
-                          <TableCell className="usage-col-reason">
-                            {row.http_status !== 200 && row.error_message ? (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span className="usage-reason">
-                                    {row.error_message}
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent
-                                  side="top"
-                                  className="max-w-sm break-all font-mono text-[11px]"
-                                >
-                                  {row.error_message}
-                                </TooltipContent>
-                              </Tooltip>
-                            ) : (
-                              <span className="text-fg-subtle">—</span>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                        );
-                      })
-                    ) : (
-                        <TableEmptyRow colSpan={12}>
-
-                        <Empty
-                          icon={Inbox}
-                          description="暂无数据"
-                        />
-                      </TableEmptyRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
+            <RequestsTable rows={requests} />
 
             <div className="gw-panel-foot">
               <Pagination

@@ -32,3 +32,18 @@ OPENCODE = UpstreamProfile(
     accepted_parts=frozenset({"text", "image_url"}),
     defaults={},
 )
+
+# codex：上游是 OpenAI Responses 协议（不是 chat 方言），part 归一由桥的 responses
+# 编码器负责，这里只声明传输层与目录缺省的能力位。PDF 走 Responses 原生 input_file，
+# 不经 chat 的 part 白名单，故不列在 accepted_parts 里（capabilities._deliverable
+# 对非 chat 协议放行 pdf）。
+CODEX = UpstreamProfile(
+    name="codex",
+    accepted_parts=frozenset({"text", "image_url"}),
+    defaults={
+        "output_modalities": ["text"],
+        "supports_reasoning": True,
+        "supports_function_calling": True,
+        "supports_system_messages": True,
+    },
+)

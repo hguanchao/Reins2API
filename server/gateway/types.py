@@ -13,11 +13,6 @@ from typing import Any
 PROTOCOL_CHAT = "chat"
 PROTOCOL_RESPONSES = "responses"
 PROTOCOL_ANTHROPIC = "anthropic"
-PROTOCOLS = (PROTOCOL_CHAT, PROTOCOL_RESPONSES, PROTOCOL_ANTHROPIC)
-
-
-def valid_protocol(value: str) -> bool:
-    return value in PROTOCOLS
 
 
 def protocol_path(protocol: str) -> str:

@@ -7,7 +7,6 @@ registry → provider → gateway 类型）。加一个新上游 = 加一个包 
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 import threading
 from collections.abc import Callable, Iterator
@@ -28,12 +27,6 @@ class UpstreamUnavailable(RuntimeError):
 def random_id(prefix: str, size: int) -> str:
     """prefix_ + size 字节随机 hex（移植自 zen2api util/identity.ts randomID）。"""
     return f"{prefix}_{secrets.token_hex(size)}"
-
-
-def stable_id(prefix: str, value: str) -> str:
-    """prefix_ + sha256(prefix\\0value) 前 24 位 hex——同一输入永远同一 ID。"""
-    digest = hashlib.sha256(f"{prefix}\0{value}".encode()).hexdigest()
-    return f"{prefix}_{digest[:24]}"
 
 
 @dataclass(frozen=True)
@@ -179,7 +172,9 @@ class Provider(Protocol):
 
 # 模型别名前缀（":" 分隔）→ provider 名。别名是客户端规范名，provider 发上游前
 # 自行剥前缀取裸名；cn:/glb: 同属 workbuddy，realm 由 provider 从前缀解析。
-ALIAS_PREFIXES = {"oc": "opencode", "cn": "workbuddy", "glb": "workbuddy"}
+ALIAS_PREFIXES = {
+    "oc": "opencode", "cn": "workbuddy", "glb": "workbuddy", "cx": "codex",
+}
 
 
 class Registry:
@@ -278,5 +273,4 @@ __all__ = [
     "protocol_path",
     "random_id",
     "registry",
-    "stable_id",
 ]

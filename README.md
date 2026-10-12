@@ -1,13 +1,14 @@
 # Reins2API
 
-多上游网关：把 **OpenCode Zen** 与 **WorkBuddy（腾讯 CodeBuddy 号池）** 包装成三种业界标准 API 端点，客户端任选一种协议即可调用，网关负责模型路由、协议转换(3×3 桥)与流式转码。
+多上游网关：把 **OpenCode Zen**、**WorkBuddy（腾讯 CodeBuddy 号池）** 与 **Codex（ChatGPT 后端 Codex 服务）** 包装成三种业界标准 API 端点，客户端任选一种协议即可调用，网关负责模型路由、协议转换(3×3 桥)与流式转码。
 
 - **Python 3.13 零框架**(标准库 `ThreadingHTTPServer` + `curl_cffi`)+ **React 19** 管理台
 - **协议桥**:OpenAI Chat / OpenAI Responses / Anthropic Messages 三协议两两互转(9 个方向一条转换路径),同协议字节级透传、未知字段原样保留
 - **流转码**:同协议 SSE 透传;跨协议 parser → BridgeStreamEvent → emitter 转码;客户端要 JSON 而上游被强制流式时自动折叠
 - **免费档自动塑形**:上游对免费档强制"流式 + agent 工具集",网关补齐后把强制流折叠回客户端要的形态,客户端完全无感
-- **分库遥测**:每个上游一个 SQLite 文件(`server/data/opencode.db`、`server/data/workbuddy.db`),用量与请求日志同源
-- **WorkBuddy 号池**:多账号加权选号、冷却/熔断、会话粘性、token 自动刷新、每日签到、OAuth 设备码登录、DSML 工具调用标记还原(见 `docs/workbuddy-provider-design.md`)
+- **分库遥测**:每个上游一个 SQLite 文件(`server/data/opencode.db`、`server/data/workbuddy.db`、`server/data/codex.db`),用量与请求日志同源;另有 `server/data/models.json` 保存各上游**原样返回**的模型目录快照(`{"opencode":[],"workbuddy":{"cn":[],"glb":[]},"codex":[]}`,每次刷新覆盖对应键,供排查/对照)
+- **WorkBuddy 号池**:多账号加权选号、冷却/熔断、会话粘性、token 自动刷新、手动签到、OAuth 设备码登录、DSML 工具调用标记还原(见 `docs/workbuddy-provider-design.md`)
+- **Codex 号池**:ChatGPT 账号 OAuth(PKCE 授权码)接入、多账号加权选号、冷却/熔断、会话粘性、refresh_token 轮换与自动刷新、模型目录按账号下发(见 `docs/codex-provider-design.md`)
 - **管理台**:OpenCode 状态页、WorkBuddy 号池页、系统配置页
 - **插件轴**:`providers/` 按上游分包,后期加新上游 = 一个包 + 一行注册
 
@@ -43,17 +44,18 @@ curl http://127.0.0.1:8787/v1/messages \
 | `oc:` | OpenCode Zen | `oc:big-pickle` |
 | `cn:` | WorkBuddy 国内域 | `cn:deepseek-v4.1-flash` |
 | `glb:` | WorkBuddy 国际域(global) | `glb:deepseek-v4.1-flash` |
+| `cx:` | Codex(ChatGPT 后端) | `cx:gpt-5-codex` |
 
-裸名(无前缀)归默认 provider(opencode);`cn:`/`glb:` 只在该域账号池内选号——域内无可用账号时返回 429,不会串域借号。旧式 `provider/xxx`(如 `workbuddy/xxx`、`opencode/xxx`)仍兼容。
+裸名(无前缀)归默认 provider(opencode);`cn:`/`glb:` 只在该域账号池内选号——域内无可用账号时返回 429,不会串域借号。`cx:` 走 Codex 号池(所有 codex 模型的上游协议都是 `responses`,chat/anthropic 客户端由桥自动转换)。旧式 `provider/xxx`(如 `workbuddy/xxx`、`opencode/xxx`)仍兼容。
 
 | 端点 | 说明 |
 |---|---|
 | `POST /v1/chat/completions` | OpenAI Chat 协议 |
 | `POST /v1/responses` | OpenAI Responses 协议 |
 | `POST /v1/messages` | Anthropic Messages 协议 |
-| `GET /v1/models` | 可服务模型清单(全 provider 合并,规范名 `oc:`/`cn:`/`glb:`) |
+| `GET /v1/models` | 可服务模型清单(全 provider 合并,规范名 `oc:`/`cn:`/`glb:`/`cx:`) |
 | `GET /healthz` | 健康检查 |
-| `GET /api/{provider}/ops` | 运维聚合快照(状态+目录+用量;opencode / workbuddy 通用) |
+| `GET /api/{provider}/ops` | 运维聚合快照(状态+目录+用量;opencode / workbuddy / codex 通用) |
 | `GET /api/{provider}/requests` | 遥测明细分页 |
 | `GET /api/{provider}/usage` | 用量聚合(`1h/24h/7d/30d`,含 by_account) |
 | `GET/POST/DELETE /api/workbuddy/accounts[/{uid}]` | 账号列表 / 手动导入 / 删除 |
@@ -61,21 +63,28 @@ curl http://127.0.0.1:8787/v1/messages \
 | `POST /api/workbuddy/accounts/{uid}/checkin` | 立即签到(force 绕过本地台账,上游幂等兜底) |
 | `POST /api/workbuddy/checkin/run-all` | 一键全签(串行 + 账号间错峰;跳过 global/企业号) |
 | `POST /api/workbuddy/login/start`、`GET .../login/poll` | OAuth 设备码登录(浏览器授权 → 自动入池) |
+| `GET/POST/DELETE /api/codex/accounts[/{uid}]` | 账号列表 / 手动导入(粘贴 refresh_token 或 access_token+account_id) / 删除 |
+| `POST /api/codex/accounts/import` | 批量导入(CPA / codex2api 形状的 JSON:单对象 / 数组 / `{"accounts":[…]}`) |
+| `GET /api/codex/accounts/export?format=cpa\|codex2api` | 导出账号为对应形状的 JSON |
+| `POST /api/codex/accounts/{uid}/action` | pause / resume / disable / revive / refresh |
+| `POST /api/codex/login/start` | 发起 OAuth(PKCE):返回授权 URL 与 session_id |
+| `POST /api/codex/login/exchange` | 粘贴回调 URL(或 code)兑换 token 并自动入池 |
 
 Web 管理台:构建前端后访问 `http://127.0.0.1:8787/`(SPA;根路径会 replace 重定向到 `/opencode`,三页各有独立地址 `/opencode`、`/workbuddy`、`/settings`,可直接进、可刷新——服务端对非 API 路径回退 index.html)。开发态 `cd web && npm run dev`(5274,代理到后端)。
 
 ## 凭证与安全
 
 - **OpenCode**:凭证体系固定为**单一 `public` 匿名凭证**:只服务免费档模型(路由层拦截非免费模型,上游对它们一律回 "Missing API key")。
-- **WorkBuddy**:多账号号池,凭证存 `server/data/workbuddy.db` 的 accounts 表(明文,与 wb2api 同款取舍);通过管理台「添加账号」走 OAuth 设备码登录,或手动粘贴 token;token 过期前 10 分钟自动刷新。**每日签到**按北京时间 `WB_CHECKIN_HOURS`(默认 9/21 点)各跑一轮,每轮账号间错峰;上游只对 CN 个人号开放,global 域与企业号在发请求前跳过;领取结果落 accounts 表(本地台账),接口本身幂等,重复调用只会返回"已签"。参数(冷却/熔断/超时/签到等)写死在 `server/core/settings.py` 的 `WB_*` 常量。
-- **管理 API 与推理端点都无鉴权**,安全姿态是默认只监听 `127.0.0.1`。对外暴露前请自己加反代鉴权(WorkBuddy 号池有真实凭证,务必先加)。
+- **WorkBuddy**:多账号号池,凭证存 `server/data/workbuddy.db` 的 accounts 表(明文,与 wb2api 同款取舍);通过管理台「添加账号」走 OAuth 设备码登录,或手动粘贴 token;token 过期前 10 分钟自动刷新。**签到只手动触发**(管理台「立即签到」/「一键全签」,没有定时调度):上游只对 CN 个人号开放,global 域与企业号在发请求前跳过;领取结果落 accounts 表(本地台账),接口本身幂等,重复调用只会返回"已签"。参数(冷却/熔断/超时/签到等)写死在 `server/core/settings.py` 的 `WB_*` 常量。
+- **Codex**:多账号号池,凭证存 `server/data/codex.db` 的 accounts 表(明文)。通过管理台/API 走 **OAuth PKCE 授权码**登录(浏览器授权 → 把回调 URL 粘贴回 `/api/codex/login/exchange` 自动入池),或手动粘贴 `refresh_token`(会立即刷新换取 AT 并解析账号)。`refresh_token` 会**轮换**(上游可能换发新 RT,没换发时保留旧值);token 刷新有两条路——**请求前按需**(距过期不足 10 分钟)与**后台巡检**(每 2 分钟醒来,只刷同样快过期的号;不做全量刷,免得每个号的 RT 周期性轮换),两条路按账号串行化以防 RT 双花;凭证失效(401)先刷新同号重试,连续失败达阈值则禁用待人工重新授权。**额度**(5h/7d 限流窗口)由每次成功响应的 `x-codex-{primary,secondary}-*` 头回填。参数(冷却/熔断/超时/池等)写死在 `server/core/settings.py` 的 `CODEX_*` 常量。
+- **管理 API 与推理端点都无鉴权**,安全姿态是默认只监听 `127.0.0.1`。对外暴露前请自己加反代鉴权(WorkBuddy 与 Codex 号池都有真实凭证,务必先加)。
 - 运行时可持久化配置只有代理三档(`server/config.json`);其余值写死在 `server/core/settings.py` 与各 provider。
 
 ## 架构
 
 ```
 server/
-├── main.py              入口:注册 provider(opencode + workbuddy) → 起服务
+├── main.py              入口:注册 provider(opencode + workbuddy + codex) → 起服务
 ├── core/                settings(写死值) / logger(北京时间滚动) / http_body / respond
 ├── api/server.py        零框架分发层(限流 503/413/408/SPA 托管),路由 /v1 /api /healthz
 ├── gateway/             ★ 与上游无关的协议核心
@@ -89,11 +98,14 @@ server/
 │   ├── stream/          SSE 读写(sse/errors) + 流式编排(forward/transcode/collapse/observer)
 │   ├── inference.py     编排:前缀路由→转换→塑形→上游→回译→遥测
 │   └── base.py          Provider 接口 + registry(插件轴,前缀路由)
-├── providers/opencode/  OpenCode Zen 接入:routing/discovery/upstream/identity
+├── providers/           共享层:identity(会话标识派生) / models_snapshot(上游目录快照)
+│                        / capabilities·parts·profiles(能力档案与出站附件归一)
+├── providers/opencode/  OpenCode Zen 接入:routing/discovery/upstream
 ├── providers/workbuddy/ WorkBuddy 号池接入:pool/store/classify/shape/dsml/streamwrap/upstream/login/checkin
+├── providers/codex/     Codex 号池接入:pool/store/classify/shape/oauth/upstream/login
 ├── net/proxy.py         direct/system(环境变量→WinINET 注册表)/manual
-└── db/                  分库遥测:每 provider 一个 SQLite(requests 表 + 用量聚合;workbuddy 另有 accounts 表)
-web/                     React 管理台(OpenCodePage / WorkBuddyPage / SettingsPage),构建产物落 web/dist/
+└── db/                  分库遥测:每 provider 一个 SQLite(requests 表 + 用量聚合;workbuddy/codex 另有 accounts 表)
+web/                     React 管理台(OpenCodePage / WorkBuddyPage / CodexPage / SettingsPage),构建产物落 web/dist/
 ```
 
 依赖方向:`api → inference → registry → provider → bridge`。`gateway/` 永不 import `providers/*`。

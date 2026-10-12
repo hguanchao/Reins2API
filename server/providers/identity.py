@@ -1,7 +1,9 @@
-"""上游身份头 x-opencode-session / x-opencode-request 的生成。
+"""会话/请求标识派生（provider 共享助手，不隶属任何单一上游）。
 
-移植自 OpenCode 的 packages/schema/src/identifier.ts 与 session-id.ts /
-session-message.ts：
+放在 providers/ 顶层而非某个 provider 包里：OpenCode 与 WorkBuddy 都需要
+「会话稳定、请求唯一」的标识，WorkBuddy 直接复用即可——插件轴要求 provider
+之间互不 import，共享逻辑必须上提到共享层。派生算法移植自 OpenCode 的
+packages/schema/src/identifier.ts 与 session-id.ts / session-message.ts：
 
     ses_ + descending()   —— 会话 ID
     msg_ + ascending()    —— 用户消息 ID

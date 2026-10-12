@@ -32,15 +32,20 @@ DISCOVERY_TIMEOUT = 30
 def discover(
     upstream: str,
     credential: str | None,
-) -> tuple[dict[str, ModelRecord], list[str] | None, list[str]]:
-    """返回 (records, available, errors)。available 为 None 表示清单从未拉到
-    （无凭证或请求失败），调用方视作"可用性未知"。"""
+) -> tuple[dict[str, ModelRecord], list[str] | None, list[str], list[dict[str, Any]]]:
+    """返回 (records, available, errors, raw_models)。available 为 None 表示清单从未拉到
+    （无凭证或请求失败），调用方视作"可用性未知"。
+
+    raw_models 是能力目录里本网关服务的那部分模型的**原样条目**，供
+    data/models.json 快照使用（归一化后的记录丢了上游字段名，快照要的是原文）。
+    """
     errors: list[str] = []
 
     records: dict[str, ModelRecord] = {}
+    raw_models: list[dict[str, Any]] = []
     try:
         providers = _fetch_capabilities()
-        records = _parse_capabilities(providers)
+        records, raw_models = _parse_capabilities(providers)
     except Exception as exc:
         message = f"capability catalog: {exc}"
         errors.append(message)
@@ -55,7 +60,7 @@ def discover(
             errors.append(message)
             logger.warning(f"[目录] 上游模型清单拉取失败: {message}")
 
-    return records, available, errors
+    return records, available, errors, raw_models
 
 
 def _fetch_capabilities() -> dict[str, Any]:
@@ -98,8 +103,12 @@ def _fetch_model_list(upstream: str, credential: str) -> list[str]:
     return ids
 
 
-def _parse_capabilities(providers: dict[str, Any]) -> dict[str, ModelRecord]:
+def _parse_capabilities(
+    providers: dict[str, Any],
+) -> tuple[dict[str, ModelRecord], list[dict[str, Any]]]:
+    """返回 (归一化记录, 原样条目列表)。原样条目按 model_id 去重后保序。"""
     records: dict[str, ModelRecord] = {}
+    raw_by_id: dict[str, dict[str, Any]] = {}
     for provider_id, provider in providers.items():
         if not is_object(provider):
             continue
@@ -121,7 +130,8 @@ def _parse_capabilities(providers: dict[str, Any]) -> dict[str, ModelRecord]:
                 metadata=_metadata_for(model),
                 free=_is_free(model, model_id),
             )
-    return records
+            raw_by_id[model_id] = model
+    return records, list(raw_by_id.values())
 
 
 def _metadata_for(model: dict[str, Any]) -> dict[str, Any]:

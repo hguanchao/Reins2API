@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from core import config as app_config
 from core.http_body import IncompleteRequestBodyError, RequestBodyTooLarge, read_request_body
 from core.logger import logger
-from core.respond import error_json, send_json
+from core.respond import CORS_HEADERS, CORS_METHODS, CORS_ORIGIN, error_json, send_json
 from core.settings import WEB_DIST_DIR
 from db import store
 from db.usage import is_range, summarize, window_start_ms
@@ -32,7 +32,6 @@ from gateway.base import registry
 from net import egress
 from net import proxy as outbound_proxy
 
-_CORS_ORIGIN = "*"
 _MAX_BODY = 1_000_000
 _API_PREFIXES = ("/api", "/v1", "/health")
 _WEB_INDEX = "index.html"
@@ -257,11 +256,13 @@ def _handle_workbuddy_api(
 
     if method == "GET" and action == "accounts" and len(parts) == 4:
         summaries = provider.account_summaries()
-        stats = _workbuddy_account_stats()
+        stats = _account_stats("workbuddy")
         for item in summaries:
             extra = stats.get(item["uid"], {})
             item["stats_7d"] = extra.get("stats")
+            item["stats_total"] = extra.get("total")
             item["last_used_ms"] = extra.get("last_used_ms", 0)
+            item["daily_14d"] = extra.get("daily") or [0] * _SERIES_DAYS
         send_json(handler, 200, {"ok": True, "data": summaries})
         return True
 
@@ -375,28 +376,203 @@ def _handle_workbuddy_api(
     return False
 
 
-def _workbuddy_account_stats() -> dict[str, dict[str, Any]]:
-    """按账号聚合近 7 天 requests 遥测（统计单一代数事实源，docs §7.2）。"""
+_STATS_WINDOW_DAYS = 7    # 「历史用量」列的口径：近 7 天
+_SERIES_DAYS = 14         # 账号行迷你柱状图的桶数（按天，最旧 → 最新）
+
+
+def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
+    """按账号聚合 requests 遥测（统计单一代数事实源，docs §7.2）。
+
+    按 provider 参数化（号池 provider 共用：workbuddy / codex）——遥测在各 provider
+    自己的库里，所以必须传对名字。返回 {uid: {total, stats, last_used_ms, daily}}：
+      - total：**全时段**请求/失败/token（历史用量列）
+      - stats：近 7 天同口径
+      - last_used_ms：最近一次服务的时刻（最近请求列）
+      - daily：近 14 天逐日请求数（迷你柱状图；最旧在前）
+    """
+    provider_store = store(provider_name)
+    entries: dict[str, dict[str, Any]] = {}
+    # 以全时段聚合打底：这样"14 天内没跑过、但历史上有量"的账号也会出现在结果里。
+    for uid, total in provider_store.account_totals().items():
+        entries[uid] = {
+            "total": {k: total[k] for k in ("requests", "failed", "input_tokens", "output_tokens")},
+            "last_used_ms": total["last_used_ms"],
+            "daily": [0] * _SERIES_DAYS,
+            "stats": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
+        }
+
     now = int(time.time() * 1000)
-    rows = store("workbuddy").window_rows(now - 7 * 86_400_000)
-    stats: dict[str, dict[str, Any]] = {}
-    for row in rows:
+    day_ms = 86_400_000
+    for row in provider_store.window_rows(now - _SERIES_DAYS * day_ms):
         uid = str(row.get("account_uid") or "")
         if not uid:
             continue
-        entry = stats.setdefault(uid, {
-            "stats": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
+        entry = entries.setdefault(uid, {
+            "total": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
             "last_used_ms": 0,
+            "daily": [0] * _SERIES_DAYS,
+            "stats": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
         })
-        bucket = entry["stats"]
-        bucket["requests"] += 1
-        status = int(row.get("http_status") or 0)
-        if not 200 <= status < 300:
-            bucket["failed"] += 1
-        bucket["input_tokens"] += int(row.get("input_tokens") or 0)
-        bucket["output_tokens"] += int(row.get("output_tokens") or 0)
-        entry["last_used_ms"] = max(entry["last_used_ms"], int(row.get("created_ms") or 0))
-    return stats
+        created = int(row.get("created_ms") or 0)
+        # 日桶：index 0 = 最旧（第 14 天前），最后一格 = 今天。越界（未来时间戳）落到今天。
+        age_days = min(max(now - created, 0) // day_ms, _SERIES_DAYS - 1)
+        entry["daily"][_SERIES_DAYS - 1 - age_days] += 1
+        if created >= now - _STATS_WINDOW_DAYS * day_ms:
+            bucket = entry["stats"]
+            bucket["requests"] += 1
+            status = int(row.get("http_status") or 0)
+            if not 200 <= status < 300:
+                bucket["failed"] += 1
+            bucket["input_tokens"] += int(row.get("input_tokens") or 0)
+            bucket["output_tokens"] += int(row.get("output_tokens") or 0)
+        entry["last_used_ms"] = max(entry["last_used_ms"], created)
+    return entries
+
+
+def _handle_codex_api(
+    method: str, path: str, query: dict[str, list[str]], handler: BaseHTTPRequestHandler
+) -> bool:
+    """Codex 专属管理端点：账号 CRUD/动作 + PKCE 授权登录 + 池状态。
+
+    路由形态：/api/codex/{accounts|login|state}[/...]；ops/requests/usage 由泛化的
+    _handle_provider_api 先行处理，此处只收专属面。
+    """
+    parts = path.split("/")
+    if len(parts) < 4 or parts[1] != "api" or parts[2] != "codex":
+        return False
+    if "codex" not in registry.names:
+        return False
+    provider = registry.get("codex")
+    action = parts[3]
+
+    if method == "GET" and action == "accounts" and len(parts) == 4:
+        summaries = provider.account_summaries()
+        stats = _account_stats("codex")
+        for item in summaries:
+            extra = stats.get(item["uid"], {})
+            item["stats_7d"] = extra.get("stats")
+            item["stats_total"] = extra.get("total")
+            item["last_used_ms"] = extra.get("last_used_ms", 0)
+            item["daily_14d"] = extra.get("daily") or [0] * _SERIES_DAYS
+        send_json(handler, 200, {"ok": True, "data": summaries})
+        return True
+
+    if method == "POST" and action == "accounts" and len(parts) == 4:
+        # 手动导入凭证（粘贴 refresh_token 或 access_token+account_id）
+        body = _json_body(handler)
+        if not isinstance(body, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        try:
+            account = provider.manual_add_account(body)
+        except ValueError as exc:
+            send_json(handler, 400, {"ok": False, "error": str(exc)})
+            return True
+        try:
+            provider.refresh()
+        except Exception:
+            pass
+        send_json(handler, 200, {"ok": True, "data": account.public_dict()})
+        return True
+
+    if method == "GET" and action == "accounts" and len(parts) == 5 and parts[4] == "export":
+        # 导出账号为 CPA / codex2api 形状的 JSON（前端拿到后自行触发下载）
+        fmt = str((query.get("format") or ["cpa"])[0] or "cpa").strip().lower()
+        if fmt not in ("cpa", "codex2api"):
+            fmt = "cpa"
+        try:
+            data = provider.export_accounts(fmt)
+        except Exception as exc:
+            send_json(handler, 500, {"ok": False, "error": f"导出失败: {type(exc).__name__}: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": data})
+        return True
+
+    if method == "POST" and action == "accounts" and len(parts) == 5 and parts[4] == "import":
+        # 导入 CPA / codex2api 形状的 JSON（宽容解析；坏条目只计入 skipped）
+        body = _json_body(handler)
+        payload = body if isinstance(body, dict) else {}
+        text = payload.get("json")
+        if not isinstance(text, str) or not text.strip():
+            send_json(handler, 400, {"ok": False, "error": "缺少 json 字段（粘贴的 JSON 文本）"})
+            return True
+        try:
+            summary = provider.import_accounts(text)
+        except ValueError as exc:
+            send_json(handler, 400, {"ok": False, "error": str(exc)})
+            return True
+        except Exception as exc:
+            send_json(handler, 502, {"ok": False, "error": f"导入失败: {type(exc).__name__}: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": summary})
+        return True
+
+    if method == "DELETE" and action == "accounts" and len(parts) == 5:
+        uid = parts[4]
+        if provider.account_busy(uid):
+            send_json(handler, 409, {"ok": False, "error": "账号有在途请求，稍后再删"})
+            return True
+        from providers.codex.store import default_store
+
+        if not default_store().delete_account(uid):
+            send_json(handler, 404, {"ok": False, "error": f"账号不存在: {uid}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": {"deleted": uid}})
+        return True
+
+    if method == "POST" and action == "accounts" and len(parts) == 6 and parts[5] == "action":
+        uid = parts[4]
+        body = _json_body(handler)
+        act = str((body or {}).get("action") or "")
+        try:
+            updated = provider.account_action(uid, act)
+        except KeyError as exc:
+            send_json(handler, 404, {"ok": False, "error": str(exc)})
+            return True
+        except ValueError as exc:
+            send_json(handler, 400, {"ok": False, "error": str(exc)})
+            return True
+        except Exception as exc:
+            send_json(handler, 502, {"ok": False, "error": f"动作失败: {type(exc).__name__}: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": updated})
+        return True
+
+    if method == "GET" and action == "state" and len(parts) == 4:
+        send_json(handler, 200, {"ok": True, "data": provider.pool_snapshot()})
+        return True
+
+    if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "start":
+        # 发起 PKCE 授权：返回授权 URL 与 session_id（用户在浏览器打开并登录）
+        try:
+            data = provider.login_start()
+        except Exception as exc:
+            send_json(handler, 502, {"ok": False, "error": f"发起授权失败: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": data})
+        return True
+
+    if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "exchange":
+        # 粘贴回调 URL（或其中的 code）兑换 token 并入库
+        body = _json_body(handler)
+        payload = body if isinstance(body, dict) else {}
+        session_id = str(payload.get("session_id") or "")
+        callback = str(payload.get("callback") or payload.get("code") or "")
+        state = str(payload.get("state") or "")
+        if not session_id or not callback:
+            send_json(handler, 400, {"ok": False, "error": "session_id 与 callback 均为必填"})
+            return True
+        try:
+            data = provider.login_exchange(session_id, callback, state)
+        except ValueError as exc:
+            send_json(handler, 400, {"ok": False, "error": str(exc)})
+            return True
+        except Exception as exc:
+            send_json(handler, 502, {"ok": False, "error": f"兑换失败: {type(exc).__name__}: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": data})
+        return True
+
+    return False
 
 
 def _handle_api(
@@ -407,6 +583,7 @@ def _handle_api(
         _handle_config_api,
         _handle_provider_api,
         _handle_workbuddy_api,
+        _handle_codex_api,
     ):
         if route_handler(method, path, query, handler):
             return True
@@ -428,21 +605,14 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.connection.settimeout(15.0)
         super().handle_one_request()
 
-    def log_message(self, fmt: str, *args: Any) -> None:
+    def log_message(self, _fmt: str, *_args: Any) -> None:
         return  # 访问日志静默（自有 loguru 日志）
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", _CORS_ORIGIN)
-        self.send_header(
-            "Access-Control-Allow-Methods",
-            "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS",
-        )
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, Authorization, X-Api-Key, HTTP-Referer, X-Title, "
-            "OpenAI-Beta, anthropic-version, anthropic-beta, x-api-key, x-request-id",
-        )
+        self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+        self.send_header("Access-Control-Allow-Methods", CORS_METHODS)
+        self.send_header("Access-Control-Allow-Headers", CORS_HEADERS)
         self.send_header("Content-Length", "0")
         self.end_headers()
 

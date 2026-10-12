@@ -1,0 +1,122 @@
+"""Codex 上游错误分类：状态码 + 错误体 → 罚号/换号/透传决策。
+
+分类驱动三件事（与 workbuddy/classify.py 同构）：
+  - 是否换号重试（RETRYABLE）；
+  - 罚号策略（冷却时长 / 喂熔断 / 禁用）；
+  - 是否原样透传客户端（请求级错误不罚号）。
+
+Codex 上游的错误体是 Responses 风格 `{"error":{"message","type","code"}}`，
+也可能直接是 ChatGPT 后端的 `{"detail": …}` / 纯文本；这里只做宽容取 message，
+不依赖具体 schema（未见过的形态按状态码兜底）。
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass, field
+
+NONE = "none"
+AUTH = "auth"                # 401/403 凭证问题 → 先刷新同号重试，失败则冷却
+RATE_LIMIT = "rate_limit"    # 429 计划限流 → 软冷却（指数退避）
+NOT_FOUND = "not_found"      # 404 → 短冷却
+SERVER = "server"            # 5xx → 喂熔断器
+WAF = "waf"                  # Cloudflare 拦截（403 无业务信封）→ 冷却
+CLIENT = "client"            # 其余 4xx（坏参数等）→ 不罚号，透传
+
+RETRYABLE = frozenset({AUTH, RATE_LIMIT, NOT_FOUND, SERVER, WAF})
+
+_RETRY_AFTER_HEADERS = ("retry-after", "retry-after-ms", "x-ratelimit-reset")
+_RETRY_AFTER_SANITY_S = 2 * 3600  # 超过视为上游异常值丢弃
+
+
+@dataclass
+class Classified:
+    kind: str
+    retry_after_s: float = 0.0
+    raw: str = field(default="", repr=False)
+
+    @property
+    def retryable(self) -> bool:
+        return self.kind in RETRYABLE
+
+
+def error_message(body: str) -> str:
+    """宽容取错误文案：Responses 的 error.message → detail → msg → 原文。"""
+    text = (body or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return text[:200]
+    if not isinstance(parsed, dict):
+        return text[:200]
+    error = parsed.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:200]
+    for key in ("detail", "message", "msg", "error"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:200]
+    return text[:200]
+
+
+def _looks_like_waf(status: int, body: str) -> bool:
+    """403 且无 JSON 业务信封 → Cloudflare 拦截页形态。"""
+    if status != 403:
+        return False
+    lowered = (body or "").lower()
+    return "<html" in lowered or "cloudflare" in lowered or not body.strip().startswith("{")
+
+
+def classify(status: int, body: str) -> Classified:
+    """主入口：状态码 + 错误体 → Classified。"""
+    out = Classified(kind=NONE, raw=(body or "")[:200])
+    if status == 401:
+        out.kind = AUTH
+        return out
+    if status == 403:
+        out.kind = WAF if _looks_like_waf(status, body) else AUTH
+        return out
+    if status == 429:
+        out.kind = RATE_LIMIT
+        return out
+    if status == 404:
+        out.kind = NOT_FOUND
+        return out
+    if status >= 500:
+        out.kind = SERVER
+        return out
+    if status >= 400:
+        out.kind = CLIENT
+        return out
+    return out
+
+
+def apply_retry_after(result: Classified, headers: dict[str, str] | None) -> Classified:
+    """从响应头解析上游明示等待时长（retry-after → retry-after-ms → x-ratelimit-reset）。
+
+    纯数字才解析；非正/超上限丢弃，回落本地退避计算。
+    """
+    if not headers:
+        return result
+    lowered = {str(k).lower(): str(v).strip() for k, v in headers.items()}
+    now_s = time.time()
+    for name in _RETRY_AFTER_HEADERS:
+        raw = lowered.get(name) or ""
+        if not raw or not raw.isdigit() or len(raw) > 16:
+            continue
+        n = int(raw)
+        if name == "x-ratelimit-reset":
+            if len(raw) < 8:
+                continue
+            epoch_s = n / 1000.0 if len(raw) >= 13 else float(n)
+            n = int(epoch_s - now_s)
+        if n <= 0 or n > _RETRY_AFTER_SANITY_S:
+            continue
+        result.retry_after_s = float(n)
+        break
+    return result

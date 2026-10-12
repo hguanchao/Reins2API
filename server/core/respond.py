@@ -7,7 +7,10 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 CORS_ORIGIN = "*"
-_CORS_HEADERS = (
+# 管理面与推理端点共用的 CORS 头集合：单一来源，OPTIONS 预检与普通响应都取这里，
+# 避免两处各写一份后漂移（此前 api/server.py 与 core/respond.py 各持一份）。
+CORS_METHODS = "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
+CORS_HEADERS = (
     "Content-Type, Authorization, X-Api-Key, HTTP-Referer, X-Title, "
     "OpenAI-Beta, anthropic-version, anthropic-beta, x-api-key, x-request-id"
 )
@@ -25,8 +28,8 @@ def send_json(
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
-    handler.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-    handler.send_header("Access-Control-Allow-Headers", _CORS_HEADERS)
+    handler.send_header("Access-Control-Allow-Methods", CORS_METHODS)
+    handler.send_header("Access-Control-Allow-Headers", CORS_HEADERS)
     handler.send_header("Access-Control-Expose-Headers", "*")
     if extra_headers:
         for key, value in extra_headers.items():
@@ -49,7 +52,7 @@ def send_bytes(
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
-    handler.send_header("Access-Control-Allow-Headers", _CORS_HEADERS)
+    handler.send_header("Access-Control-Allow-Headers", CORS_HEADERS)
     if extra_headers:
         for key, value in extra_headers.items():
             handler.send_header(key, value)

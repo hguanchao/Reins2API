@@ -8,15 +8,16 @@
 from __future__ import annotations
 
 import argparse
-import random
 import threading
 import time
-from datetime import datetime, timedelta, timezone
 
 from core.logger import logger
 
 CATALOG_REFRESH_SECONDS = 300
-_BEIJING_TZ = timezone(timedelta(hours=8))
+# 账号 token 后台巡检间隔（秒）。取舍照 codex2api：固定周期醒来，但**只刷快过期的号**，
+# 不做全量刷新——全量刷会让每个号的 refresh_token 周期性轮换（上游可能因此判失效），
+# 也白打上游请求。刷谁由 provider.refresh_expiring() 自己决定。
+TOKEN_SWEEP_SECONDS = 120
 
 
 def _refresh_loop(provider) -> None:
@@ -29,39 +30,23 @@ def _refresh_loop(provider) -> None:
         time.sleep(CATALOG_REFRESH_SECONDS)
 
 
-def _checkin_loop(provider) -> None:
-    """每日签到：按北京时间墙钟落在 WB_CHECKIN_HOURS 各档，每档最多重试
-    WB_CHECKIN_ATTEMPT_LIMIT 轮，账号间错峰由 provider.checkin_all 负责。
+def _token_sweep_loop(provider) -> None:
+    """账号 token 后台巡检：固定周期醒来，只刷「快过期」的号。
 
-    与 _refresh_loop 的固定周期不同：签到必须落在"某几个整点"上，而睡眠/待机
-    唤醒后周期计数不可信（睡 8 小时可能一次都没跑），所以每轮重新读墙钟——
-    这也是官方脚本用多个独立计划任务、而不是"每 4 小时重复"的原因。多档的意义
-    在于补救：首档撞上关机/网络未就绪时当天还有机会。
+    门槛与跳过规则见 providers/codex/provider.py 的 refresh_expiring()——与请求路径
+    用同一个提前量，巡检才真正替请求挡掉那次同步刷新。没有实现该方法的 provider
+    直接不跑（这样以后加新上游可以按需实现）。
     """
-    from core.settings import (
-        WB_CHECKIN_ATTEMPT_LIMIT,
-        WB_CHECKIN_HOURS,
-        WB_CHECKIN_JITTER_S,
-        WB_CHECKIN_TICK_S,
-    )
-
-    attempts: dict[tuple[str, int], int] = {}
+    if not hasattr(provider, "refresh_expiring"):
+        return
     while True:
         try:
-            now = datetime.now(_BEIJING_TZ)
-            day = now.strftime("%Y-%m-%d")
-            if now.hour in WB_CHECKIN_HOURS:
-                key = (day, now.hour)
-                if attempts.get(key, 0) < WB_CHECKIN_ATTEMPT_LIMIT:
-                    attempts[key] = attempts.get(key, 0) + 1
-                    attempts = {k: v for k, v in attempts.items() if k[0] == day}
-                    # 触发点后随机错峰：整点齐射是明显的机器特征
-                    time.sleep(random.uniform(0, WB_CHECKIN_JITTER_S))
-                    summary = provider.checkin_all()
-                    logger.info(f"[签到] {summary['summary']}")
+            refreshed = provider.refresh_expiring()
+            if refreshed:
+                logger.info(f"[token] {provider.name} 后台刷新 {refreshed} 个账号")
         except Exception as exc:
-            logger.warning(f"[签到] 循环异常: {type(exc).__name__}: {exc}")
-        time.sleep(WB_CHECKIN_TICK_S)
+            logger.warning(f"[token] {provider.name} 巡检异常: {type(exc).__name__}: {exc}")
+        time.sleep(TOKEN_SWEEP_SECONDS)
 
 
 def main() -> None:
@@ -77,7 +62,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    from core.settings import PORT, WB_CHECKIN_ENABLED, WB_ENABLED
+    from core.settings import CODEX_ENABLED, PORT, WB_ENABLED
     from db import init_stores
     from gateway.base import registry
     from providers.opencode import OpenCodeProvider
@@ -94,8 +79,19 @@ def main() -> None:
         registry.register(workbuddy)
         init_stores(registry.names)  # workbuddy.db（requests + accounts 表）
         threading.Thread(target=_refresh_loop, args=(workbuddy,), daemon=True).start()
-        if WB_CHECKIN_ENABLED:
-            threading.Thread(target=_checkin_loop, args=(workbuddy,), daemon=True).start()
+
+    if CODEX_ENABLED:
+        from providers.codex import CodexProvider
+
+        codex = CodexProvider()
+        registry.register(codex)
+        init_stores(registry.names)  # codex.db（requests + accounts 表）
+        threading.Thread(target=_refresh_loop, args=(codex,), daemon=True).start()
+        threading.Thread(target=_token_sweep_loop, args=(codex,), daemon=True).start()
+
+    from providers import models_snapshot
+
+    models_snapshot.ensure()  # data/models.json（上游目录快照；缺失时建默认形状）
 
     logger.info(f"[启动] provider 已注册: {', '.join(registry.names)}")
 

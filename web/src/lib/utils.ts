@@ -6,16 +6,6 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/** 展示用模型短名：去掉 provider 命名空间前缀（oc:big-pickle → big-pickle，
- *  cn:/glb:deepseek-v4.1-flash → deepseek-v4.1-flash，workbuddy/glm-5.3 → glm-5.3）。
- *  仅用于显示；API 请求与数据流保留完整 id。 */
-export function shortModelName(name: string): string {
-  const colon = name.indexOf(":");
-  if (colon >= 0) return name.slice(colon + 1);
-  const slash = name.indexOf("/");
-  return slash >= 0 ? name.slice(slash + 1) : name;
-}
-
 /** 从倍率文案解析数值，上游两种写法都认：
  *  `x0.14 credits` / `x0.08` / `x1.39` → 0.14 / 0.08 / 1.39（x 在前）
  *  `0.00x` → 0（promo_credits 那种把 x 当后缀的形态）

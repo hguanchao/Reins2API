@@ -11,6 +11,7 @@
 @import "./styles/tokens.css";
 @import "./styles/base.css";
 @import "./styles/gateway.css";
+@import "./styles/accounts.css";
 @import "./styles/usage.css";
 @import "./styles/overlays.css";
 @import "./styles/motion.css";

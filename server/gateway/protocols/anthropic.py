@@ -13,12 +13,13 @@ from gateway.bridge.content import (
 )
 from gateway.bridge.reasoning import anthropic_thinking, normalize_effort_value
 from gateway.bridge.stop import anthropic_stop, canonical_anthropic_stop
-from gateway.bridge.text import as_prefix, first_non_empty, schema_or_default
+from gateway.bridge.text import as_prefix, schema_or_default
 from gateway.bridge.usage import anthropic_usage, decode_anthropic_usage
-from gateway.errors import BridgeError
+from gateway.errors import BridgeError, error_payload
 from gateway.jsonutil import (
     any_at,
     first_any,
+    first_non_empty,
     is_object,
     map_at,
     parse_json_or_string,
@@ -479,10 +480,7 @@ class AnthropicStreamEmitter(StreamEmitterBase):
         )
 
     def _error_frames(self, message: str, error_type: str) -> None:
-        self._sse(
-            "error",
-            {"type": "error", "error": {"type": error_type, "message": message}},
-        )
+        self._sse("error", error_payload(PROTOCOL_ANTHROPIC, message, error_type))
 
     def _finish_frames(self) -> None:
         if self.text_open:
