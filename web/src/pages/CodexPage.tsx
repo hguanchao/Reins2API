@@ -65,6 +65,7 @@ import {
   CodexImportDialog,
 } from "@/components/accounts/CodexTransferDialogs";
 import { fmtTokens } from "@/lib/format";
+import { useSessionCountdown } from "@/lib/countdown";
 import { cn, fmtCompact, fmtInt } from "@/lib/utils";
 
 const AUTO_REFRESH_MS = 10_000;
@@ -403,7 +404,8 @@ export function CodexPage() {
  * OpenAI 只注册了 localhost:1455 这一个回调地址：网关与浏览器同机时由网关直接
  * 监听该端口收回调、自动兑换入池，前端只轮询等完成（同 WorkBuddy 的等待体验）；
  * 监听不可用（端口被占 / 在别的设备上打开链接）时退回「复制回调 URL 粘回来」。
- * 打开弹窗即生成链接但**不自动跳转**：用哪个浏览器、要不要无痕窗口由用户决定。
+ * 粘贴输入框常显、不折叠，等待状态就在输入框下方；打开弹窗即生成链接但
+ * **不自动跳转**：用哪个浏览器、要不要无痕窗口由用户决定。
  */
 const LOGIN_POLL_MS = 3_000;
 
@@ -432,6 +434,12 @@ function AddCodexDialog({
   const onRefreshRef = useRef(onRefresh);
   sessionRef.current = session;
   onRefreshRef.current = onRefresh;
+
+  /** 会话倒计时（秒）；剩 0 即过期，服务端随后也会把 session 淘汰成 expired */
+  const { remaining, text: countdownText } = useSessionCountdown(session?.remaining_s);
+  const expired = remaining === 0;
+  /** 授权链接有效期（分钟；后端未返回 ttl_s 时按默认会话时长显示） */
+  const ttlMinutes = Math.ceil((session?.ttl_s ?? 600) / 60);
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current != null) {
@@ -556,7 +564,7 @@ function AddCodexDialog({
               <div className="grid min-w-0 gap-1.5">
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="text-xs font-medium">授权链接</span>
-                  <span className="text-muted-foreground text-[11px]">30 分钟内有效</span>
+                  <span className="text-muted-foreground text-[11px]">{ttlMinutes} 分钟内有效</span>
                 </div>
                 <div className="border-border bg-background focus-within:border-primary/50 flex min-w-0 items-center gap-1 rounded-md border py-1 pr-1 pl-2.5 transition-colors">
                   {/* 单行只读框：内容不可改，鼠标拖动 / 左右方向键可横向预览长链接 */}
@@ -633,75 +641,55 @@ function AddCodexDialog({
                 账号，完成授权的是它，而不是你想加的号。
               </div>
 
-              {session.listening ? (
-                <>
-                  {/* 状态条：等待本机回调监听把会话推进到 done（同 WorkBuddy） */}
-                  <div className="border-border flex items-center gap-2 border-t pt-3 text-xs">
+              {/* 监听不可用（端口被占 / 网关与浏览器不同机）：只能手动粘贴 */}
+              {!session.listening ? (
+                <div className="border-border text-muted-foreground flex items-start gap-2 border-t pt-3 text-xs">
+                  <Info className="mt-px size-3.5 shrink-0" strokeWidth={1.6} aria-hidden />
+                  <span className="min-w-0 leading-relaxed">
+                    本机 1455 端口未在监听（网关与浏览器不在同一台机器时会这样），请按步骤手动粘贴回调
+                    URL。
+                  </span>
+                </div>
+              ) : null}
+
+              {/* 手动粘贴常显：自动入池是尽力而为（浏览器在别的设备 / 回调没走通），
+                  输入框不再折叠，省掉「展开」这一下；等待状态挪到输入框下方，不挡视线 */}
+              <div className="border-border grid min-w-0 gap-2 border-t pt-3">
+                <span className="text-xs font-medium">
+                  {session.listening ? "手动粘贴回调 URL（自动入池没反应时用）" : "粘贴回调 URL"}
+                </span>
+                <textarea
+                  value={callback}
+                  onChange={(event) => setCallback(event.target.value)}
+                  placeholder="粘贴完整回调 URL（http://localhost:1455/auth/callback?code=…&state=…）或其中的 code"
+                  rows={2}
+                  className="border-border bg-background focus-visible:ring-ring w-full rounded-md border px-2.5 py-2 font-mono text-[11px] break-all outline-none focus-visible:ring-[3px]"
+                />
+                {session.listening ? (
+                  <div className="text-muted-foreground flex items-center gap-2 text-xs">
                     {loginDone ? (
                       <Check className="size-3.5 shrink-0 text-emerald-500" strokeWidth={2} />
-                    ) : loginMessage ? (
+                    ) : loginMessage || expired ? (
                       <span className="size-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden />
                     ) : (
-                      <RefreshCw
-                        className="text-muted-foreground size-3.5 shrink-0 animate-spin"
-                        strokeWidth={1.6}
-                        aria-hidden
-                      />
+                      <RefreshCw className="size-3.5 shrink-0 animate-spin" strokeWidth={1.6} aria-hidden />
                     )}
                     <span
-                      className={cn("min-w-0", loginDone ? "text-emerald-500" : "text-muted-foreground")}
+                      className={cn(
+                        "min-w-0",
+                        loginDone ? "text-emerald-500" : expired ? "text-amber-600 dark:text-amber-500" : null,
+                      )}
                     >
-                      {loginMessage || "等待授权完成…"}
+                      {loginMessage || (expired ? "授权会话已过期，请重新发起" : "等待授权完成…")}
                     </span>
+                    {!loginDone && !loginMessage && countdownText && remaining != null && remaining > 0 ? (
+                      <span className="text-muted-foreground ml-auto shrink-0 font-mono tabular-nums">
+                        剩余 {countdownText}
+                      </span>
+                    ) : null}
                   </div>
-
-                  {/* 粘贴兜底：在别的设备上打开链接时，监听收不到回调，手动粘 */}
-                  <details className="group">
-                    <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-[11px] transition-colors">
-                      自动入池没反应？手动粘贴回调 URL
-                    </summary>
-                    <div className="grid gap-2 pt-2">
-                      <textarea
-                        value={callback}
-                        onChange={(event) => setCallback(event.target.value)}
-                        placeholder="粘贴回调 URL（http://localhost:1455/auth/callback?code=…&state=…）或其中的 code"
-                        rows={2}
-                        className="border-border bg-background focus-visible:ring-ring w-full rounded-md border px-2.5 py-2 font-mono text-[11px] break-all outline-none focus-visible:ring-[3px]"
-                      />
-                      <Button
-                        size="sm"
-                        type="button"
-                        className="justify-self-end"
-                        disabled={!callback.trim() || busy || loginDone}
-                        onClick={() => void submit()}
-                      >
-                        {busy ? "提交中…" : "完成并添加"}
-                      </Button>
-                    </div>
-                  </details>
-                </>
-              ) : (
-                <>
-                  {/* 监听不可用（端口被占 / 网关与浏览器不同机）：只能手动粘贴 */}
-                  <div className="border-border text-muted-foreground flex items-start gap-2 border-t pt-3 text-xs">
-                    <Info className="mt-px size-3.5 shrink-0" strokeWidth={1.6} aria-hidden />
-                    <span className="min-w-0 leading-relaxed">
-                      本机 1455 端口未在监听（网关与浏览器不在同一台机器时会这样），请按步骤手动粘贴回调
-                      URL。
-                    </span>
-                  </div>
-                  <div className="grid min-w-0 gap-1.5">
-                    <span className="text-xs font-medium">回调 URL</span>
-                    <textarea
-                      value={callback}
-                      onChange={(event) => setCallback(event.target.value)}
-                      placeholder="粘贴回调 URL（http://localhost:1455/auth/callback?code=…&state=…）或其中的 code"
-                      rows={2}
-                      className="border-border bg-background focus-visible:ring-ring w-full rounded-md border px-2.5 py-2 font-mono text-[11px] break-all outline-none focus-visible:ring-[3px]"
-                    />
-                  </div>
-                </>
-              )}
+                ) : null}
+              </div>
             </div>
           ) : null}
 
@@ -725,16 +713,15 @@ function AddCodexDialog({
           <Button size="sm" type="button" variant="outline" onClick={() => onOpenChange(false)}>
             关闭
           </Button>
-          {session && !session.listening ? (
-            <Button
-              size="sm"
-              type="button"
-              disabled={!callback.trim() || busy}
-              onClick={() => void submit()}
-            >
-              {busy ? "提交中…" : "完成并添加"}
-            </Button>
-          ) : null}
+          <Button
+            size="sm"
+            type="button"
+            aria-label="完成并添加"
+            disabled={!session || !callback.trim() || busy || loginDone || expired}
+            onClick={() => void submit()}
+          >
+            {busy ? "提交中…" : "完成并添加"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

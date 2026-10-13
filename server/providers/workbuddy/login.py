@@ -92,22 +92,32 @@ class LoginManager:
         self._lock = threading.Lock()
         self._sessions: dict[str, tuple[float, str]] = {}
 
-    def start(self, realm: str = "cn") -> dict[str, str]:
-        """发起设备授权 → {url, state, realm}。"""
+    def start(self, realm: str = "cn") -> dict[str, Any]:
+        """发起设备授权 → {url, state, realm, remaining_s, ttl_s}。
+
+        remaining_s/ttl_s 供前端显示会话倒计时：到期会从 pending 落到 expired，
+        倒计时让用户知道还剩多久，而不是干等或反复重开弹窗。
+        """
         realm = realm if realm in ("cn", "global") else "cn"
         ep_state, _, _ = _login_endpoints(realm)
         data, status, err = _do_json("POST", ep_state, "", {}, WB_ORIGIN)
         if data is None or not data.get("state") or not data.get("authUrl"):
             raise RuntimeError(f"auth state 失败 (upstream {status}): {err}")
         state = str(data["state"])
+        now = time.monotonic()
         with self._lock:
             # 顺手回收过期会话，防"开弹窗走开"的 state 滞留。
-            now = time.monotonic()
             for key in [s for s, (created, _) in self._sessions.items() if now - created > _STATE_TTL_S]:
                 del self._sessions[key]
             self._sessions[state] = (now, realm)
         logger.info(f"[workbuddy] 发起 OAuth 添加账号 realm={realm} state={state[:8]}…")
-        return {"url": str(data["authUrl"]), "state": state, "realm": realm}
+        return {
+            "url": str(data["authUrl"]),
+            "state": state,
+            "realm": realm,
+            "remaining_s": int(_STATE_TTL_S - (time.monotonic() - now)),
+            "ttl_s": _STATE_TTL_S,
+        }
 
     def poll(self, state: str) -> dict[str, Any]:
         """轮询登录态。未完成 → {done: false, message}；完成 → 入库 + {done: true, ...}。"""

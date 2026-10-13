@@ -376,6 +376,10 @@ export interface WorkBuddyLoginStart {
   url: string;
   state: string;
   realm: string;
+  /** 会话剩余秒数（弹窗倒计时用）；服务端为权威来源，到期 poll 落 expired */
+  remaining_s?: number;
+  /** 会话总时长（秒），授权链接有效期提示用 */
+  ttl_s?: number;
 }
 
 /** 发起 OAuth 设备授权：返回授权 URL（用户浏览器打开登录）。 */
@@ -519,6 +523,10 @@ export interface CodexLoginStart {
   state: string;
   /** 本机 1455 回调监听是否在跑：true = 登录完成自动入池；false = 只能手动粘贴 */
   listening: boolean;
+  /** 会话剩余秒数（弹窗倒计时用）；服务端为权威来源，到期会话落 expired */
+  remaining_s?: number;
+  /** 会话总时长（秒），授权链接有效期提示用 */
+  ttl_s?: number;
 }
 
 /** 发起 OAuth（PKCE）：返回授权 URL，用户在浏览器打开并登录。 */

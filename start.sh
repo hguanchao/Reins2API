@@ -54,6 +54,16 @@ die() {  # $1=错误 $2=提示(可选)
 
 card() { printf "     %s%s\n" "$1" "$2"; }  # $1=已补位标签 $2=值
 
+# 强制结束一个进程。Git Bash 的 kill -9 只终止 bash 作业自身,uv run 拉起的
+# 原生 Windows 子进程会存活并继续占端口(实测),必须走 taskkill。
+force_kill() {
+  if command -v taskkill.exe >/dev/null 2>&1; then
+    taskkill //F //PID "$1" >/dev/null 2>&1 || true
+  else
+    kill -9 "$1" 2>/dev/null || true
+  fi
+}
+
 # 子进程输出缩进弱色转发。
 dim_pipe() {
   while IFS= read -r line; do
@@ -116,13 +126,31 @@ if command -v lsof >/dev/null 2>&1; then
 elif command -v fuser >/dev/null 2>&1; then
   PIDS=$(fuser "${PORT}"/tcp 2>/dev/null || true)
 elif netstat -ano >/dev/null 2>&1; then
-  # Git Bash / Windows:netstat -ano 第 5 列是 PID
-  PIDS=$(netstat -ano | awk -v p=":${PORT}" '$2 ~ p"$" && /LISTENING/ {print $5}' | sort -u)
+  # Git Bash / Windows:netstat -ano 第 2 列本地地址、第 4 列状态、第 5 列 PID;
+  # 行尾带 \r,先用 $4=="LISTENING" 做字段级判断,再按 ":" 切 $2 取端口——
+  # 直接对整行做正则匹配会因 \r 失配,导致清理静默跳过。
+  PIDS=$(netstat -ano | awk -v p="${PORT}" '$4=="LISTENING"{split($2,a,":"); if(a[2]==p) print $5}' | sort -u)
 fi
 if [ -n "$PIDS" ]; then
-  dim "结束旧实例: $(echo "$PIDS" | tr '\n' ' ')"
-  kill -9 $PIDS 2>/dev/null || true
+  NAMES=""
+  for pid in $PIDS; do
+    name=""
+    if command -v powershell >/dev/null 2>&1; then
+      name=$(powershell -NoProfile -Command "(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).ProcessName" 2>/dev/null | tr -d '\r')
+    elif command -v tasklist.exe >/dev/null 2>&1; then
+      name=$(tasklist //FI "PID eq ${pid}" //NH //FO CSV 2>/dev/null | head -1 | cut -d'"' -f2)
+    else
+      name=$(ps -p "${pid}" -o comm= 2>/dev/null || true)
+    fi
+    NAMES="${NAMES}${name:-?}(${pid}) "
+    force_kill "$pid"
+  done
+  dim "结束旧实例: ${NAMES% }"
   sleep 0.8
+  # 杀掉后复查:旧实例没走成时新实例绑不上端口,健康检查会误报"已就绪"(空连接也能通过)
+  if [ -n "$(netstat -ano 2>/dev/null | awk -v p="${PORT}" '$4=="LISTENING"{split($2,a,":"); if(a[2]==p) print $5}')" ]; then
+    die "端口 ${PORT} 仍被占用且无法结束" "请手动处理: taskkill /F /PID <PID>"
+  fi
   step "端口 ${PORT}" "清理完成"
 else
   step "端口 ${PORT}" "空闲"
@@ -139,6 +167,10 @@ step "服务" "后台运行 · 启动器 PID ${SERVICE_PID}"
 dim "日志: server/logs/server.log"
 
 # ── ④ 健康检查 + 汇总卡片 ────────────────────────────────────────
+
+# server.log 跨重启持续追加,窗口实时日志从本次启动行号接:先记下旧行数,
+# 末尾 tail 时跳过,避免一开窗先滚出上一次运行的日志。
+LOG_OFFSET=$( (wc -l < server/logs/server.log) 2>/dev/null || echo 0 )
 
 dim "等待服务就绪 (healthz,最长 30s)…"
 T0=$SECONDS
@@ -171,6 +203,7 @@ card "停止    " "结束端口 ${PORT} 进程"
 printf "\n"
 rule
 printf "\n"
-printf "%b本窗口保持打开并实时滚动日志;直接关闭窗口不影响后台服务(Ctrl+C 只停止滚动)%b\n" "$C_DIM" "$C_RESET"
+printf "%b本窗口实时滚动本次启动后的日志;直接关闭窗口不影响后台服务(Ctrl+C 只停止滚动)%b\n" "$C_DIM" "$C_RESET"
 printf "\n"
-tail -n 15 -F server/logs/server.log
+# -F 认轮转:日志午夜滚动成日期文件后仍跟着新的 server.log;$LOG_OFFSET 跳过本次启动前的行。
+tail -n "+$((LOG_OFFSET + 1))" -F server/logs/server.log

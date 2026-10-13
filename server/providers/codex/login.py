@@ -2,7 +2,8 @@
 
 流程（与 workbuddy 的设备码不同）：
   1. `start()`：生成 state / code_verifier，存进程内会话（TTL CODEX_LOGIN_TTL_S），
-     返回授权 URL 与 session_id；同时尽力在 127.0.0.1:<回调端口> 起一个临时监听；
+     返回授权 URL、session_id 与会话剩余秒数（弹窗倒计时）；同时尽力在
+     127.0.0.1:<回调端口> 起一个临时监听；
   2. 用户在浏览器打开授权 URL 完成登录，OpenAI 把浏览器重定向到
      `http://localhost:1455/auth/callback?code=…&state=…`——网关与浏览器同机时
      回调直接打到这里，自动兑换入池，前端轮询 `poll(state)` 等结果；
@@ -130,14 +131,19 @@ class LoginManager:
     # ── 会话 ──
 
     def start(self) -> dict[str, Any]:
-        """发起授权 → {auth_url, session_id, state, listening}。"""
+        """发起授权 → {auth_url, session_id, state, listening, remaining_s, ttl_s}。
+
+        remaining_s/ttl_s 供前端显示会话倒计时：到期会从 pending 落到 expired，
+        倒计时让用户知道还剩多久，而不是干等或反复重开弹窗。
+        """
         verifier, challenge = oauth.new_pkce()
         state = oauth.new_state()
         session_id = oauth.new_state()
+        now = time.monotonic()
         with self._lock:
             self._sweep_locked()
             self._sessions[session_id] = _Session(
-                created=time.monotonic(), state=state, verifier=verifier
+                created=now, state=state, verifier=verifier
             )
         listening = self._ensure_listener()
         logger.info(f"[codex] 发起 OAuth 授权 session={session_id[:8]}… listening={listening}")
@@ -146,6 +152,8 @@ class LoginManager:
             "session_id": session_id,
             "state": state,
             "listening": listening,
+            "remaining_s": int(CODEX_LOGIN_TTL_S - (time.monotonic() - now)),
+            "ttl_s": CODEX_LOGIN_TTL_S,
         }
 
     def poll(self, state: str) -> dict[str, Any]:

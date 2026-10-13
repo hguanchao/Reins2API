@@ -126,20 +126,31 @@
 .acct-spark {
   display: flex;
   align-items: flex-end;
+  justify-content: space-between;
   gap: 2px;
+  width: 100px;
   height: 14px;
   margin-top: 5px;
 }
+/* 窄柱均匀铺满整格（与上方时间文本两端对齐）：固定 4px 宽 + space-between，
+   不再自由拉宽——14 根各自撑宽会把格子填满、柱子看起来像色块。 */
 .acct-spark i {
   display: block;
-  width: 3px;
+  width: 4px;
+  flex: 0 0 auto;
   border-radius: 1px;
   background: var(--border);
 }
 .acct-spark i.is-on {
   background: var(--meter-high);
 }
+/* 今天：竖长椭圆（胶囊）指示条，略高于其余柱、向上连到"最近请求"时间行；
+   高度是强调用的固定值，不再反映当天量级（其它柱仍按数值缩放）。
+   行内 height 是动态值，这里用 !important 覆盖。 */
 .acct-spark i.is-today {
+  height: 12px !important;
+  margin-top: -8px;
+  border-radius: 999px;
   background: var(--primary);
 }
 
@@ -273,20 +284,35 @@
   color: var(--fg-subtle);
 }
 
-/* 窄屏：降级为两栏堆叠，避免 7 列被压成一条 */
+/* 窄屏（侧栏收起的桌面窗口 / 平板）：7 列压不下，改成两列堆叠——
+   凭证与操作同一行，其余整行排下来：状态 / 最近请求 / 统计四项平分 / 额度整行。
+   额度必须在窄模式下显式占整行：不写的话它会被自动排进右边那条 auto 列，
+   变成 110px 宽的窄条（.acct-actions 已占满该列时甚至无处可放）。 */
 @media (max-width: 1080px) {
   .acct-row {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     row-gap: 10px;
     padding: 14px 16px;
   }
-  .acct-cred,
-  .acct-stats,
-  .acct-quota {
+  .acct-cred {
     grid-column: 1;
+    grid-row: 1;
   }
   .acct-actions {
     grid-column: 2;
-    grid-row: 1 / span 3;
+    grid-row: 1;
+  }
+  .acct-plan {
+    display: none; /* 套餐在窄屏没有独立行的价值，并入状态行副文案 */
+  }
+  .acct-state,
+  .acct-stats,
+  .acct-quota,
+  .acct-quota-empty {
+    grid-column: 1 / -1;
+  }
+  .acct-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2px 16px;
   }
 }

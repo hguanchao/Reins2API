@@ -3,7 +3,7 @@
 #      → 同步后端依赖 → web/dist 缺失时用 npm 构建前端
 #   ② 按端口结束旧实例
 #   ③ 后台启动服务(窗口可关,日志落 server/logs/)
-#   ④ 轮询健康检查,输出启动成功日志,窗口保持打开滚动实时日志
+#   ④ 轮询健康检查,输出启动成功日志,窗口保持打开滚动本次启动后的实时日志
 # 用法: .\start.ps1 [-Port 8787] [-Rebuild]   # -Rebuild 强制重建前端;再次运行 = 重启
 # 输出风格:圆点步骤(模板 A)——绿●完成 黄●进行中 红✗失败;子进程原始输出缩进弱色。
 param(
@@ -211,6 +211,10 @@ Write-Dim "日志: server\logs\server.log"
 
 # ── ④ 健康检查 + 汇总卡片 ────────────────────────────────────────
 
+# server.log 跨重启持续追加,窗口实时日志从本次启动行号接:先记下旧行数,
+# 末尾 tail 时跳过,避免一开窗先滚出上一次运行的日志。
+$logOffset = (Get-Content $serverLog -ErrorAction SilentlyContinue | Measure-Object -Line).Lines
+
 Write-Dim "等待服务就绪 (healthz,最长 30s)…"
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $ready = $false
@@ -252,6 +256,10 @@ Write-CardLine "停止" "结束端口 $Port 进程(当前 PID $listenPid)"
 Write-Host ""
 Write-Rule
 Write-Host ""
-Write-Host "本窗口保持打开并实时滚动日志;直接关闭窗口不影响后台服务(Ctrl+C 只停止滚动)" -ForegroundColor DarkGray
+Write-Host "本窗口实时滚动本次启动后的日志;直接关闭窗口不影响后台服务(Ctrl+C 只停止滚动)" -ForegroundColor DarkGray
 Write-Host ""
-Get-Content (Join-Path $PSScriptRoot "server\logs\server.log") -Wait -Tail 15 -Encoding UTF8 -ErrorAction SilentlyContinue
+# 无 -Tail:-Wait 先流式读完旧内容再由计数器丢弃(首屏空),此后逐行跟新;
+# -ReadCount 1 保证单行到达,计数器行号才与文件行号对齐。
+$seen = 0
+Get-Content (Join-Path $PSScriptRoot "server\logs\server.log") -Wait -ReadCount 1 -Encoding UTF8 -ErrorAction SilentlyContinue |
+  Where-Object { $script:seen++; $script:seen -gt $logOffset }

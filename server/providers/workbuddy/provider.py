@@ -870,7 +870,7 @@ class WorkBuddyProvider:
         updated = self._store.get_account(uid)
         return updated.public_dict() if updated else {}
 
-    def login_start(self, realm: str = "cn") -> dict[str, str]:
+    def login_start(self, realm: str = "cn") -> dict[str, Any]:
         return self._login_manager.start(realm)
 
     def login_poll(self, state: str) -> dict[str, Any]:

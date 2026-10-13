@@ -61,11 +61,13 @@ import {
   type RequestRow,
   type UsageRange,
   type WorkBuddyAccount,
+  type WorkBuddyLoginStart,
   type WorkBuddyOps,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
 import { fmtLimit, fmtTokens } from "@/lib/format";
+import { useSessionCountdown } from "@/lib/countdown";
 import { cn, fmtCompact, fmtInt, parseCreditFactor } from "@/lib/utils";
 
 const AUTO_REFRESH_MS = 10_000;
@@ -982,10 +984,12 @@ function AddAccountDialog({
   onAdded: () => Promise<void>;
 }) {
   const [realm, setRealm] = useState("cn");
-  const [authUrl, setAuthUrl] = useState("");
+  /** 当前会话（含剩余秒数，用于倒计时；切域 / 重发链接会换成新会话） */
+  const [session, setSession] = useState<WorkBuddyLoginStart | null>(null);
   const [copied, setCopied] = useState(false);
   const [loginMessage, setLoginMessage] = useState("");
   const [loginDone, setLoginDone] = useState(false);
+  const [expired, setExpired] = useState(false);
   const [pending, setPending] = useState(false);
   const pollTimer = useRef<number | null>(null);
   const copyTimer = useRef<number | null>(null);
@@ -995,6 +999,10 @@ function AddAccountDialog({
   onAddedRef.current = onAdded;
   // 每次打开对话框只自动生成一次（StrictMode 下 effect 会双跑，用 ref 挡住）。
   const autoStarted = useRef(false);
+  const authUrl = session?.url ?? "";
+  const { text: countdownText } = useSessionCountdown(session?.remaining_s);
+  /** 授权链接有效期（分钟；后端未返回 ttl_s 时按默认会话时长显示） */
+  const ttlMinutes = Math.ceil((session?.ttl_s ?? 600) / 60);
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current != null) {
@@ -1006,15 +1014,16 @@ function AddAccountDialog({
   const beginOAuth = useCallback(async (targetRealm: string) => {
     stopPolling();
     setPending(true);
-    setAuthUrl("");
+    setSession(null);
     setCopied(false);
     setLoginDone(false);
+    setExpired(false);
     setLoginMessage("");
     try {
       const started = await startWorkBuddyLogin(targetRealm);
       // 只给链接不自动打开：授权页靠浏览器 Cookie 判定身份，同一窗口会直接
       // 复用当前已登录的账号，无法换号——由用户自己丢进无痕窗口打开。
-      setAuthUrl(started.url);
+      setSession(started);
       pollTimer.current = window.setInterval(async () => {
         try {
           const result = await pollWorkBuddyLogin(started.state);
@@ -1026,7 +1035,7 @@ function AddAccountDialog({
             await onAddedRef.current();
           } else if (result.expired) {
             stopPolling();
-            setLoginMessage(result.message || "会话已过期，请重新发起");
+            setExpired(true);
           }
         } catch {
           // 轮询失败静默重试
@@ -1044,10 +1053,11 @@ function AddAccountDialog({
     if (!open) {
       autoStarted.current = false;
       stopPolling();
-      setAuthUrl("");
+      setSession(null);
       setCopied(false);
       setLoginMessage("");
       setLoginDone(false);
+      setExpired(false);
       setPending(false);
       return;
     }
@@ -1142,7 +1152,7 @@ function AddAccountDialog({
               <div className="grid min-w-0 gap-1.5">
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="text-xs font-medium">授权链接</span>
-                  <span className="text-muted-foreground text-[11px]">10 分钟内有效</span>
+                  <span className="text-muted-foreground text-[11px]">{ttlMinutes} 分钟内有效</span>
                 </div>
                 <div className="border-border bg-background flex min-w-0 items-center gap-1 rounded-md border py-1 pr-1 pl-2.5">
                   <code
@@ -1193,11 +1203,11 @@ function AddAccountDialog({
                 换号必须用无痕窗口：普通窗口会带上当前已登录的账号，直接完成授权。
               </div>
 
-              {/* 状态条 */}
+              {/* 状态条：等待 / 成功 / 过期 + 会话倒计时 */}
               <div className="border-border flex items-center gap-2 border-t pt-3 text-xs">
                 {loginDone ? (
                   <Check className="size-3.5 shrink-0 text-emerald-500" strokeWidth={2} />
-                ) : loginMessage ? (
+                ) : loginMessage || expired ? (
                   <span className="size-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden />
                 ) : (
                   <RefreshCw
@@ -1207,8 +1217,14 @@ function AddAccountDialog({
                   />
                 )}
                 <span className={cn("min-w-0", loginDone ? "text-emerald-500" : "text-muted-foreground")}>
-                  {loginMessage || "等待登录完成…"}
+                  {loginMessage ||
+                    (expired ? "登录会话已过期，请重新发起" : "等待登录完成…")}
                 </span>
+                {!loginDone && !loginMessage && !expired && countdownText ? (
+                  <span className="text-muted-foreground ml-auto shrink-0 font-mono tabular-nums">
+                    剩余 {countdownText}
+                  </span>
+                ) : null}
               </div>
             </div>
           ) : null}

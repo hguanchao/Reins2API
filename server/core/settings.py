@@ -91,7 +91,7 @@ CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
 CODEX_SCOPES = "openid profile email offline_access"
 CODEX_REFRESH_SCOPES = "openid profile email"
-CODEX_LOGIN_TTL_S = 1800       # 登录会话（state/verifier）有效期
+CODEX_LOGIN_TTL_S = 600        # 登录会话（state/verifier）有效期，与弹窗倒计时同源
 
 # 出站身份（对齐 Codex CLI 指纹的最小可信集；取值见 docs/codex-provider-design.md §3.2）
 # 该版本同时是模型目录的门控参数：/models?client_version=X 只下发
