@@ -450,6 +450,8 @@ export interface CodexAccount {
   account_id: string;
   label: string;
   email: string;
+  /** ChatGPT 昵称（id_token 的 name claim）；旧 token / 导入凭证可能为空 */
+  nickname: string;
   plan_type: string;
   status: "active" | "paused" | "disabled";
   status_reason: string;
@@ -515,11 +517,32 @@ export interface CodexLoginStart {
   auth_url: string;
   session_id: string;
   state: string;
+  /** 本机 1455 回调监听是否在跑：true = 登录完成自动入池；false = 只能手动粘贴 */
+  listening: boolean;
 }
 
 /** 发起 OAuth（PKCE）：返回授权 URL，用户在浏览器打开并登录。 */
 export function startCodexLogin(): Promise<CodexLoginStart> {
   return request<CodexLoginStart>("/api/codex/login/start", { method: "POST" });
+}
+
+export interface CodexLoginPoll {
+  status: "pending" | "done" | "error" | "expired";
+  result?: { uid?: string; label?: string; plan_type?: string };
+  message?: string;
+}
+
+/** 轮询登录进度（本机回调监听兑换完成后转 done，前端等待完成即可）。 */
+export function pollCodexLogin(state: string): Promise<CodexLoginPoll> {
+  return request<CodexLoginPoll>(`/api/codex/login/poll?state=${encodeURIComponent(state)}`);
+}
+
+/** 关弹窗时取消未完成会话（让本机 1455 监听尽快释放，还给真实的 Codex CLI）。 */
+export function cancelCodexLogin(sessionId: string): Promise<{ cancelled: boolean }> {
+  return request<{ cancelled: boolean }>("/api/codex/login/cancel", {
+    method: "POST",
+    body: JSON.stringify({ session_id: sessionId }),
+  });
 }
 
 export interface CodexLoginResult {

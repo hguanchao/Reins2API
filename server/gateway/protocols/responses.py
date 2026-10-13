@@ -127,8 +127,7 @@ def decode_request(input: dict[str, Any]) -> BridgeRequest:
             # 非 function 工具（web_search / file_search / computer_use / mcp …）
             # 见 chat.py 同处注释：上游只认 function 工具，丢弃并记日志。
             logger.warning(
-                f'[桥接] tools[{i}] 非 function 工具'
-                f'（type={string_at(tool, "type") or "缺失"}），已忽略'
+                f'[桥接] tools[{i}] 非 function 工具, 已忽略 type={string_at(tool, "type") or "缺失"}'
             )
             continue
         request.tools.append(

@@ -64,7 +64,9 @@
 .acct-cred-main {
   min-width: 0;
 }
-.acct-email {
+/* 凭证两行：上昵称（无昵称时邮箱），下邮箱（无昵称时 uid）。
+   类名按语义命名——格子里装的不再是固定的 email/uid。 */
+.acct-cred-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -72,7 +74,7 @@
   font-weight: 600;
   color: var(--foreground);
 }
-.acct-uid {
+.acct-cred-sub {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -230,10 +232,11 @@
 }
 
 /* ── 操作 ── */
+/* 操作列居中（与表格里的 .table-col-actions 同一口径）：图标排与到期文案一起居中 */
 .acct-actions {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
   gap: 4px;
 }
 .acct-btns {

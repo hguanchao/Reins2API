@@ -55,6 +55,7 @@ class AccountInfo:
     email: str = ""
     account_id: str = ""
     plan_type: str = ""
+    name: str = ""      # id_token 的 name claim（ChatGPT 上的昵称/显示名）
 
 
 def new_pkce() -> tuple[str, str]:
@@ -175,6 +176,7 @@ def parse_id_token(id_token: str) -> AccountInfo:
         email=str(payload.get("email") or ""),
         account_id=account_id,
         plan_type=plan,
+        name=str(payload.get("name") or ""),
     )
 
 

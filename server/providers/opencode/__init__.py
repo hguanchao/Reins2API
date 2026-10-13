@@ -39,20 +39,20 @@ class OpenCodeProvider:
         from providers import models_snapshot
         from providers.opencode.upstream import PUBLIC_KEY
 
-        records, available, errors, raw_models = discover(UPSTREAM, PUBLIC_KEY)
+        records, available, errors, snapshot_models = discover(UPSTREAM, PUBLIC_KEY)
         with self._lock:
             if records:
                 self._index.replace(records)
             if available is not None:
                 self._index.set_available(available)
             self._refreshed_at = datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        # 上游原样条目落 data/models.json（能力目录拉失败时为空，不覆盖旧快照）
-        if raw_models:
-            models_snapshot.write("opencode", raw_models)
+        # 统一核心字段条目落 data/models.json（能力目录拉失败时为空，不覆盖旧快照）
+        if snapshot_models:
+            models_snapshot.write("opencode", snapshot_models)
         counts = self._index.counts()
         logger.info(
-            f"[目录] 刷新完成 协议记录={counts['protocols']} 凭证可见={counts['available']}"
-            + (f" 错误={len(errors)}" if errors else "")
+            f"[opencode] 模型目录刷新完成 protocols={counts['protocols']} available={counts['available']}"
+            + (f" errors={len(errors)}" if errors else "")
         )
 
     def status(self) -> dict[str, Any]:

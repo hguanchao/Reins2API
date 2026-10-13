@@ -6,6 +6,19 @@
 
 进程级 stdout/stderr 由启动脚本丢进空设备（见 start.ps1/start.sh）——
 server.log 是唯一日志落点，不另开 serve.err/serve.out。
+
+msg 文案规范（全仓库 logger 调用统一遵守）:
+
+    [域] 事件短语 key=value key=value
+
+- 域标签固定词表——平台层: 启动/配置/目录/快照/token/遥测/推理/桥接/附件/
+  代理/出口/API；提供者模块内部一律用 [opencode] [workbuddy] [codex]。
+  目录/token 的后台编排（main.py、api 层）用功能域并带 provider= 键。
+- key=value 空格分隔，= 两侧不留空格；键用英文小写
+  （request/session/uid/provider/model/proto/stream/status/models/errors/...）。
+- 标识符统一截断: uid 一律前 8 位 + `…`，session/state 同。
+- 标点统一半角（,:()），值含空格才加引号；错误后缀统一 `: ExcType: message`。
+- 统一 f-string，不用 loguru 的 {} 占位符；一条日志一行，事件短语不带句尾标点。
 """
 
 import os

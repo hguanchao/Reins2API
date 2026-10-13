@@ -121,8 +121,8 @@ def decode_request(input: dict[str, Any]) -> BridgeRequest:
             # 执行，转成 function 工具没人会执行它，上游也只认 function 工具。
             # 忽略并记日志（客户端拿不到联网搜索，但整个请求照常完成）。
             logger.warning(
-                f'[桥接] tools[{i}] 服务端工具'
-                f'（type={string_at(tool, "type") or "无"}，name={string_at(tool, "name") or "无"}），已忽略'
+                f'[桥接] tools[{i}] 服务端工具, 已忽略 type={string_at(tool, "type") or "无"} '
+                f'name={string_at(tool, "name") or "无"}'
             )
             continue
         request.tools.append(

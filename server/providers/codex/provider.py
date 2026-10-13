@@ -44,7 +44,7 @@ from gateway.base import (
     UpstreamResponse,
     UpstreamUnavailable,
 )
-from providers import profiles
+from providers import models_snapshot, profiles
 from providers.capabilities import capability_block
 from providers.codex import classify, oauth, shape
 from providers.codex import upstream as cx_upstream
@@ -65,6 +65,42 @@ class _Catalog:
 
     models: dict[str, dict[str, Any]] = field(default_factory=dict)  # 裸名 → 条目
     refreshed_at: str | None = None
+
+
+def _core_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """上游 manifest 条目 → 统一核心字段条目（目录与 models.json 快照共用，
+    见 models_snapshot.core_entry）。manifest 里的 base_instructions 等大块字段
+    目录侧用不到（ModelInfo 只取名字），不进内存也不落盘。"""
+    model_id = str(entry.get("id") or entry.get("slug") or "").strip()
+    levels = entry.get("supported_reasoning_levels")
+    efforts: list[str] | None = None
+    if isinstance(levels, list):
+        efforts = [
+            str(level["effort"]) for level in levels
+            if isinstance(level, dict) and level.get("effort")
+        ]
+    has_reasoning = efforts is not None or bool(entry.get("default_reasoning_level"))
+    modalities = entry.get("input_modalities")
+    tool_keys = ("tool_mode", "supports_parallel_tool_calls", "experimental_supported_tools")
+    has_tools = any(key in entry for key in tool_keys)
+    return models_snapshot.core_entry(
+        id=model_id,
+        name=str(entry.get("display_name") or entry.get("name") or model_id),
+        description=entry.get("description"),
+        context_window=entry.get("context_window"),
+        input_modalities=[str(t) for t in modalities] if isinstance(modalities, list) else None,
+        supports_images="image" in modalities if isinstance(modalities, list) else None,
+        supports_reasoning=(
+            (bool(efforts) or bool(entry.get("default_reasoning_level"))) if has_reasoning else None
+        ),
+        supports_tool_call=(
+            bool(entry.get("tool_mode") or entry.get("supports_parallel_tool_calls")
+                 or entry.get("experimental_supported_tools"))
+            if has_tools else None
+        ),
+        reasoning_efforts=efforts,
+        default_effort=entry.get("default_reasoning_level"),
+    )
 
 
 class CodexProvider:
@@ -88,8 +124,6 @@ class CodexProvider:
 
     def refresh(self) -> None:
         """逐账号拉模型目录并合并（各账号可见集合可能不同）；失败保留旧册。"""
-        from providers import models_snapshot
-
         merged: dict[str, dict[str, Any]] = {}
         seen_account = False
         errors = 0
@@ -102,27 +136,28 @@ class CodexProvider:
             except Exception as exc:
                 errors += 1
                 logger.warning(
-                    f"[codex] uid={account.uid[:12]}… 模型目录刷新失败: {type(exc).__name__}: {exc}"
+                    f"[codex] uid={account.uid[:8]}… 模型目录刷新失败: {type(exc).__name__}: {exc}"
                 )
                 continue
             for entry in entries:
                 model_id = str(entry.get("id") or "").strip()
                 if model_id:
-                    merged.setdefault(model_id, entry)
+                    merged.setdefault(model_id, _core_entry(entry))
         if merged or (seen_account and errors == 0):
             with self._lock:
                 self._catalog = _Catalog(
                     models=merged,
                     refreshed_at=datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 )
-            # 上游 manifest 原样条目落 data/models.json（全失败时保留旧快照）
+            # 目录里存的就是统一核心字段条目（见 _core_entry），直接落快照；
+            # 全失败时保留旧快照
             models_snapshot.write("codex", list(merged.values()))
             logger.info(f"[codex] 模型目录刷新完成 models={len(merged)} errors={errors}")
             return
         if not seen_account:
-            logger.info("[codex] 无可用账号，跳过模型目录刷新")
+            logger.info("[codex] 无可用账号, 跳过模型目录刷新")
         else:
-            logger.warning(f"[codex] 模型目录刷新全失败(errors={errors})，保留旧册")
+            logger.warning(f"[codex] 模型目录刷新全失败, 保留旧目录 errors={errors}")
         self._load_catalog_from_snapshot()
 
     def _load_catalog_from_snapshot(self) -> None:
@@ -130,12 +165,11 @@ class CodexProvider:
 
         场景：网关刚起、账号凭证尚未生效（或上游不可达）——此时目录为空，管理台的
         模型列表与 `/v1/models` 都是空的，客户端拿不到可服务的模型名。快照是上次
-        成功拉取的原文，拿它兜底比空着强；真正拉到新目录后会被整体覆盖。
+        成功拉取的统一核心字段条目（id/name 足够重建列表），拿它兜底比空着强；
+        真正拉到新目录后会被整体覆盖。
 
         只在"当前为空"时填充，所以不会把陈旧快照盖到已刷新出来的新目录上。
         """
-        from providers import models_snapshot
-
         with self._lock:
             if self._catalog.models:
                 return
@@ -153,9 +187,9 @@ class CodexProvider:
             return
         with self._lock:
             if not self._catalog.models:
-                # refreshed_at 留空：这是上次的原文，不是本次刷新结果，不冒充新鲜度
+                # refreshed_at 留空：这是上次的快照，不是本次刷新结果，不冒充新鲜度
                 self._catalog = _Catalog(models=models, refreshed_at=None)
-        logger.info(f"[codex] 模型目录冷启动兜底：用上次快照填充 {len(models)} 个模型")
+        logger.info(f"[codex] 目录冷启动兜底, 用上次快照填充 models={len(models)}")
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -186,7 +220,7 @@ class CodexProvider:
         return [self._model_info(bare, entry) for bare, entry in sorted(models.items())]
 
     def _model_info(self, bare: str, entry: dict[str, Any]) -> ModelInfo:
-        name = str(entry.get("display_name") or entry.get("name") or bare)
+        name = str(entry.get("name") or bare)
         capabilities = capability_block(
             profiles.CODEX,
             "responses",
@@ -279,7 +313,7 @@ class CodexProvider:
                 try:
                     response = cx_upstream.responses_request(account, attempt_body, session_id)
                 except crequests.RequestsError as exc:
-                    logger.warning(f"[codex] uid={account.uid[:12]}… 传输失败: {exc}")
+                    logger.warning(f"[codex] uid={account.uid[:8]}… 传输失败: {exc}")
                     self._feed_breaker(account)
                     self._bump_used_seq(account)
                     attempts += 1
@@ -309,7 +343,7 @@ class CodexProvider:
                     classify.classify(status, text), dict(response.headers)
                 )
                 logger.warning(
-                    f"[codex] uid={account.uid[:12]}… 上游 {status} {classified.kind}: "
+                    f"[codex] uid={account.uid[:8]}… 上游错误 status={status} kind={classified.kind}: "
                     f"{classify.error_message(text)[:160]}"
                 )
                 self._penalize(account, classified, text)
@@ -482,7 +516,7 @@ class CodexProvider:
             except Exception as exc:
                 level = logger.info if quiet else logger.warning
                 level(
-                    f"[codex] uid={account.uid[:12]}… token 刷新失败: "
+                    f"[codex] uid={account.uid[:8]}… token 刷新失败: "
                     f"{type(exc).__name__}: {exc}"
                 )
                 return False
@@ -495,7 +529,7 @@ class CodexProvider:
                 id_token=tokens.id_token,
                 plan_type=info.plan_type,
             )
-            logger.info(f"[codex] uid={account.uid[:12]}… token 已刷新")
+            logger.info(f"[codex] uid={account.uid[:8]}… token 已刷新")
             return True
         finally:
             lock.release()
@@ -567,7 +601,8 @@ class CodexProvider:
             else:
                 imported += 1
         logger.info(
-            f"[codex] 导入完成：新增 {imported}、更新 {updated}、跳过 {len(errors)}"
+            f"[codex] 账号导入完成 total={len(entries)} imported={imported} "
+            f"updated={updated} skipped={len(errors)}"
         )
         return {
             "total": len(entries),
@@ -650,8 +685,14 @@ class CodexProvider:
         )
         return True
 
-    def login_start(self) -> dict[str, str]:
+    def login_start(self) -> dict[str, Any]:
         return self._login.start()
+
+    def login_poll(self, state: str) -> dict[str, Any]:
+        return self._login.poll(state)
+
+    def login_cancel(self, session_id: str) -> bool:
+        return self._login.cancel(session_id)
 
     def login_exchange(self, session_id: str, callback: str, state: str = "") -> dict[str, Any]:
         return self._login.exchange(session_id, callback, state)

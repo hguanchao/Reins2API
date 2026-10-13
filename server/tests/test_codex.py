@@ -85,6 +85,7 @@ def test_authorize_url_has_required_params():
 def test_parse_id_token_extracts_account_info():
     token = _make_id_token({
         "email": "user@example.com",
+        "name": "初十",
         "https://api.openai.com/auth": {
             "chatgpt_account_id": "acc-xyz",
             "chatgpt_plan_type": "plus",
@@ -94,12 +95,28 @@ def test_parse_id_token_extracts_account_info():
     assert info.email == "user@example.com"
     assert info.account_id == "acc-xyz"
     assert info.plan_type == "plus"
+    assert info.name == "初十"                 # 昵称取自 name claim（面板「上昵称下邮箱」用）
     # 坏输入不炸
     assert oauth.parse_id_token("").email == ""
+    assert oauth.parse_id_token("").name == ""
     assert oauth.parse_id_token("not.a.jwt").account_id == ""
     # uid 优先 account_id，退化 email
     assert oauth.account_uid(info) == "acc-xyz"
     assert oauth.account_uid(oauth.AccountInfo(email="e@x.y")) == "e@x.y"
+
+
+def test_account_public_dict_includes_nickname():
+    """账号视图带 nickname（从 id_token 现解）；无 id_token 时为空串，不抛。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            token = _make_id_token({"email": "n@x.y", "name": "初十"})
+            with_name = _seed_account(store, "acc-1", id_token=token)
+            assert with_name.public_dict()["nickname"] == "初十"
+            without = _seed_account(store, "acc-2", id_token="")
+            assert without.public_dict()["nickname"] == ""
+        finally:
+            store.close()
 
 
 # ── 出站塑形 ──
@@ -685,6 +702,97 @@ def test_import_roundtrip_and_skips_bad_entries():
             assert summary["imported"] == 1
             assert summary["skipped"] == 3
             assert len(summary["errors"]) == 3
+        finally:
+            store.close()
+
+
+# ── 登录会话（本机回调监听 + 轮询）──
+
+
+def test_login_poll_and_cancel_lifecycle():
+    """会话生命周期：start → pending；cancel → expired；重复 cancel 幂等。"""
+    import providers.codex.login as cx_login
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            manager = cx_login.LoginManager(store, callback_port=0)
+            started = manager.start()
+            assert started["listening"] is True
+            assert started["auth_url"].startswith("https://auth.openai.com/oauth/authorize?")
+            assert manager.poll(started["state"])["status"] == "pending"
+            assert manager.poll("")["status"] == "expired"
+            assert manager.poll("no-such-state")["status"] == "expired"
+            assert manager.cancel(started["session_id"]) is True
+            assert manager.poll(started["state"])["status"] == "expired"
+            assert manager.cancel(started["session_id"]) is False
+            manager.cancel("no-such-session")
+            # 没有未完成会话 → 监听释放（端口还给 Codex CLI）
+            assert manager.callback_endpoint() is None
+        finally:
+            store.close()
+
+
+def test_login_callback_listener_completes_login():
+    """本机监听端到端：浏览器打回调 URL → 自动兑换入库 → poll 转 done。"""
+    import urllib.error
+    import urllib.request
+
+    import providers.codex.login as cx_login
+    import providers.codex.oauth as cx_oauth
+
+    token = _make_id_token(
+        {"email": "a@b.co", "chatgpt_account_id": "acc-xyz", "plan_type": "plus"}
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            manager = cx_login.LoginManager(store, callback_port=0)
+            started = manager.start()
+            endpoint = manager.callback_endpoint()
+            assert endpoint is not None
+            host, port = endpoint
+
+            original = cx_oauth.exchange_code
+            cx_oauth.exchange_code = lambda code, verifier, redirect: cx_oauth.TokenData(
+                access_token="AT", refresh_token="RT", id_token=token, expires_in=3600,
+            )
+            try:
+                # state 不匹配：拒绝回调，且不消费会话（可继续等正确回调）
+                try:
+                    urllib.request.urlopen(
+                        f"http://{host}:{port}/auth/callback?code=abc&state=wrong", timeout=5
+                    )
+                    raise AssertionError("state 不匹配应回 400")
+                except urllib.error.HTTPError as exc:
+                    assert exc.code == 400
+                assert manager.poll(started["state"])["status"] == "pending"
+
+                # 正确回调：兑换入库，页面提示已入池
+                with urllib.request.urlopen(
+                    f"http://{host}:{port}/auth/callback?code=abc&state={started['state']}",
+                    timeout=5,
+                ) as response:
+                    body = response.read().decode("utf-8")
+                assert "已入池" in body
+                done = manager.poll(started["state"])
+                assert done["status"] == "done"
+                assert done["result"]["uid"] == "acc-xyz"
+                account = store.get_account("acc-xyz")
+                assert account is not None
+                assert account.refresh_token == "RT" and account.access_token == "AT"
+
+                # 完成的会话不能再兑换（粘贴路径同样被挡住）
+                try:
+                    manager.exchange(started["session_id"], "code2")
+                    raise AssertionError("已完成会话应拒绝重复兑换")
+                except ValueError as exc:
+                    assert "已完成" in str(exc)
+            finally:
+                cx_oauth.exchange_code = original
+
+            manager.cancel(started["session_id"])
+            assert manager.callback_endpoint() is None
         finally:
             store.close()
 

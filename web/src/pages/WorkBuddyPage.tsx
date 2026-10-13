@@ -57,6 +57,7 @@ import {
   runWorkBuddyCheckinAll,
   startWorkBuddyLogin,
   workBuddyAccountAction,
+  type ModelInfo,
   type RequestRow,
   type UsageRange,
   type WorkBuddyAccount,
@@ -152,6 +153,15 @@ function fmtCooldown(untilMs: number): string {
   return `${minutes}m`;
 }
 
+/** 倍率文案归一：上游两种写法混着来（"x0.59 credits" 与 "0.00x"），
+    显示前统一成 x0.59 这一种——去掉 credits 尾巴、把后缀的 x 挪到前面。 */
+function normalizeRate(raw: string): string {
+  return raw
+    .replace(/\s*credits?\b/i, "")
+    .replace(/^(\d+(?:\.\d+)?)\s*x$/i, "x$1")
+    .trim();
+}
+
 const STATUS_LABEL: Record<string, string> = {
   active: "可用",
   paused: "暂停",
@@ -168,6 +178,128 @@ function checkinUnsupported(account: WorkBuddyAccount): string {
   if (account.realm === "global") return "global 域无签到体系";
   if (account.enterprise) return "企业账号不支持签到";
   return "";
+}
+
+/** 模型详情弹窗:排版同 OpenCode 页模型详情(两列卡片网格 + 全宽描述 + 关闭按钮)。 */
+function ModelDetailDialog({
+  model,
+  open,
+  onOpenChange,
+}: {
+  model: ModelInfo | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const md = model?.metadata ?? {};
+  const str = (value: unknown) => (typeof value === "string" ? value : "");
+  const list = (value: unknown) =>
+    Array.isArray(value) ? value.map(String).join(" / ") : "";
+  const flag = (value: unknown) => (value === true ? "支持" : "—");
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>模型详情</DialogTitle>
+        </DialogHeader>
+        {model ? (
+          <dl className="model-detail-grid">
+            <div>
+              <dt>模型 ID</dt>
+              <dd className="font-mono text-xs">{model.id}</dd>
+            </div>
+            <div>
+              <dt>上游模型</dt>
+              <dd className="font-mono text-xs">{model.upstream_model}</dd>
+            </div>
+            <div>
+              <dt>显示名</dt>
+              <dd>{str(md.name) || "—"}</dd>
+            </div>
+            <div>
+              <dt>区域</dt>
+              <dd>{str(md.realm) === "global" ? "global · 国际版" : "cn · 腾讯 CodeBuddy"}</dd>
+            </div>
+            <div>
+              <dt>上下文窗口</dt>
+              <dd>{fmtLimit(md.context_window)}</dd>
+            </div>
+            <div>
+              <dt>最大输出</dt>
+              <dd>{fmtLimit(md.max_output_tokens)}</dd>
+            </div>
+            <div>
+              <dt>默认档位</dt>
+              <dd>{str(md.default_effort) || "—"}</dd>
+            </div>
+            <div>
+              <dt>支持档位</dt>
+              <dd>{list(md.efforts) || "—"}</dd>
+            </div>
+            <div>
+              <dt>标准倍率</dt>
+              <dd>{normalizeRate(str(md.credits)) || "—"}</dd>
+            </div>
+            <div>
+              <dt>活动</dt>
+              <dd>
+                {str(md.promo_label) ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Badge variant="warning">{str(md.promo_label)}</Badge>
+                    {normalizeRate(str(md.promo_credits)) ? (
+                      <span className="font-mono text-xs">
+                        {normalizeRate(str(md.promo_credits))}
+                      </span>
+                    ) : null}
+                  </span>
+                ) : (
+                  "—"
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>图片输入</dt>
+              <dd>{flag(md.supports_images)}</dd>
+            </div>
+            <div>
+              <dt>思考</dt>
+              <dd>{flag(md.supports_reasoning)}</dd>
+            </div>
+            <div>
+              <dt>工具调用</dt>
+              <dd>{flag(md.supports_tool_call)}</dd>
+            </div>
+            <div>
+              <dt>供应商</dt>
+              <dd>{str(md.vendor) || "—"}</dd>
+            </div>
+            <div>
+              <dt>标签</dt>
+              <dd>{list(md.tags) || "—"}</dd>
+            </div>
+            <div>
+              <dt>别名</dt>
+              <dd className="font-mono text-xs">{list(md.aliases) || "—"}</dd>
+            </div>
+            {str(md.promo_note) ? (
+              <div className="detail-desc">
+                <dt>活动说明</dt>
+                <dd>{str(md.promo_note)}</dd>
+              </div>
+            ) : null}
+            <div className="detail-desc">
+              <dt>描述</dt>
+              <dd>{str(md.description) || "—"}</dd>
+            </div>
+          </dl>
+        ) : null}
+        <DialogFooter>
+          <Button size="sm" type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 export function WorkBuddyPage() {
@@ -187,6 +319,11 @@ export function WorkBuddyPage() {
   const [usageRange, setUsageRange] = useState<UsageRange>("7d");
   /** 手动「获取模型」进行中 */
   const [reloading, setReloading] = useState(false);
+  /** 目录表点开的模型详情 */
+  const [detail, setDetail] = useState<ModelInfo | null>(null);
+  /** 详情弹窗开关。刻意与 detail 分开：关闭时若同时把 detail 置空，
+      弹窗内容会赶在退场动画之前卸载，动画期间只剩标题+按钮的空壳 */
+  const [detailOpen, setDetailOpen] = useState(false);
   const seq = useRef(0);
 
   /** uid → 账号名(label)：最近请求表按 uid 落库，展示时换成人名 */
@@ -440,13 +577,13 @@ export function WorkBuddyPage() {
                     <TableHead>冷却/熔断</TableHead>
                     <TableHead>7d 请求</TableHead>
                     <TableHead>7d tokens</TableHead>
-                    <TableHead>操作</TableHead>
+                    <TableHead className="table-col-actions">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {accounts.length === 0 ? (
                     <TableEmptyRow colSpan={8}>
-                      <Empty title="还没有账号" description="点「添加账号」完成 OAuth 设备授权，或手动粘贴凭证。" />
+                      <Empty icon={CircleUserRound} />
                     </TableEmptyRow>
                   ) : (
                     accounts.map((account) => {
@@ -589,7 +726,7 @@ export function WorkBuddyPage() {
                               ? fmtTokens(account.stats_7d.input_tokens + account.stats_7d.output_tokens)
                               : "0"}
                           </TableCell>
-                          <TableCell className="text-right">
+                          <TableCell className="table-col-actions">
                             <div className="inline-flex items-center gap-1">
                               <ActionButton
                                 label={unsupported || (checkedToday ? "再签一次（幂等）" : "立即签到")}
@@ -671,12 +808,7 @@ export function WorkBuddyPage() {
                       const promoFactor = typeof md.promo_factor === "number" ? md.promo_factor : null;
                       const promoCredits = typeof md.promo_credits === "string" ? md.promo_credits : "";
                       const credits = typeof md.credits === "string" ? md.credits : "";
-                      // 上游两种写法混着来（"x0.59 credits" 与 "0.00x"），显示前统一成 x0.59 这一种：
-                      // 去掉 credits 尾巴、把后缀的 x 挪到前面。
-                      const rateText = (promoCredits || credits)
-                        .replace(/\s*credits?\b/i, "")
-                        .replace(/^(\d+(?:\.\d+)?)\s*x$/i, "x$1")
-                        .trim();
+                      const rateText = normalizeRate(promoCredits || credits);
                       // 低价标绿：以文案解析出的数值为准（"0.00x" 这类没有 promo_factor 的行也覆盖），
                       // 解析不出再退回 metadata 里的 factor。
                       const rateValue = parseCreditFactor(rateText) ?? promoFactor;
@@ -688,14 +820,24 @@ export function WorkBuddyPage() {
                             {/* 上行＝对外规范名（带 cn:/glb: 前缀，客户端要填的），
                                 下行＝实际打到上游的裸名（上游报错里出现的那个） */}
                             <div className="cell-2">
-                              <span className="mono text-xs">{model.id}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDetail(model);
+                                  setDetailOpen(true);
+                                }}
+                                className="model-link"
+                                title="点开模型详情"
+                              >
+                                {model.id}
+                              </button>
                               <small className="mono">{model.upstream_model}</small>
                             </div>
                           </TableCell>
-                          <TableCell className="text-right font-mono text-xs tabular-nums">
+                          <TableCell className="font-mono text-xs tabular-nums">
                             {fmtLimit(md.context_window)}
                           </TableCell>
-                          <TableCell className="text-right font-mono text-xs tabular-nums">
+                          <TableCell className="font-mono text-xs tabular-nums">
                             {fmtLimit(md.max_output_tokens)}
                           </TableCell>
                           <TableCell>
@@ -717,7 +859,7 @@ export function WorkBuddyPage() {
                           </TableCell>
                           <TableCell
                             className={cn(
-                              "text-right font-mono text-xs tabular-nums",
+                              "font-mono text-xs tabular-nums",
                               cheap && "font-medium text-ok",
                             )}
                           >
@@ -737,11 +879,7 @@ export function WorkBuddyPage() {
                     })
                   ) : (
                     <TableEmptyRow colSpan={6}>
-                      <Empty
-                        icon={Boxes}
-                        title="列表为空"
-                        description="等待首次拉取上游模型列表"
-                      />
+                      <Empty icon={Boxes} />
                     </TableEmptyRow>
                   )}
                 </TableBody>
@@ -792,6 +930,9 @@ export function WorkBuddyPage() {
           await load(true);
         }}
       />
+
+      {/* ── 模型详情弹窗 ── */}
+      <ModelDetailDialog model={detail} open={detailOpen} onOpenChange={setDetailOpen} />
         </>
       )}
     </section>

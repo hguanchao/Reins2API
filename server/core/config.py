@@ -65,7 +65,7 @@ def _load() -> dict[str, Any]:
     except FileNotFoundError:
         return merged
     except Exception as exc:
-        logger.warning(f"[配置] {CONFIG_PATH} 读取失败，用默认值: {exc}")
+        logger.warning(f"[配置] 配置文件读取失败, 用默认值 path={CONFIG_PATH}: {exc}")
         return merged
     if not isinstance(raw, dict):
         return merged

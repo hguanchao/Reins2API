@@ -31,22 +31,20 @@
   }html {
     @apply antialiased;
     text-rendering: optimizeLegibility;
-    /* 沟槽常驻：四个页面（尤其系统配置页）高度不一样，文档滚动模型下滚动条会
-       随页面出现/消失，视口宽度起伏 8px（= 上面 ::-webkit-scrollbar 的宽度）。
-       顶栏是 1fr auto 1fr 网格、导航列按视口宽度居中，于是每次切页导航都会跟着
-       左右平移几个像素——这就是切页"抖动"的主因。预留沟槽后宽度恒定，位移消失。
-       overlay 滚动条（不占位）下这条是空操作，本来也不存在位移。 */
-    scrollbar-gutter: stable;
   }body {
-    /* 文档滚动模型：页面随内容自然变长，滚动交给浏览器。
-       固定高度（h-svh + 层层 overflow:hidden）会把每个面板的高度强行凑到视口，
-       导致内容少的块留白、内容多的块被切半行，还叠出多层嵌套滚动条。 */
-    @apply min-h-svh bg-background text-foreground font-sans text-[14px] leading-normal;
+    /* 应用内滚动模型:body 锁一屏高、不滚动,滚动下放给 .main(见 Container)。
+       旧模型是文档滚动——滚动条纵贯整个视口会盖到顶栏上,而 scrollbar-gutter
+       常驻占位又会让 Radix 的弹窗滚动锁重复补偿,开合弹窗整页横向抖 8px。
+       滚动收进内容容器后两个问题一起消失,也不再需要预留沟槽。 */
+    @apply bg-background text-foreground font-sans text-[14px] leading-normal;
+    height: 100svh;
+    overflow: hidden;
     letter-spacing: 0.01em;
     -webkit-font-smoothing: antialiased;
   }#root {
     @apply relative;
-  }/* hidden 必须压过作者样式里的 display：UA 表的 [hidden]{display:none} 权重最低，
+    height: 100%;
+  }/* hidden 必须压过作者样式里的 display:UA 表的 [hidden]{display:none} 权重最低,
     任何自带 display 的类（.stats{display:grid}、按钮的 inline-flex）都会把它顶掉 */
   [hidden] {
     display: none !important;
@@ -65,19 +63,24 @@
   }
 }
 /* ══════════════════════════════════════════════
-   Shell
-   ══════════════════════════════════════════════ */.app-shell {
+   Container
+   ══════════════════════════════════════════════ */.container {
   position: relative;
-  /* 内容不足一屏时撑满，超出时随文档变长 */
-  min-height: 100svh;
+  /* 固定一屏高、自身不滚:顶栏常驻,滚动交给 .main */
+  height: 100svh;
+  /* 与 Tailwind 的 container 工具类同名——它会在各断点设 max-width 把容器
+     收窄。这里显式写死,压掉那套断点宽度。 */
+  width: 100%;
+  max-width: none;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-}.top-rail {
-  /* 顶栏是导航：文档滚动下必须 sticky，否则切页要先滚回顶部。
-     页头 / KPI 属内容，不常驻。 */
-  position: sticky;
-  top: 0;
+}.header {
+  /* 顶栏在滚动容器(.main)之外,天然常驻,不需要 sticky。
+     切页只换内容区,顶栏与导航永不移动。 */
+  position: relative;
   z-index: 40;
+  flex: none;
   height: var(--top-h);
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -196,7 +199,7 @@
   height: 24px;
 }
 
-@media (max-width: 520px) {.top-rail {
+@media (max-width: 520px) {.header {
     grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 4px;
     padding: 0 8px;
@@ -211,17 +214,21 @@
   }.header-actions {
     gap: 4px;
   }
-}.app-frame {
-  /* 1 0 auto：撑满剩余高度、但不被压缩——文档滚动下内容该多高就多高 */
-  flex: 1 0 auto;
+}.main {
+  /* 唯一的滚动容器:吃掉 header 之下的剩余高度,内容超出时在内部滚。
+     滚动条只出现在这里——不纵贯整个视口、不盖到 header 上。
+     flex 列:路由内容(.route-enter)按剩余高度填充。 */
   display: flex;
   flex-direction: column;
-  width: 100%;
-  /* 1600：再宽视线收不回来，卡片网格会散成一整行 */
-  max-width: 1600px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* 四个页面高度不一,常驻沟槽让内容区宽度恒定,切页不横移 */
+  scrollbar-gutter: stable;
   min-width: 0;
-  margin: 0 auto;
-  padding: 24px;
+  /* 内容列:上限 1600、最小边距 24,用内边距居中——
+     不用内层 max-width 容器,滚动条才能贴视口右缘。 */
+  padding: 24px calc(24px + max(0px, (100% - 1600px) / 2));
 }
 
 /* ══════════════════════════════════════════════
@@ -257,6 +264,16 @@
 /* 行悬停：landing 的表格行悬停是极浅的灰底 */
 [data-slot="table-body"] > [data-slot="table-row"]:hover {
   background-color: var(--table-hover);
+}
+
+/* ══════════════════════════════════════════════
+   列对齐：列头与单元格一律靠左（默认），操作列是唯一例外——居中对齐。
+   单独做成类的原因：TableHead 自带 text-left，而 Tailwind 产物里
+   .text-left 排在 .text-center 之后，组件里直接补 text-center 会被基础类压掉；
+   未分层的这里能稳定赢过 @layer utilities。
+   ══════════════════════════════════════════════ */
+.table-col-actions {
+  text-align: center;
 }
 
 /* ══════════════════════════════════════════════

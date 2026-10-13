@@ -92,13 +92,13 @@ def _refresh_locked(*, mode: str, manual_url: str) -> None:
     if mode == "manual":
         url = _normalize_proxy_url(manual_url)
         if not url:
-            logger.warning("[代理] manual 模式未配置 URL，按直连处理")
+            logger.warning("[代理] mode=manual 未配置 URL, 按直连处理")
             _source = None
             _description = "手动 · 未配置 URL，按直连处理"
             return
         _source = {"url": url, "bypass": _env_bypass()}
         _description = f"手动 · {url}"
-        logger.info(f"[代理] 生效: {url}")
+        logger.info(f"[代理] 出站代理生效 url={url}")
         return
 
     from_env = _env_proxy()
@@ -115,7 +115,7 @@ def _refresh_locked(*, mode: str, manual_url: str) -> None:
     _description = "跟随系统 · 系统未配置代理，按直连处理"
     if not _logged_nosys:
         _logged_nosys = True
-        logger.warning("[代理] mode=system 但未发现系统代理，按直连处理")
+        logger.warning("[代理] mode=system 未发现系统代理, 按直连处理")
 
 
 def _env_proxy() -> dict | None:

@@ -161,9 +161,16 @@ export function AppShell() {
   const navigate = useNavigate();
   const activeTab = resolveTab(location.pathname);
   const tabsListRef = useRef<HTMLDivElement>(null);
-  /** 指示胶囊的水平中心（相对 .header-nav 的 padding box）。
-      null = 还没量到，此时不渲染——否则它会带着 transform 过渡从 left:0 飞进来。 */
+  const mainRef = useRef<HTMLElement>(null);
+  /** 指示胶囊的水平中心(相对 .header-nav 的 padding box)。
+      null = 还没量到,此时不渲染——否则它会带着 transform 过渡从 left:0 飞进来。 */
   const [indicatorCenter, setIndicatorCenter] = useState<number | null>(null);
+
+  // 滚动下放到 .main 后,切页不会自动回到顶部(浏览器只在文档滚动时重置)。
+  // 这里在路由变化时手动归零,免得从长页面切到短页面时停在半途。
+  useLayoutEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 });
+  }, [location.pathname]);
 
   useLayoutEffect(() => {
     const list = tabsListRef.current;
@@ -183,8 +190,8 @@ export function AppShell() {
   }, [activeTab]);
 
   return (
-    <div className="app-shell">
-      <header className="top-rail">
+    <div className="container">
+      <header className="header">
         <div>
           <NavLink to="/opencode" className="brand-lockup" aria-label="Reins2API">
             <span className="brand-mark" aria-hidden>
@@ -228,11 +235,13 @@ export function AppShell() {
         </div>
       </header>
 
-      <div className="app-frame">
+      {/* main 是唯一的滚动容器:滚动条只出现在 header 之下,
+          内容列的最大宽度与居中由 .main 的内边距实现(见 base.css)。 */}
+      <main className="main" ref={mainRef}>
         <PageEnter>
           <Outlet />
         </PageEnter>
-      </div>
+      </main>
     </div>
   );
 }

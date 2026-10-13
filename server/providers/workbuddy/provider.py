@@ -45,7 +45,7 @@ from gateway.base import (
     UpstreamResponse,
     UpstreamUnavailable,
 )
-from providers import profiles
+from providers import models_snapshot, profiles
 from providers.capabilities import as_flag, capability_block
 from providers.identity import derive_request_ids  # 通用会话派生（provider 共享层）
 from providers.workbuddy import checkin, classify, dsml, sanitize, shape
@@ -113,6 +113,27 @@ class _RawBytes:
         return None
 
 
+def _snapshot_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """上游 /v3/config 条目 → models.json 统一核心字段（见 models_snapshot.core_entry）。"""
+    reasoning = entry.get("reasoning") if isinstance(entry.get("reasoning"), dict) else {}
+    efforts = reasoning.get("supportedEfforts")
+    default_effort = str(reasoning.get("defaultEffort") or reasoning.get("effort") or "")
+    return models_snapshot.core_entry(
+        id=str(entry.get("id") or "").strip() or None,
+        name=entry.get("name"),
+        description=entry.get("descriptionZh") or entry.get("descriptionEn"),
+        context_window=entry.get("maxInputTokens"),
+        max_output_tokens=entry.get("maxOutputTokens"),
+        supports_images=as_flag(entry.get("supportsImages")),
+        supports_reasoning=as_flag(entry.get("supportsReasoning")),
+        supports_tool_call=as_flag(entry.get("supportsToolCall")),
+        reasoning_efforts=(
+            [str(e) for e in efforts] if isinstance(efforts, list) and efforts else None
+        ),
+        default_effort=default_effort or None,
+    )
+
+
 class WorkBuddyProvider:
     name = "workbuddy"
     upstream_url = WB_UPSTREAM_BASE
@@ -131,11 +152,9 @@ class WorkBuddyProvider:
 
     def refresh(self) -> None:
         """拉每个 realm 的模型目录(各需一个该域可用账号的 Bearer);失败保留旧册。"""
-        from providers import models_snapshot
-
         # 快照按 realm 别名分键(cn/glb);某域本轮没拉到就保留上一次的好数据。
         current = models_snapshot.read().get("workbuddy")
-        raw_by_alias: dict[str, Any] = {
+        snapshot_by_alias: dict[str, Any] = {
             "cn": list((current or {}).get("cn") or []) if isinstance(current, dict) else [],
             "glb": list((current or {}).get("glb") or []) if isinstance(current, dict) else [],
         }
@@ -149,11 +168,12 @@ class WorkBuddyProvider:
                 entries = wb_upstream.fetch_models(account)
             except Exception as exc:
                 logger.warning(
-                    f"[workbuddy] {realm} 模型目录刷新失败(保留旧目录): "
+                    f"[workbuddy] realm={realm} 模型目录刷新失败(保留旧目录): "
                     f"{type(exc).__name__}: {exc}"
                 )
                 continue
-            raw_by_alias[_REALM_ALIAS[realm]] = entries  # 上游原样条目(快照用)
+            # 统一核心字段条目(快照用;上游原样条目只进内存目录)
+            snapshot_by_alias[_REALM_ALIAS[realm]] = [_snapshot_entry(e) for e in entries]
             models: dict[str, dict[str, Any]] = {}
             efforts: dict[str, list[str]] = {}
             default_efforts: dict[str, str] = {}
@@ -175,10 +195,10 @@ class WorkBuddyProvider:
                     models=models, efforts=efforts, default_efforts=default_efforts,
                     refreshed_at=datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 )
-            logger.info(f"[workbuddy] {realm} 模型目录刷新完成 models={len(models)}")
+            logger.info(f"[workbuddy] realm={realm} 模型目录刷新完成 models={len(models)}")
         if not seen_realm:
-            logger.info("[workbuddy] 无可用账号,跳过模型目录刷新")
-        models_snapshot.write("workbuddy", raw_by_alias)
+            logger.info("[workbuddy] 无可用账号, 跳过模型目录刷新")
+        models_snapshot.write("workbuddy", snapshot_by_alias)
 
     def _any_active_account(self, realm: str | None = None) -> Account | None:
         for account in self._store.list_accounts():
@@ -265,6 +285,7 @@ class WorkBuddyProvider:
             capabilities=capabilities,
             metadata={
                 "name": name,
+                "description": entry.get("descriptionZh") or entry.get("descriptionEn") or "",
                 "realm": "global" if realm_alias == "glb" else "cn",
                 "aliases": self._realm_aliases(bare),
                 "context_window": entry.get("maxInputTokens") or 0,
@@ -280,6 +301,7 @@ class WorkBuddyProvider:
                 "promo_label": entry.get("promo_label") or "",
                 "promo_credits": entry.get("promo_credits") or "",
                 "promo_factor": entry.get("promo_factor"),
+                "promo_note": entry.get("promo_note") or "",
             },
         )
 
@@ -357,7 +379,7 @@ class WorkBuddyProvider:
         # 三种客户端协议（词表与实测记录见 tests/upstream_evidence.md）。
         if sanitize.sanitize_body(body_dict):
             body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
-            logger.warning("[workbuddy] 出站脱敏：请求体命中上游审核指纹，已改写后转发")
+            logger.warning("[workbuddy] 出站脱敏: 请求体命中上游审核指纹, 已改写后转发")
         conversation_id = ""
         for key in ("conversation_id", "conversationId"):
             value = body_dict.get(key)
@@ -406,7 +428,7 @@ class WorkBuddyProvider:
                         conversation_request_id=conversation_request_id,
                     )
                 except crequests.RequestsError as exc:
-                    logger.warning(f"[workbuddy] uid={account.uid[:8]} 传输失败: {exc}")
+                    logger.warning(f"[workbuddy] uid={account.uid[:8]}… 传输失败: {exc}")
                     self._penalize_transport(account)
                     self._bump_used_seq(account)
                     attempts += 1
@@ -446,7 +468,7 @@ class WorkBuddyProvider:
                     classify.classify(status, text), dict(response.headers)
                 )
                 logger.warning(
-                    f"[workbuddy] uid={account.uid[:8]} 上游 {status} {classified.kind}: {text[:160]}"
+                    f"[workbuddy] uid={account.uid[:8]}… 上游错误 status={status} kind={classified.kind}: {text[:160]}"
                 )
                 self._penalize(account, classified, bare_model, text)
                 self._bump_used_seq(account)
@@ -523,7 +545,7 @@ class WorkBuddyProvider:
             data = wb_upstream.refresh_request(account)
         except Exception as exc:
             level = logger.info if quiet else logger.warning
-            level(f"[workbuddy] uid={account.uid[:8]} token 刷新失败: {type(exc).__name__}: {exc}")
+            level(f"[workbuddy] uid={account.uid[:8]}… token 刷新失败: {type(exc).__name__}: {exc}")
             return False
         expires_ms = wb_upstream.refresh_expires_ms(data.get("expiresIn"))
         self._store.update_tokens(
@@ -533,7 +555,7 @@ class WorkBuddyProvider:
             expires_ms,
             str(data.get("domain") or ""),
         )
-        logger.info(f"[workbuddy] uid={account.uid[:8]} token 已刷新")
+        logger.info(f"[workbuddy] uid={account.uid[:8]}… token 已刷新")
         # 积分只在此刻顺带取回（拿到新 token 是唯一时机）：手动刷新同步等结果，
         # 自动刷新走后台线程——billing RPC 的延迟不进聊天路径。
         if sync_credits:
@@ -564,7 +586,7 @@ class WorkBuddyProvider:
             remain, total = wb_upstream.fetch_credits(account)
         except Exception as exc:
             level = logger.info if quiet else logger.warning
-            level(f"[workbuddy] uid={uid[:8]} 积分查询失败: {type(exc).__name__}: {exc}")
+            level(f"[workbuddy] uid={uid[:8]}… 积分查询失败: {type(exc).__name__}: {exc}")
             return
         if remain <= 0 and total <= 0:
             return
@@ -599,7 +621,7 @@ class WorkBuddyProvider:
         try:
             outcome = checkin.run_checkin(account)
         except checkin.CheckinError as exc:
-            logger.warning(f"[workbuddy] uid={uid[:8]} 签到失败: {exc}")
+            logger.warning(f"[workbuddy] uid={uid[:8]}… 签到失败: {exc}")
             return {
                 "uid": uid, "local": False, "state": checkin.STATE_ERROR,
                 "message": str(exc), "credit": None,
@@ -619,7 +641,7 @@ class WorkBuddyProvider:
                 fields["checkin_total_credits"] = outcome.total_credits
             self._store.update_runtime(uid, **fields)
         if outcome.state == checkin.STATE_CLAIMED:
-            logger.info(f"[workbuddy] uid={uid[:8]} {outcome.message}")
+            logger.info(f"[workbuddy] uid={uid[:8]}… 签到成功: {outcome.message}")
             # 签到直接改余额：拉一次让面板与选号权重立刻跟上（失败只记日志）
             self._refresh_credits_async(uid)
         return {"uid": uid, "local": False, **outcome.to_dict()}
@@ -645,7 +667,7 @@ class WorkBuddyProvider:
                 result = self.checkin(account.uid, force=force)
             except Exception as exc:  # 单号异常不中断整轮
                 logger.warning(
-                    f"[workbuddy] uid={account.uid[:8]} 签到异常: {type(exc).__name__}: {exc}"
+                    f"[workbuddy] uid={account.uid[:8]}… 签到异常: {type(exc).__name__}: {exc}"
                 )
                 result = {"uid": account.uid, "state": checkin.STATE_ERROR,
                           "message": f"{type(exc).__name__}: {exc}"}

@@ -124,8 +124,7 @@ def decode_request(input: dict[str, Any]) -> BridgeRequest:
             # type:"web_search" 会整单回 unsupported_content_type。丢掉并记一条
             # 日志——客户端只是拿不到联网搜索，好过整个请求 400。
             logger.warning(
-                f'[桥接] tools[{i}] 非 function 工具'
-                f'（type={string_at(tool, "type") or "缺失"}），已忽略'
+                f'[桥接] tools[{i}] 非 function 工具, 已忽略 type={string_at(tool, "type") or "缺失"}'
             )
             continue
         fn = map_at(tool, "function")

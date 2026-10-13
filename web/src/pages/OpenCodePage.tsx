@@ -429,21 +429,17 @@ export function OpenCodePage() {
                                 {model.free ? "免费" : "标准"}
                               </Badge>
                             </TableCell>
-                            <TableCell className="text-right font-mono text-xs tabular-nums">
+                            <TableCell className="font-mono text-xs tabular-nums">
                               {fmtLimit(model.metadata.contextWindow)}
                             </TableCell>
-                            <TableCell className="text-right font-mono text-xs tabular-nums">
+                            <TableCell className="font-mono text-xs tabular-nums">
                               {fmtLimit(model.metadata.maxOutput)}
                             </TableCell>
                           </TableRow>
                         ))
                       ) : (
                         <TableEmptyRow colSpan={5}>
-                          <Empty
-                            icon={Boxes}
-                            title="列表为空"
-                            description="等待首次拉取上游模型列表"
-                          />
+                          <Empty icon={Boxes} />
                         </TableEmptyRow>
                       )}
                     </TableBody>

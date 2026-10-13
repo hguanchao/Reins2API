@@ -51,7 +51,7 @@ def _guard_responses_limits(to_proto: str, output: dict[str, Any]) -> None:
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value < 16:
         del output["max_output_tokens"]
         logger.warning(
-            f"[桥接] max_output_tokens={value} 低于上游最小值 16，已丢弃该字段（按模型默认上限处理）"
+            f"[桥接] max_output_tokens={value} 低于上游最小值 16, 已丢弃(按模型默认上限处理)"
         )
 
 

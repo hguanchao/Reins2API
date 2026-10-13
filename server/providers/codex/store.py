@@ -128,6 +128,16 @@ class Account:
             return True
         return now_ms + ahead_ms >= self.token_expires_ms
 
+    def nickname(self) -> str:
+        """ChatGPT 昵称（id_token 的 name claim）。
+
+        从凭证里现解现取、不落库：授权换发新 token 后昵称跟着变，也省掉一次
+        schema 迁移；旧 token / 不带 id_token 的导入凭证解析为空，由展示层回落。
+        """
+        from providers.codex.oauth import parse_id_token
+
+        return parse_id_token(self.id_token).name
+
     def public_dict(self) -> dict[str, Any]:
         """面板可见视图：凭证脱敏（只给"有没有"与长度提示，不给原文）。"""
         return {
@@ -135,6 +145,7 @@ class Account:
             "account_id": self.account_id,
             "label": self.label,
             "email": self.email,
+            "nickname": self.nickname(),
             "plan_type": self.plan_type,
             "status": self.status,
             "status_reason": self.status_reason,
@@ -207,7 +218,7 @@ class CodexStore:
             for name, decl in _ADDED_COLUMNS:
                 if name not in existing:
                     self._conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {decl}")
-                    logger.info(f"[codex] accounts 补列: {name}")
+                    logger.info(f"[codex] accounts 表补列 column={name}")
             self._conn.commit()
 
     def close(self) -> None:
@@ -332,5 +343,5 @@ def default_store() -> CodexStore:
     with _default_lock:
         if _default_store is None:
             _default_store = CodexStore()
-            logger.info("[codex] 账号库就绪: {}", _default_store._path)
+            logger.info(f"[codex] 账号库就绪 path={_default_store._path}")
         return _default_store

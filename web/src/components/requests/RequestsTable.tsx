@@ -171,14 +171,14 @@ export function RequestsTable({
                     <TableCell>
                       <Badge variant={statusTone(row.http_status)}>{row.http_status || "—"}</Badge>
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell>
                       {/* 上首字、下总耗时（对齐 demo 的 .cell-2 双行格）。
                          首字为 0 说明是失败请求或旧记录，显示「—」而不是 0.0s。
-                         is-compact：两行同为 11px，比邻列小一档且左右边缘对齐。
+                         is-compact：两行同为 11px，比邻列小一档。
                          分档见 lib/utils.latencyMark：首字 >10s 琥珀 / >30s 红；
                          总耗时只在「>30s 且 <10 tok/s」时红——长而快是正常生成。
                          注意非流式客户端的首字恒为 0（整包被缓冲），是「—」不是慢。 */}
-                      <div className="cell-2 is-compact items-end">
+                      <div className="cell-2 is-compact items-start">
                         <span
                           className={cn(
                             "mono",
@@ -199,7 +199,7 @@ export function RequestsTable({
                         </small>
                       </div>
                     </TableCell>
-                    <TableCell className="text-right whitespace-nowrap">
+                    <TableCell className="whitespace-nowrap">
                       <Tooltip>
                         <TooltipTrigger asChild>
                           {/* 上输入、下输出：并排两个裸数字只看颜色认不出哪条是哪条 */}
@@ -246,7 +246,7 @@ export function RequestsTable({
               })
             ) : (
               <TableEmptyRow colSpan={colSpan}>
-                <Empty icon={Inbox} description="暂无数据" />
+                <Empty icon={Inbox} />
               </TableEmptyRow>
             )}
           </TableBody>

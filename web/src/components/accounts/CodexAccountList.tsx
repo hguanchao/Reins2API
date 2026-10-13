@@ -1,5 +1,5 @@
-import { Pause, Play, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
-import { Button, Empty, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui";
+import { CircleUserRound, Pause, Play, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { Empty, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui";
 import type { CodexAccount } from "@/lib/api";
 import { fmtTokens } from "@/lib/format";
 import { cn, fmtCompact } from "@/lib/utils";
@@ -194,26 +194,16 @@ export function CodexAccountList({
   busyUid,
   onAction,
   onDelete,
-  onAdd,
 }: {
   accounts: CodexAccount[];
   busyUid: string | null;
   onAction: (account: CodexAccount, action: "pause" | "resume" | "revive" | "refresh") => void;
   onDelete: (account: CodexAccount) => void;
-  onAdd: () => void;
 }) {
   if (accounts.length === 0) {
     return (
       <div className="gw-table-card is-empty">
-        <Empty
-          title="还没有账号"
-          description="点「添加账号」走 OAuth 授权，或手动粘贴 refresh_token。"
-        />
-        <div className="mt-3 flex justify-center">
-          <Button size="sm" onClick={onAdd}>
-            添加账号
-          </Button>
-        </div>
+        <Empty icon={CircleUserRound} />
       </div>
     );
   }
@@ -231,21 +221,26 @@ export function CodexAccountList({
             const failed = total?.failed ?? 0;
             const okRate = requests > 0 ? ((requests - failed) / requests) * 100 : 0;
             const tokens = (total?.input_tokens ?? 0) + (total?.output_tokens ?? 0);
-            const name = account.label || account.email || account.uid;
+            // 凭证两行：上昵称、下邮箱。没有昵称的（旧 token / 导入凭证缺 name claim）
+            // 退化成上邮箱、下 uid，两行始终有内容且不重复。
+            const nickname = account.nickname.trim();
+            const email = account.email || account.label || "";
+            const credName = nickname || email || account.uid;
+            const credSub = nickname ? email || account.uid : account.uid;
 
             return (
               <article key={account.uid} className={cn("acct-row", busy && "is-busy")}>
                 {/* 凭证 */}
                 <div className="acct-cred">
                   <span className="acct-avatar" aria-hidden>
-                    {name.slice(0, 1)}
+                    {credName.slice(0, 1)}
                   </span>
                   <div className="acct-cred-main">
-                    <div className="acct-email" title={name}>
-                      {name}
+                    <div className="acct-cred-name" title={nickname ? `${nickname} · ${email}` : credName}>
+                      {credName}
                     </div>
-                    <div className="acct-uid" title={account.uid}>
-                      {account.uid}
+                    <div className="acct-cred-sub" title={credSub}>
+                      {credSub}
                     </div>
                   </div>
                 </div>

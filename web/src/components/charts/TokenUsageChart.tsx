@@ -474,7 +474,7 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
         failed ? (
           <Empty
             icon={Inbox}
-            description="用量数据加载失败，稍后自动重试"
+            text="用量数据加载失败，稍后自动重试"
             className="gw-empty-fill"
           />
         ) : (
@@ -483,7 +483,7 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
       ) : plot ? (
         plot
       ) : (
-        <Empty icon={Inbox} description="暂无数据" className="gw-empty-fill" />
+        <Empty icon={Inbox} className="gw-empty-fill" />
       )}
     </div>
   );

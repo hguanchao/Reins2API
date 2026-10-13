@@ -26,7 +26,7 @@ def _refresh_loop(provider) -> None:
         try:
             provider.refresh()
         except Exception as exc:
-            logger.warning(f"[目录] {provider.name} 刷新失败: {type(exc).__name__}: {exc}")
+            logger.warning(f"[目录] provider={provider.name} 刷新失败: {type(exc).__name__}: {exc}")
         time.sleep(CATALOG_REFRESH_SECONDS)
 
 
@@ -43,9 +43,9 @@ def _token_sweep_loop(provider) -> None:
         try:
             refreshed = provider.refresh_expiring()
             if refreshed:
-                logger.info(f"[token] {provider.name} 后台刷新 {refreshed} 个账号")
+                logger.info(f"[token] provider={provider.name} 后台巡检刷新 accounts={refreshed}")
         except Exception as exc:
-            logger.warning(f"[token] {provider.name} 巡检异常: {type(exc).__name__}: {exc}")
+            logger.warning(f"[token] provider={provider.name} 巡检异常: {type(exc).__name__}: {exc}")
         time.sleep(TOKEN_SWEEP_SECONDS)
 
 
@@ -93,7 +93,7 @@ def main() -> None:
 
     models_snapshot.ensure()  # data/models.json（上游目录快照；缺失时建默认形状）
 
-    logger.info(f"[启动] provider 已注册: {', '.join(registry.names)}")
+    logger.info(f"[启动] 已注册 provider: {' '.join(registry.names)}")
 
     from api.server import serve
 
@@ -106,5 +106,5 @@ if __name__ == "__main__":
     except Exception:
         # 进程 stdout/stderr 已被启动脚本丢进空设备：致命错误必须落到 server.log，
         # 否则启动失败会毫无线索。
-        logger.exception("[启动] 致命错误,进程退出")
+        logger.exception("[启动] 致命错误, 进程退出")
         raise

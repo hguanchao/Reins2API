@@ -267,8 +267,8 @@ def _serve_inner(
 
     result.stamp_first_chunk(_stamp_first_byte)
     logger.info(
-        f"[推理] request={ids.request} model={model} proto={route.protocol} "
-        f"stream={client_stream} shaped={shaped} status={result.status}"
+        f"[推理] request={ids.request} provider={provider.name} model={model} "
+        f"proto={route.protocol} stream={client_stream} shaped={shaped} status={result.status}"
     )
 
     if client_stream:
@@ -439,7 +439,7 @@ def _copy_upstream_error(
     if retry_after:
         extra["retry-after"] = retry_after
     record.error_message = message[:255]
-    logger.warning(f"[推理] request={record.id} 上游返回错误 {result.status}: {message}")
+    logger.warning(f"[推理] request={record.id} 上游返回错误 status={result.status}: {message}")
     _send_error(handler, external, result.status, message, "upstream_error", extra)
     return result.status
 

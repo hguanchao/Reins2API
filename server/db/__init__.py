@@ -138,7 +138,7 @@ class ProviderStore:
                 )
                 self._conn.commit()
         except Exception as exc:
-            logger.warning(f"[遥测] {self.name} 落库失败（不阻塞转发）: {type(exc).__name__}: {exc}")
+            logger.warning(f"[遥测] provider={self.name} 请求落库失败(不阻塞转发): {type(exc).__name__}: {exc}")
 
     # ── 读取 ──
 
@@ -151,7 +151,7 @@ class ProviderStore:
                 ).fetchall()
             return [dict(row) for row in rows]
         except Exception as exc:
-            logger.warning(f"[遥测] {self.name} 窗口查询失败: {exc}")
+            logger.warning(f"[遥测] provider={self.name} 窗口查询失败: {exc}")
             return []
 
     def recent(self, limit: int = 20, offset: int = 0) -> tuple[int, list[dict[str, Any]]]:
@@ -164,7 +164,7 @@ class ProviderStore:
                 ).fetchall()
             return int(total), [dict(row) for row in rows]
         except Exception as exc:
-            logger.warning(f"[遥测] {self.name} 明细查询失败: {exc}")
+            logger.warning(f"[遥测] provider={self.name} 明细查询失败: {exc}")
             return 0, []
 
     def account_totals(self) -> dict[str, dict[str, int]]:
@@ -185,7 +185,7 @@ class ProviderStore:
                     " FROM requests WHERE account_uid != '' GROUP BY account_uid"
                 ).fetchall()
         except Exception as exc:
-            logger.warning(f"[遥测] {self.name} 全时段聚合失败: {exc}")
+            logger.warning(f"[遥测] provider={self.name} 全时段聚合失败: {exc}")
             return {}
         return {
             str(row["account_uid"]): {

@@ -240,7 +240,7 @@ class WorkBuddyStore:
             if name in existing:
                 continue
             self._conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {decl}")
-            logger.info(f"[workbuddy] accounts 补列: {name}")
+            logger.info(f"[workbuddy] accounts 表补列 column={name}")
 
     def close(self) -> None:
         try:
@@ -373,5 +373,5 @@ def default_store() -> WorkBuddyStore:
     with _default_lock:
         if _default_store is None:
             _default_store = WorkBuddyStore()
-            logger.info("[workbuddy] 账号库就绪: {}", _default_store._path)
+            logger.info(f"[workbuddy] 账号库就绪 path={_default_store._path}")
         return _default_store

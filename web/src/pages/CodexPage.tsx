@@ -8,16 +8,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Boxes,
-  CalendarClock,
+  Check,
   CircleUserRound,
   Copy,
   Cpu,
   Download,
-  ExternalLink,
   Inbox,
+  Info,
   KeyRound,
   Pause,
   Plus,
+  RefreshCw,
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -30,7 +31,6 @@ import {
   DialogHeader,
   DialogTitle,
   Empty,
-  Input,
   Pagination,
   Table,
   TableBody,
@@ -42,12 +42,14 @@ import {
 } from "@/components/ui";
 import {
   ApiError,
+  cancelCodexLogin,
   codexAccountAction,
   deleteCodexAccount,
   exchangeCodexLogin,
   fetchCodexAccounts,
   fetchCodexOps,
   fetchCodexRequests,
+  pollCodexLogin,
   startCodexLogin,
   type CodexAccount,
   type CodexLoginStart,
@@ -288,7 +290,6 @@ export function CodexPage() {
                 busyUid={busyUid}
                 onAction={runAccountAction}
                 onDelete={removeAccount}
-                onAdd={() => setAddOpen(true)}
               />
             </section>
           </div>
@@ -332,11 +333,7 @@ export function CodexPage() {
                         ))
                       ) : (
                         <TableEmptyRow colSpan={3}>
-                          <Empty
-                            icon={Boxes}
-                            title="列表为空"
-                            description="等待首次拉取上游模型目录"
-                          />
+                          <Empty icon={Boxes} />
                         </TableEmptyRow>
                       )}
                     </TableBody>
@@ -377,8 +374,7 @@ export function CodexPage() {
           <AddCodexDialog
             open={addOpen}
             onOpenChange={setAddOpen}
-            onAdded={async () => {
-              setAddOpen(false);
+            onRefresh={async () => {
               await load(true);
             }}
           />
@@ -402,40 +398,124 @@ export function CodexPage() {
 }
 
 /**
- * Codex OAuth 登录对话框：PKCE 授权码 + 粘贴回调。
+ * Codex OAuth 登录对话框：PKCE 授权码 + 本机回调监听（等待完成），粘贴兜底。
  *
- * OpenAI 只注册了 localhost:1455 这一个回调地址，远程部署时服务端收不到回调，
- * 所以流程是「打开授权页 → 从地址栏复制回调 URL → 粘贴回来」。
+ * OpenAI 只注册了 localhost:1455 这一个回调地址：网关与浏览器同机时由网关直接
+ * 监听该端口收回调、自动兑换入池，前端只轮询等完成（同 WorkBuddy 的等待体验）；
+ * 监听不可用（端口被占 / 在别的设备上打开链接）时退回「复制回调 URL 粘回来」。
+ * 打开弹窗即生成链接但**不自动跳转**：用哪个浏览器、要不要无痕窗口由用户决定。
  */
+const LOGIN_POLL_MS = 3_000;
+
 function AddCodexDialog({
   open,
   onOpenChange,
-  onAdded,
+  onRefresh,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAdded: () => void | Promise<void>;
+  onRefresh: () => void | Promise<void>;
 }) {
   const [session, setSession] = useState<CodexLoginStart | null>(null);
   const [callback, setCallback] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [pending, setPending] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [loginDone, setLoginDone] = useState(false);
+  const [loginMessage, setLoginMessage] = useState("");
+  const copyTimer = useRef<number | null>(null);
+  const pollTimer = useRef<number | null>(null);
+  // 每次打开只自动生成一次链接（StrictMode 下 effect 会双跑，用 ref 挡住）。
+  const autoStarted = useRef(false);
+  const sessionRef = useRef<CodexLoginStart | null>(null);
+  const onRefreshRef = useRef(onRefresh);
+  sessionRef.current = session;
+  onRefreshRef.current = onRefresh;
 
-  const reset = () => {
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current != null) {
+      window.clearInterval(pollTimer.current);
+      pollTimer.current = null;
+    }
+  }, []);
+
+  const begin = useCallback(async () => {
+    stopPolling();
+    setPending(true);
+    setError("");
     setSession(null);
     setCallback("");
-    setBusy(false);
-  };
-
-  const begin = async () => {
-    setBusy(true);
+    setCopied(false);
+    setLoginDone(false);
+    setLoginMessage("");
     try {
-      const data = await startCodexLogin();
-      setSession(data);
-      window.open(data.auth_url, "_blank", "noopener,noreferrer");
-    } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "发起授权失败");
+      const started = await startCodexLogin();
+      setSession(started);
+      if (!started.listening) return; // 监听不可用：退回手动粘贴，不轮询
+      pollTimer.current = window.setInterval(async () => {
+        try {
+          const result = await pollCodexLogin(started.state);
+          if (result.status === "done") {
+            stopPolling();
+            setLoginDone(true);
+            setLoginMessage(`账号 ${result.result?.label || result.result?.uid || ""} 已入池`);
+            toast.success("登录成功，账号已入池");
+            await onRefreshRef.current();
+          } else if (result.status === "error" || result.status === "expired") {
+            stopPolling();
+            setLoginMessage(result.message || "会话已过期，请重新发起");
+          }
+        } catch {
+          // 轮询失败静默重试
+        }
+      }, LOGIN_POLL_MS);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
     } finally {
+      setPending(false);
+    }
+  }, [stopPolling]);
+
+  // 打开即生成链接；关闭时取消会话并清空（监听空闲后自动释放 1455，还给 Codex CLI）。
+  useEffect(() => {
+    if (!open) {
+      autoStarted.current = false;
+      stopPolling();
+      if (sessionRef.current) {
+        void cancelCodexLogin(sessionRef.current.session_id).catch(() => {});
+      }
+      setSession(null);
+      setCallback("");
+      setCopied(false);
+      setError("");
       setBusy(false);
+      setLoginDone(false);
+      setLoginMessage("");
+      if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+      return;
+    }
+    if (autoStarted.current) return;
+    autoStarted.current = true;
+    void begin();
+  }, [open, begin, stopPolling]);
+
+  // 组件卸载（离开页面）时清掉定时器，避免轮询在后台继续打接口。
+  useEffect(() => () => {
+    stopPolling();
+    if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+  }, [stopPolling]);
+
+  const copyAuthUrl = async () => {
+    if (!session) return;
+    try {
+      await navigator.clipboard.writeText(session.auth_url);
+      setCopied(true);
+      toast.success("授权链接已复制");
+      if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("复制失败，请手动选中链接复制");
     }
   };
 
@@ -445,91 +525,216 @@ function AddCodexDialog({
     try {
       const result = await exchangeCodexLogin(session.session_id, callback.trim());
       toast.success(`已添加账号 ${result.label || result.uid}`);
-      reset();
-      await onAdded();
-    } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "兑换失败");
+      stopPolling();
+      onOpenChange(false);
+      await onRefreshRef.current();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "兑换失败");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) reset();
-        onOpenChange(next);
-      }}
-    >
-      <DialogContent className="sm:max-w-lg">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="overflow-x-hidden sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>添加 Codex 账号</DialogTitle>
         </DialogHeader>
 
-        <div className="grid gap-3 text-[13px]">
-          <ol className="text-muted-foreground grid list-decimal gap-1 pl-4 leading-[1.6]">
-            <li>点「开始授权」在新标签页登录 ChatGPT（未登录会先要求登录）。</li>
-            <li>授权后浏览器会跳到 <span className="mono">localhost:1455</span>（打不开是正常的）。</li>
-            <li>复制地址栏里的整段 URL，粘贴到下面提交即可入池。</li>
-          </ol>
+        <div className="grid min-w-0 gap-3">
+          {pending && !session ? (
+            <div className="text-muted-foreground flex items-center gap-2 py-0.5 text-xs">
+              <RefreshCw className="size-3.5 animate-spin" strokeWidth={1.6} aria-hidden />
+              正在生成授权链接…
+            </div>
+          ) : null}
 
           {session ? (
-            <div className="grid gap-2">
-              <div className="flex items-center gap-2">
-                <Input readOnly value={session.auth_url} className="mono text-[11px]" />
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  className="size-8 shrink-0"
-                  aria-label="复制授权链接"
-                  onClick={() => {
-                    void navigator.clipboard?.writeText(session.auth_url);
-                    toast.success("授权链接已复制");
-                  }}
-                >
-                  <Copy className="size-3.5" strokeWidth={1.75} />
-                </Button>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  className="size-8 shrink-0"
-                  aria-label="打开授权页"
-                  onClick={() => window.open(session.auth_url, "_blank", "noopener,noreferrer")}
-                >
-                  <ExternalLink className="size-3.5" strokeWidth={1.75} />
-                </Button>
+            <div className="border-border bg-muted/20 grid min-w-0 gap-3 rounded-lg border p-3">
+              {/* 链接行：一体式复制字段（长链接自动换行，不撑破弹窗） */}
+              <div className="grid min-w-0 gap-1.5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-xs font-medium">授权链接</span>
+                  <span className="text-muted-foreground text-[11px]">30 分钟内有效</span>
+                </div>
+                <div className="border-border bg-background focus-within:border-primary/50 flex min-w-0 items-center gap-1 rounded-md border py-1 pr-1 pl-2.5 transition-colors">
+                  {/* 单行只读框：内容不可改，鼠标拖动 / 左右方向键可横向预览长链接 */}
+                  <input
+                    readOnly
+                    value={session.auth_url}
+                    title={session.auth_url}
+                    aria-label="授权链接"
+                    spellCheck={false}
+                    className="text-foreground/90 h-7 min-w-0 flex-1 bg-transparent font-mono text-[11px] outline-none"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => void copyAuthUrl()}
+                  >
+                    {copied ? (
+                      <Check className="size-3.5" strokeWidth={1.75} />
+                    ) : (
+                      <Copy className="size-3.5" strokeWidth={1.75} />
+                    )}
+                    {copied ? "已复制" : "复制"}
+                  </Button>
+                </div>
               </div>
-              <textarea
-                value={callback}
-                onChange={(event) => setCallback(event.target.value)}
-                placeholder="粘贴回调 URL（http://localhost:1455/auth/callback?code=…&state=…）或其中的 code"
-                rows={3}
-                className="border-border bg-surface focus-visible:ring-ring w-full rounded-md border px-2.5 py-2 font-mono text-[11px] break-all outline-none focus-visible:ring-[3px]"
-              />
+
+              {/* 操作步骤：监听模式走「等待自动入池」，否则走手动粘贴 */}
+              <ol className="grid gap-1.5 text-xs">
+                <li className="flex gap-2">
+                  <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                    1
+                  </span>
+                  <span className="text-muted-foreground leading-relaxed">
+                    复制链接，用你想用的浏览器打开（本窗口不会自动跳转）
+                  </span>
+                </li>
+                {session.listening ? (
+                  <li className="flex gap-2">
+                    <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                      2
+                    </span>
+                    <span className="text-muted-foreground leading-relaxed">
+                      登录完成后回到本页，账号会自动入池
+                    </span>
+                  </li>
+                ) : (
+                  <>
+                    <li className="flex gap-2">
+                      <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                        2
+                      </span>
+                      <span className="text-muted-foreground leading-relaxed">
+                        登录后浏览器会跳到 <span className="mono">localhost:1455</span>
+                        （打不开是正常的），复制地址栏里的整段 URL
+                      </span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                        3
+                      </span>
+                      <span className="text-muted-foreground leading-relaxed">
+                        粘到下面，点「完成并添加」入池
+                      </span>
+                    </li>
+                  </>
+                )}
+              </ol>
+
+              {/* 换号警示：左侧色条强调，同 WorkBuddy */}
+              <div className="border-l-2 border-amber-500/50 pl-2.5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-500">
+                要添加另一个账号时请用无痕 / 隐私窗口：普通窗口会直接带上当前已登录的 ChatGPT
+                账号，完成授权的是它，而不是你想加的号。
+              </div>
+
+              {session.listening ? (
+                <>
+                  {/* 状态条：等待本机回调监听把会话推进到 done（同 WorkBuddy） */}
+                  <div className="border-border flex items-center gap-2 border-t pt-3 text-xs">
+                    {loginDone ? (
+                      <Check className="size-3.5 shrink-0 text-emerald-500" strokeWidth={2} />
+                    ) : loginMessage ? (
+                      <span className="size-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden />
+                    ) : (
+                      <RefreshCw
+                        className="text-muted-foreground size-3.5 shrink-0 animate-spin"
+                        strokeWidth={1.6}
+                        aria-hidden
+                      />
+                    )}
+                    <span
+                      className={cn("min-w-0", loginDone ? "text-emerald-500" : "text-muted-foreground")}
+                    >
+                      {loginMessage || "等待授权完成…"}
+                    </span>
+                  </div>
+
+                  {/* 粘贴兜底：在别的设备上打开链接时，监听收不到回调，手动粘 */}
+                  <details className="group">
+                    <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-[11px] transition-colors">
+                      自动入池没反应？手动粘贴回调 URL
+                    </summary>
+                    <div className="grid gap-2 pt-2">
+                      <textarea
+                        value={callback}
+                        onChange={(event) => setCallback(event.target.value)}
+                        placeholder="粘贴回调 URL（http://localhost:1455/auth/callback?code=…&state=…）或其中的 code"
+                        rows={2}
+                        className="border-border bg-background focus-visible:ring-ring w-full rounded-md border px-2.5 py-2 font-mono text-[11px] break-all outline-none focus-visible:ring-[3px]"
+                      />
+                      <Button
+                        size="sm"
+                        type="button"
+                        className="justify-self-end"
+                        disabled={!callback.trim() || busy || loginDone}
+                        onClick={() => void submit()}
+                      >
+                        {busy ? "提交中…" : "完成并添加"}
+                      </Button>
+                    </div>
+                  </details>
+                </>
+              ) : (
+                <>
+                  {/* 监听不可用（端口被占 / 网关与浏览器不同机）：只能手动粘贴 */}
+                  <div className="border-border text-muted-foreground flex items-start gap-2 border-t pt-3 text-xs">
+                    <Info className="mt-px size-3.5 shrink-0" strokeWidth={1.6} aria-hidden />
+                    <span className="min-w-0 leading-relaxed">
+                      本机 1455 端口未在监听（网关与浏览器不在同一台机器时会这样），请按步骤手动粘贴回调
+                      URL。
+                    </span>
+                  </div>
+                  <div className="grid min-w-0 gap-1.5">
+                    <span className="text-xs font-medium">回调 URL</span>
+                    <textarea
+                      value={callback}
+                      onChange={(event) => setCallback(event.target.value)}
+                      placeholder="粘贴回调 URL（http://localhost:1455/auth/callback?code=…&state=…）或其中的 code"
+                      rows={2}
+                      className="border-border bg-background focus-visible:ring-ring w-full rounded-md border px-2.5 py-2 font-mono text-[11px] break-all outline-none focus-visible:ring-[3px]"
+                    />
+                  </div>
+                </>
+              )}
             </div>
-          ) : (
-            <Button type="button" disabled={busy} onClick={() => void begin()}>
-              <CalendarClock className="size-3.5" strokeWidth={1.75} />
-              {busy ? "发起中…" : "开始授权"}
-            </Button>
-          )}
+          ) : null}
+
+          {!pending && !session && error ? (
+            <div className="border-destructive/30 bg-destructive/5 text-destructive flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs">
+              <span className="min-w-0 break-all">{error}</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => void begin()}
+              >
+                <RefreshCw className="size-3.5" strokeWidth={1.75} /> 重试
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         <DialogFooter>
           <Button size="sm" type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            取消
+            关闭
           </Button>
-          <Button
-            size="sm"
-            type="button"
-            disabled={!session || !callback.trim() || busy}
-            onClick={() => void submit()}
-          >
-            {busy ? "提交中…" : "完成并添加"}
-          </Button>
+          {session && !session.listening ? (
+            <Button
+              size="sm"
+              type="button"
+              disabled={!callback.trim() || busy}
+              onClick={() => void submit()}
+            >
+              {busy ? "提交中…" : "完成并添加"}
+            </Button>
+          ) : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>

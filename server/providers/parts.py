@@ -62,7 +62,7 @@ def normalize_chat_message_parts(body: dict[str, Any], *, accepted_parts: frozen
         changed = True
         if dropped:
             logger.warning(
-                f"[附件] messages[{index}] 上游不接受的 part 已省略：{'、'.join(dropped)}"
+                f"[附件] messages[{index}] 已省略上游不接受的 part: {'、'.join(dropped)}"
             )
             rebuilt.append({"type": "text", "text": _omitted_note(dropped)})
         message["content"] = rebuilt

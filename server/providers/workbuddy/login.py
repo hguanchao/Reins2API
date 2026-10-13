@@ -154,7 +154,7 @@ class LoginManager:
             try:
                 self._on_account_added(uid)
             except Exception as exc:
-                logger.warning(f"[workbuddy] 新账号目录刷新失败（不影响登录）: {exc}")
+                logger.warning(f"[workbuddy] 新账号目录刷新失败(不影响登录): {exc}")
         return {
             "done": True,
             "uid": uid,

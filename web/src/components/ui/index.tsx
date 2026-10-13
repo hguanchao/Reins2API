@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
-import type { ComponentType, ReactNode } from "react";
+import type { ComponentType } from "react";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -188,7 +188,6 @@ function DialogContent({
              弹窗整体上移半个身位、高弹窗顶部直接出屏。
              超高内容靠 max-h + 内部滚动保持顶部可达 */
           "ap-dialog-content bg-card text-card-foreground fixed z-[70] grid h-fit max-h-[min(90vh,920px)] w-full max-w-[calc(100%-2rem)] gap-4 overflow-y-auto overscroll-contain rounded-lg border border-border p-5 shadow-none sm:max-w-lg",
-          "before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:rounded-t-lg before:bg-primary",
           className,
         )}
         {...props}
@@ -249,17 +248,17 @@ function DialogTitle({
 
 // ---------- Empty ----------
 
+/**
+ * 空状态:图标 + 一行文案。全站统一形态,默认文案「暂无数据」,
+ * 只有状态语义确实不同(如加载失败)时才通过 text 覆盖。
+ */
 function Empty({
   icon: Icon,
-  title,
-  description,
-  action,
+  text = "暂无数据",
   className,
 }: {
   icon?: ComponentType<{ className?: string; strokeWidth?: number }>;
-  title?: string;
-  description?: string;
-  action?: ReactNode;
+  text?: string;
   className?: string;
 }) {
   return (
@@ -275,13 +274,7 @@ function Empty({
           <Icon className="size-6 opacity-70" strokeWidth={1.5} />
         </div>
       ) : null}
-      {title ? <p className="text-sm font-medium text-foreground">{title}</p> : null}
-      {description ? (
-        <p className="text-muted-foreground max-w-sm text-xs leading-relaxed">
-          {description}
-        </p>
-      ) : null}
-      {action ? <div className="mt-2">{action}</div> : null}
+      <p className="text-muted-foreground text-sm">{text}</p>
     </div>
   );
 }

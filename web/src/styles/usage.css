@@ -84,11 +84,11 @@
 
 /* Token 对：入/出 双行（上输入 下输出）。旧版只并排两个数字、靠颜色区分，
    哪条是入哪条是出得先记住配色；标签落到脸上才不用记。
-   两行同号——字号不一致时右对齐的两行左边缘会参差不齐。 */
+   两行统一靠左，与相邻列的文字左边线对齐。 */
 .usage-token-pair {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 1px;
   font-family: var(--font-mono);
   font-size: 11px;

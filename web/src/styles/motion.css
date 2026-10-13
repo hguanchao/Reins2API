@@ -15,7 +15,7 @@
 
 /* 路由切换(进场淡入) */.route-enter {
   display: flex;
-  /* 1 0 auto：撑满、不被压缩（同 .app-frame 的文档滚动模型） */
+  /* 1 0 auto:撑满 .main 的剩余高度、不被压缩(同 .main 的模型) */
   flex: 1 0 auto;
   flex-direction: column;
   min-width: 0;
@@ -54,31 +54,22 @@
   z-index: 80 !important;
 }
 
-/* Dialog / AlertDialog 居中 + 轻量淡入淡出 */.ap-dialog-overlay[data-state="open"] {
+/* Dialog / AlertDialog 居中 + 轻量淡入。
+   **关闭刻意不做动画**：Radix Presence 靠 animationend 才卸载节点，退出动画一旦被
+   浏览器冻结/节流（后台标签、切窗口、截图工具抢焦点、合成器卡顿），弹窗就会永久停在
+   中途的半透明状态——标题/按钮还在、正文透出背后的表格。关闭即时卸载，杜绝这一类残留；
+   进场淡入保留（进场动画即使卡住，最坏也只是停在半透明，不会留下无法关闭的壳）。 */
+.ap-dialog-overlay[data-state="open"] {
   animation: ap-fade-in 120ms ease-out both;
-}.ap-dialog-overlay[data-state="closed"] {
-  animation: ap-fade-out 100ms ease-in both;
-}.ap-dialog-content {
-  /* 水平 + 垂直居中（top 50% + translateY -50%）：超高内容靠 max-h + 内部滚动保持可达；
-     顺带用 transform 压掉缩放动画。
-     居中只由这里负责——组件里不要再加 -translate-y-1/2：Tailwind v4 的 translate-y 走
-     translate 属性，与下面的 transform 会叠加成 -100%，弹窗整体上移半个身位 */
-  top: 50% !important;
-  right: 0 !important;
-  bottom: auto !important;
-  left: 0 !important;
-  margin-inline: auto !important;
-  margin-block: 0 !important;
-  transform: translateY(-50%) !important;
-  /* 合成层：减少背后大表重绘牵连 */
-  will-change: opacity;
-}.ap-dialog-content[data-state="open"] {
-  animation: ap-dialog-in 140ms ease-out both;
-}.ap-dialog-content[data-state="closed"] {
-  animation: ap-dialog-out 100ms ease-in both;
 }
-/* 关闭后卸 will-change */.ap-dialog-content:not([data-state="open"]):not([data-state="closed"]) {
-  will-change: auto;
+.ap-dialog-content {
+  /* 水平 + 垂直居中：inset 归零 + margin:auto（不给元素留 transform——transform 与
+     合成层的组合在部分浏览器上会卡层）；超高内容靠 max-h + 内部滚动保持可达 */
+  inset: 0 !important;
+  margin: auto !important;
+}
+.ap-dialog-content[data-state="open"] {
+  animation: ap-dialog-in 140ms ease-out both;
 }
 
 /* Badge 轻微 */[data-slot="badge"] {
@@ -125,7 +116,8 @@
 
 /* ══════════════════════════════════════════════
    Keyframes — 上述动画引用的帧定义
-   缺失会导致 Radix Presence 等待 animationend 永不触发，弹窗关闭后无法卸载
+   只保留进场帧：弹窗的退出动画已去掉（Radix Presence 等 animationend 才卸载，
+   退出动画被冻结就会留下关不掉的壳，见上方 Dialog 段注释）。
    ══════════════════════════════════════════════ */
 /* 仅 opacity：结束后不留 transform，避免困住子树里的 position:fixed */
 @keyframes ap-route-enter {
@@ -164,29 +156,11 @@
   }
 }
 
-@keyframes ap-fade-out {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-  }
-}
-
 @keyframes ap-dialog-in {
   from {
     opacity: 0;
   }
   to {
     opacity: 1;
-  }
-}
-
-@keyframes ap-dialog-out {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
   }
 }

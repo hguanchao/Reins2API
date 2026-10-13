@@ -18,6 +18,8 @@ from curl_cffi import requests as crequests
 from core.logger import logger
 from gateway.jsonutil import is_object
 from net.proxy import proxies_for
+from providers import models_snapshot
+from providers.capabilities import as_flag
 from providers.opencode.routing import (
     CAPABILITIES_URL,
     ModelRecord,
@@ -33,23 +35,23 @@ def discover(
     upstream: str,
     credential: str | None,
 ) -> tuple[dict[str, ModelRecord], list[str] | None, list[str], list[dict[str, Any]]]:
-    """返回 (records, available, errors, raw_models)。available 为 None 表示清单从未拉到
-    （无凭证或请求失败），调用方视作"可用性未知"。
+    """返回 (records, available, errors, snapshot_models)。available 为 None 表示清单
+    从未拉到（无凭证或请求失败），调用方视作"可用性未知"。
 
-    raw_models 是能力目录里本网关服务的那部分模型的**原样条目**，供
-    data/models.json 快照使用（归一化后的记录丢了上游字段名，快照要的是原文）。
+    snapshot_models 是能力目录里本网关服务的那部分模型投影成的**统一核心字段条目**
+    （见 models_snapshot.core_entry），供 data/models.json 快照使用。
     """
     errors: list[str] = []
 
     records: dict[str, ModelRecord] = {}
-    raw_models: list[dict[str, Any]] = []
+    snapshot_models: list[dict[str, Any]] = []
     try:
         providers = _fetch_capabilities()
-        records, raw_models = _parse_capabilities(providers)
+        records, snapshot_models = _parse_capabilities(providers)
     except Exception as exc:
         message = f"capability catalog: {exc}"
         errors.append(message)
-        logger.warning(f"[目录] 能力目录拉取失败: {message}")
+        logger.warning(f"[opencode] 能力目录拉取失败: {type(exc).__name__}: {exc}")
 
     available: list[str] | None = None
     if credential is not None:
@@ -58,9 +60,9 @@ def discover(
         except Exception as exc:
             message = f"model list: {exc}"
             errors.append(message)
-            logger.warning(f"[目录] 上游模型清单拉取失败: {message}")
+            logger.warning(f"[opencode] 上游模型清单拉取失败: {type(exc).__name__}: {exc}")
 
-    return records, available, errors, raw_models
+    return records, available, errors, snapshot_models
 
 
 def _fetch_capabilities() -> dict[str, Any]:
@@ -106,9 +108,9 @@ def _fetch_model_list(upstream: str, credential: str) -> list[str]:
 def _parse_capabilities(
     providers: dict[str, Any],
 ) -> tuple[dict[str, ModelRecord], list[dict[str, Any]]]:
-    """返回 (归一化记录, 原样条目列表)。原样条目按 model_id 去重后保序。"""
+    """返回 (归一化记录, 统一核心字段条目列表)。条目按 model_id 去重后保序。"""
     records: dict[str, ModelRecord] = {}
-    raw_by_id: dict[str, dict[str, Any]] = {}
+    snapshot_by_id: dict[str, dict[str, Any]] = {}
     for provider_id, provider in providers.items():
         if not is_object(provider):
             continue
@@ -130,8 +132,39 @@ def _parse_capabilities(
                 metadata=_metadata_for(model),
                 free=_is_free(model, model_id),
             )
-            raw_by_id[model_id] = model
-    return records, list(raw_by_id.values())
+            snapshot_by_id[model_id] = _snapshot_entry(model_id, model)
+    return records, list(snapshot_by_id.values())
+
+
+def _snapshot_entry(model_id: str, model: dict[str, Any]) -> dict[str, Any]:
+    """models.dev 条目 → models.json 统一核心字段（见 models_snapshot.core_entry）。"""
+    limit = model.get("limit") if is_object(model.get("limit")) else {}
+    modalities = model.get("modalities") if is_object(model.get("modalities")) else {}
+    inputs = modalities.get("input") if isinstance(modalities.get("input"), list) else None
+    outputs = modalities.get("output") if isinstance(modalities.get("output"), list) else None
+    name = model.get("name")
+    description = model.get("description")
+    efforts: list[str] = []
+    options = model.get("reasoning_options")
+    if isinstance(options, list):
+        for option in options:
+            if is_object(option) and option.get("type") == "effort":
+                values = option.get("values")
+                if isinstance(values, list):
+                    efforts.extend(str(v) for v in values)
+    return models_snapshot.core_entry(
+        id=model_id,
+        name=name if isinstance(name, str) and name else model_id,
+        description=description if isinstance(description, str) else None,
+        context_window=limit.get("context"),
+        max_output_tokens=limit.get("output"),
+        input_modalities=[str(t) for t in inputs] if inputs is not None else None,
+        output_modalities=[str(t) for t in outputs] if outputs is not None else None,
+        supports_images=("image" in inputs) if inputs is not None else None,
+        supports_reasoning=as_flag(model.get("reasoning")),
+        supports_tool_call=as_flag(model.get("tool_call")),
+        reasoning_efforts=efforts or None,
+    )
 
 
 def _metadata_for(model: dict[str, Any]) -> dict[str, Any]:

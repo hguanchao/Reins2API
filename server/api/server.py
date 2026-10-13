@@ -155,7 +155,7 @@ def _handle_config_api(
         app_config.update({"proxy": {"mode": mode, "url": url}})
         outbound_proxy.invalidate()
         egress.invalidate()
-        logger.info(f"[配置] 出站代理已更新: {mode}" + (f" · {url}" if url else ""))
+        logger.info(f"[配置] 出站代理已更新 mode={mode}" + (f" url={url}" if url else ""))
         send_json(handler, 200, {"ok": True, "data": _config_payload()})
         return True
     return False
@@ -191,7 +191,7 @@ def _handle_provider_api(
         try:
             provider.refresh()
         except Exception as exc:
-            logger.exception("[目录] 手动刷新失败")
+            logger.exception("[目录] 手动刷新失败 provider=" + name)
             send_json(handler, 500, {"ok": False, "error": f"刷新失败: {type(exc).__name__}: {exc}"})
             return True
         send_json(
@@ -542,13 +542,29 @@ def _handle_codex_api(
         return True
 
     if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "start":
-        # 发起 PKCE 授权：返回授权 URL 与 session_id（用户在浏览器打开并登录）
+        # 发起 PKCE 授权：返回授权 URL 与 session_id（用户在浏览器打开并登录）；
+        # listening=true 表示本机 1455 回调监听已起，登录完成会自动入池
         try:
             data = provider.login_start()
         except Exception as exc:
             send_json(handler, 502, {"ok": False, "error": f"发起授权失败: {exc}"})
             return True
         send_json(handler, 200, {"ok": True, "data": data})
+        return True
+
+    if method == "GET" and action == "login" and len(parts) == 5 and parts[4] == "poll":
+        # 轮询登录进度（本机回调监听兑换完成后转 done）；自动入池不可用时前端不轮询
+        state = (query.get("state") or [""])[0].strip()
+        send_json(handler, 200, {"ok": True, "data": provider.login_poll(state)})
+        return True
+
+    if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "cancel":
+        # 关弹窗时取消未完成会话（让 1455 监听尽快释放）
+        body = _json_body(handler)
+        payload = body if isinstance(body, dict) else {}
+        session_id = str(payload.get("session_id") or "")
+        cancelled = provider.login_cancel(session_id) if session_id else False
+        send_json(handler, 200, {"ok": True, "data": {"cancelled": cancelled}})
         return True
 
     if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "exchange":
@@ -721,14 +737,14 @@ def serve(host: str | None = None, port: int | None = None) -> None:
             pass
     server = _BoundedThreadingHTTPServer((bind_host, bind_port), _ApiHandler)
     server.daemon_threads = True
-    logger.success(f"[API] 服务启动: http://{bind_host}:{bind_port}")
-    routes = "/v1/* （推理）  /api/* （管理）"
+    logger.success(f"[API] 服务已启动 addr={bind_host}:{bind_port}")
+    routes = "/v1/* (推理)  /api/* (管理)"
     if _web_root():
-        routes += "  /* （Web UI）"
+        routes += "  /* (Web UI)"
     logger.info(f"[API] 路由: {routes}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        logger.info("[API] 收到中断信号，停止服务")
+        logger.info("[API] 收到中断信号, 停止服务")
     finally:
         server.server_close()
