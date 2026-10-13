@@ -41,6 +41,32 @@ function downloadJson(data: unknown, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+/** 账号数组的封装键（与后端 transfer.parse_entries 同源）：多选文件合并时用它摊平内层。 */
+const WRAPPER_KEYS = ["accounts", "tokens", "data", "auths", "items"];
+
+/** 解析出的 JSON → 账号条目列表：数组原样、封装取内层、其余当单条（形状规则同后端）。 */
+function collectEntries(parsed: unknown): unknown[] {
+  // 少数导出会把 JSON 当字符串塞在文件里——再解一层
+  if (typeof parsed === "string") {
+    try {
+      return collectEntries(JSON.parse(parsed));
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === "object") {
+    const record = parsed as Record<string, unknown>;
+    for (const key of WRAPPER_KEYS) {
+      const inner = record[key];
+      if (Array.isArray(inner)) return inner;
+      if (inner && typeof inner === "object") return [inner];
+    }
+    return [parsed];
+  }
+  return [];
+}
+
 export function CodexImportDialog({
   open,
   onOpenChange,
@@ -72,8 +98,16 @@ export function CodexImportDialog({
           `导入完成：新增 ${summary.imported}、更新 ${summary.updated}` +
             (summary.skipped ? `、跳过 ${summary.skipped}` : ""),
         );
+        // 跳过的详情跟 toast 走：弹窗随即关闭，结果面板留不住这些信息
+        if (summary.errors.length) {
+          toast.warning(summary.errors.slice(0, 3).join("；"), { duration: 8000 });
+        }
+        // 先关窗再刷新：目录补刷在服务端后台线程里跑，onImported 要等它一拍
+        reset();
+        onOpenChange(false);
         await onImported();
       } else {
+        // 一条都没进来：留在弹窗里让用户看清原因
         toast.error(`没有可导入的账号（跳过 ${summary.skipped}）`);
       }
     } catch (error) {
@@ -108,13 +142,27 @@ export function CodexImportDialog({
               ref={fileRef}
               type="file"
               accept=".json,application/json"
+              multiple
               className="hidden"
               onChange={async (event) => {
-                const file = event.target.files?.[0];
-                if (!file) return;
-                setText(await file.text());
-                setResult(null);
+                const files = Array.from(event.target.files ?? []);
                 event.target.value = "";
+                if (!files.length) return;
+                // 多选合并：CPA 是「一账号一文件」，选一批就摊平成一条账号数组再交给
+                // 后端（它本就吃数组）；单个文件（数组/封装/单条）也走同一条路径。
+                const entries: unknown[] = [];
+                const bad: string[] = [];
+                for (const file of files) {
+                  try {
+                    entries.push(...collectEntries(JSON.parse(await file.text())));
+                  } catch {
+                    bad.push(file.name);
+                  }
+                }
+                if (bad.length) toast.error(`跳过无法解析的文件：${bad.join("、")}`);
+                if (!entries.length) return;
+                setText(JSON.stringify(entries, null, 2));
+                setResult(null);
               }}
             />
             <Button
@@ -126,7 +174,7 @@ export function CodexImportDialog({
               <Upload className="size-3.5" strokeWidth={1.75} />
               选择 .json 文件
             </Button>
-            <span className="text-fg-subtle text-[11px]">或直接粘贴到下面</span>
+            <span className="text-fg-subtle text-[11px]">可多选，或直接粘贴到下面</span>
           </div>
 
           <textarea

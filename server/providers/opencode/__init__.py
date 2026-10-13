@@ -12,7 +12,7 @@ from typing import Any
 
 from core.logger import logger
 from gateway.base import ModelInfo, RequestIDs, Route, UpstreamResponse
-from providers import profiles
+from providers import models_dev, profiles
 from providers.capabilities import as_flag, capability_block
 from providers.identity import derive_request_ids
 from providers.opencode.discovery import discover
@@ -65,9 +65,18 @@ class OpenCodeProvider:
     def list_models(self) -> list[ModelInfo]:
         out: list[ModelInfo] = []
         for entry in self._router.list():
-            metadata = entry["metadata"]
             # 目录是 models.dev 的字段名（inputModalities / structuredOutput / …），
-            # 只在这一层翻译成标准化能力名；缺省的字段交给上游档案，档案也没有就不输出
+            # 只在这一层翻译成标准化能力名；缺省的字段交给上游档案，档案也没有就不输出。
+            # metadata 是索引记录的副本（routing.list 拷过），就地补兜底值安全。
+            metadata = entry["metadata"]
+            filled = models_dev.fill_limits(
+                entry["upstream_model"],
+                metadata,
+                context_key="contextWindow",
+                output_key="maxOutput",
+            )
+            if filled:
+                metadata["limits_source"] = {key: "models.dev" for key in filled}
             out.append(
                 ModelInfo(
                     id=entry["id"],

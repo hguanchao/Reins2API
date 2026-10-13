@@ -429,6 +429,22 @@ def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
     return entries
 
 
+def _refresh_catalog_after_import(provider: Any) -> None:
+    """导入账号后的目录补刷（后台线程）：先补快过期的凭证，再拉目录。
+
+    导入的号 AT 常是旧的（CPA 导出里 expired 早就过了），凭证不先补，目录拉不动；
+    两步都只告警不抛出——真失败了留给周期刷新兜底，不能反过来影响导入结果。
+    """
+    try:
+        provider.refresh_expiring()
+    except Exception as exc:
+        logger.warning(f"[目录] provider={provider.name} 导入后凭证补刷失败: {type(exc).__name__}: {exc}")
+    try:
+        provider.refresh()
+    except Exception as exc:
+        logger.warning(f"[目录] provider={provider.name} 导入后目录刷新失败: {type(exc).__name__}: {exc}")
+
+
 def _handle_codex_api(
     method: str, path: str, query: dict[str, list[str]], handler: BaseHTTPRequestHandler
 ) -> bool:
@@ -503,6 +519,12 @@ def _handle_codex_api(
         except Exception as exc:
             send_json(handler, 502, {"ok": False, "error": f"导入失败: {type(exc).__name__}: {exc}"})
             return True
+        if summary["imported"] + summary["updated"] > 0:
+            # 新号入库立刻补一次目录：否则模型列表要等下一次周期刷新（最长 5 分钟）
+            # 才有数据。刷新逐号打上游、N 个号 N 次请求，挂后台线程，不占导入响应。
+            threading.Thread(
+                target=_refresh_catalog_after_import, args=(provider,), daemon=True
+            ).start()
         send_json(handler, 200, {"ok": True, "data": summary})
         return True
 

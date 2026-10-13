@@ -39,6 +39,9 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
 } from "@/components/ui";
 import {
   ApiError,
@@ -64,7 +67,7 @@ import {
   CodexExportDialog,
   CodexImportDialog,
 } from "@/components/accounts/CodexTransferDialogs";
-import { fmtTokens } from "@/lib/format";
+import { fmtLimit, fmtTokens } from "@/lib/format";
 import { useSessionCountdown } from "@/lib/countdown";
 import { cn, fmtCompact, fmtInt } from "@/lib/utils";
 
@@ -72,6 +75,43 @@ const AUTO_REFRESH_MS = 10_000;
 
 /** 最近请求默认每页条数 */
 const DEFAULT_PAGE_SIZE = 20;
+
+/** 模态词 → 中文：上游发的是 `text`/`image` 这类小写标识，展示层翻译；词表外的原样显示。 */
+const MODALITY_NAMES: Record<string, string> = {
+  text: "文本",
+  image: "图像",
+  audio: "音频",
+  video: "视频",
+  pdf: "PDF",
+  file: "文件",
+};
+
+/** 输入模态：逐项中文化后斜杠拼接（上游未声明时为「—」）。 */
+function fmtModalities(v: unknown): string {
+  if (!Array.isArray(v) || v.length === 0) return "—";
+  return v.map((item) => MODALITY_NAMES[String(item)] ?? String(item)).join(" / ");
+}
+
+/**
+ * 数值单元格：值来自 models.dev 第三方兜底目录时用虚线下划线标出，悬停说明来源。
+ * 厂商 manifest 给了值的走纯文本——不能让第三方数字看起来像厂商声明。
+ */
+function LimitCell({ value, thirdParty }: { value: unknown; thirdParty?: boolean }) {
+  const text = fmtLimit(value);
+  if (!thirdParty) return <>{text}</>;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="decoration-muted-foreground/60 cursor-help underline decoration-dotted underline-offset-2">
+          {text}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-xs">
+        Codex manifest 未声明该字段，数值取自 models.dev 第三方目录
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 export function CodexPage() {
   const [ops, setOps] = useState<CodexOps | null>(null);
@@ -309,31 +349,50 @@ export function CodexPage() {
                       <TableRow>
                         <TableHead>模型</TableHead>
                         <TableHead>协议</TableHead>
-                        <TableHead>显示名</TableHead>
+                        <TableHead>上下文</TableHead>
+                        <TableHead>最大输出</TableHead>
+                        <TableHead>输入模态</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {ops?.models.length ? (
-                        ops.models.map((model) => (
-                          <TableRow key={model.id}>
-                            <TableCell>
-                              <div className="cell-2">
-                                <span className="mono text-xs">{model.id}</span>
-                                <small className="mono">{model.upstream_model}</small>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant="warning">{model.protocol}</Badge>
-                            </TableCell>
-                            <TableCell className="text-xs">
-                              {typeof model.metadata.name === "string" && model.metadata.name
-                                ? model.metadata.name
-                                : "—"}
-                            </TableCell>
-                          </TableRow>
-                        ))
+                        ops.models.map((model) => {
+                          // 数值字段的来源标注（键 = 被兜底补上的字段名）
+                          const source = (model.metadata.limits_source ?? {}) as Record<
+                            string,
+                            string
+                          >;
+                          return (
+                            <TableRow key={model.id}>
+                              <TableCell>
+                                <div className="cell-2">
+                                  <span className="mono text-xs">{model.id}</span>
+                                  <small className="mono">{model.upstream_model}</small>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="warning">{model.protocol}</Badge>
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                <LimitCell
+                                  value={model.metadata.context_window}
+                                  thirdParty={Boolean(source.context_window)}
+                                />
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                <LimitCell
+                                  value={model.metadata.max_output_tokens}
+                                  thirdParty={Boolean(source.max_output_tokens)}
+                                />
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                {fmtModalities(model.metadata.input_modalities)}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })
                       ) : (
-                        <TableEmptyRow colSpan={3}>
+                        <TableEmptyRow colSpan={5}>
                           <Empty icon={Boxes} />
                         </TableEmptyRow>
                       )}
@@ -384,6 +443,10 @@ export function CodexPage() {
             open={transfer === "import"}
             onOpenChange={(next) => setTransfer(next ? "import" : null)}
             onImported={async () => {
+              await load(true);
+              // 模型目录由服务端在导入后异步补刷（要逐号打上游），立刻取拿到的还是
+              // 旧目录；隔一拍再取一次，模型列表不用干等下一个 10s 轮询周期。
+              await new Promise((resolve) => setTimeout(resolve, 2500));
               await load(true);
             }}
           />

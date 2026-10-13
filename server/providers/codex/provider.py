@@ -44,7 +44,7 @@ from gateway.base import (
     UpstreamResponse,
     UpstreamUnavailable,
 )
-from providers import models_snapshot, profiles
+from providers import models_dev, models_snapshot, profiles
 from providers.capabilities import capability_block
 from providers.codex import classify, oauth, shape
 from providers.codex import upstream as cx_upstream
@@ -221,10 +221,32 @@ class CodexProvider:
 
     def _model_info(self, bare: str, entry: dict[str, Any]) -> ModelInfo:
         name = str(entry.get("name") or bare)
+        # 数值字段（上下文 / 最大输出）先落一份，再让 models.dev 补 manifest 没声明的
+        # ——Codex manifest 整个 schema 就没有输出上限字段。厂商给了值就不动，
+        # 补来的值在 metadata 里标注来源，展示层据此提示「第三方」。
+        metadata: dict[str, Any] = {
+            "name": name,
+            "context_window": entry.get("context_window"),
+            "max_output_tokens": entry.get("max_output_tokens"),
+            "input_modalities": entry.get("input_modalities"),
+        }
+        filled = models_dev.fill_limits(bare, metadata)
+        if filled:
+            metadata["limits_source"] = {key: "models.dev" for key in filled}
+        # 能力块按目录逐条声明，不写死：manifest 里 input_modalities /
+        # supported_reasoning_levels / tool_mode 都是逐模型的，写死会让 /v1/models
+        # 对每个模型报同一套能力。没声明的键省略，落回档案默认。
         capabilities = capability_block(
             profiles.CODEX,
             "responses",
-            {"input_modalities": ["text", "image"]},
+            {
+                "input_modalities": entry.get("input_modalities"),
+                "output_modalities": entry.get("output_modalities"),
+                "supports_reasoning": entry.get("supports_reasoning"),
+                "supports_function_calling": entry.get("supports_tool_call"),
+                "context_window": metadata["context_window"],
+                "max_output_tokens": metadata["max_output_tokens"],
+            },
         )
         return ModelInfo(
             id=f"cx:{bare}",
@@ -233,7 +255,7 @@ class CodexProvider:
             free=False,
             display_name=name,
             capabilities=capabilities,
-            metadata={"name": name, "raw": entry},
+            metadata=metadata,
         )
 
     # ── 路由 ──

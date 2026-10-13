@@ -45,7 +45,7 @@ from gateway.base import (
     UpstreamResponse,
     UpstreamUnavailable,
 )
-from providers import models_snapshot, profiles
+from providers import models_dev, models_snapshot, profiles
 from providers.capabilities import as_flag, capability_block
 from providers.identity import derive_request_ids  # 通用会话派生（provider 共享层）
 from providers.workbuddy import checkin, classify, dsml, sanitize, shape
@@ -263,6 +263,30 @@ class WorkBuddyProvider:
     def _model_info(self, bare: str, entry: dict[str, Any], realm_alias: str) -> ModelInfo:
         reasoning = entry.get("reasoning") if isinstance(entry.get("reasoning"), dict) else {}
         name = str(entry.get("name") or bare)
+        metadata: dict[str, Any] = {
+            "name": name,
+            "description": entry.get("descriptionZh") or entry.get("descriptionEn") or "",
+            "realm": "global" if realm_alias == "glb" else "cn",
+            "aliases": self._realm_aliases(bare),
+            # 0 = 上游没给（未知）；随后交给 models.dev 兜底补，厂商给了值就不动
+            "context_window": entry.get("maxInputTokens") or 0,
+            "max_output_tokens": entry.get("maxOutputTokens") or 0,
+            "credits": entry.get("credits") or "",
+            "tags": entry.get("tags") or [],
+            "vendor": entry.get("vendor") or "",
+            "supports_images": bool(entry.get("supportsImages")),
+            "supports_reasoning": bool(entry.get("supportsReasoning")),
+            "supports_tool_call": bool(entry.get("supportsToolCall")),
+            "efforts": reasoning.get("supportedEfforts") or [],
+            "default_effort": reasoning.get("defaultEffort") or reasoning.get("effort") or "",
+            "promo_label": entry.get("promo_label") or "",
+            "promo_credits": entry.get("promo_credits") or "",
+            "promo_factor": entry.get("promo_factor"),
+            "promo_note": entry.get("promo_note") or "",
+        }
+        filled = models_dev.fill_limits(bare, metadata)
+        if filled:
+            metadata["limits_source"] = {key: "models.dev" for key in filled}
         # 厂商字段名 → 标准化能力名，只在这一层翻译一次；缺省/None 的字段不输出
         capabilities = capability_block(
             profiles.WORKBUDDY,
@@ -272,8 +296,8 @@ class WorkBuddyProvider:
                 "output_modalities": ["text"],
                 "supports_reasoning": as_flag(entry.get("supportsReasoning")),
                 "supports_function_calling": as_flag(entry.get("supportsToolCall")),
-                "context_window": entry.get("maxInputTokens") or None,
-                "max_output_tokens": entry.get("maxOutputTokens") or None,
+                "context_window": metadata["context_window"] or None,
+                "max_output_tokens": metadata["max_output_tokens"] or None,
             },
         )
         return ModelInfo(
@@ -283,26 +307,7 @@ class WorkBuddyProvider:
             free=False,
             display_name=name,
             capabilities=capabilities,
-            metadata={
-                "name": name,
-                "description": entry.get("descriptionZh") or entry.get("descriptionEn") or "",
-                "realm": "global" if realm_alias == "glb" else "cn",
-                "aliases": self._realm_aliases(bare),
-                "context_window": entry.get("maxInputTokens") or 0,
-                "max_output_tokens": entry.get("maxOutputTokens") or 0,
-                "credits": entry.get("credits") or "",
-                "tags": entry.get("tags") or [],
-                "vendor": entry.get("vendor") or "",
-                "supports_images": bool(entry.get("supportsImages")),
-                "supports_reasoning": bool(entry.get("supportsReasoning")),
-                "supports_tool_call": bool(entry.get("supportsToolCall")),
-                "efforts": reasoning.get("supportedEfforts") or [],
-                "default_effort": reasoning.get("defaultEffort") or reasoning.get("effort") or "",
-                "promo_label": entry.get("promo_label") or "",
-                "promo_credits": entry.get("promo_credits") or "",
-                "promo_factor": entry.get("promo_factor"),
-                "promo_note": entry.get("promo_note") or "",
-            },
+            metadata=metadata,
         )
 
     # ── 路由 ──
