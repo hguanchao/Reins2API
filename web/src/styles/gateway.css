@@ -21,7 +21,7 @@
 }
 .gw-page-sub {
   margin: 4px 0 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--muted-foreground);
 }
 /* 页头或面板头右侧的动作区：自动推到最右（页头、面板头都用同一个类，
@@ -31,6 +31,48 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* ── 页面级提示条（加载失败等）─────────────────────────────────────
+   此前 `.banner` / `.is-danger` 只在 TSX 里出现、全项目没有任何样式定义，
+   于是页面唯一的错误状态渲染成一段裸文字，和正文完全分不出来。
+   这里按 toast 的语义色补上「底 + 边 + 文」三件套（tokens.css 里现成的
+   --error-* / --warning-* / --success-* 那一组），左侧一道 3px 竖条做强调。 */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  flex-shrink: 0;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--info-border);
+  border-left-width: 3px;
+  border-radius: var(--radius-lg);
+  background: var(--info-bg);
+  color: var(--info-text);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.banner-ico {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+}
+.banner.is-danger {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+.banner.is-warn {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+.banner.is-ok {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success-text);
 }
 
 /* 状态徽章内的圆点：有圆点的是「状态」（可用/暂停/禁用），
@@ -52,14 +94,14 @@
   line-height: 1.35;
 }
 .cell-2 > small {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-subtle);
 }
 
 /* 紧凑双行：耗时、Token 这类纯数据格。两行同号 11px（比表格正文 12px 小一档）；
    字号不一致时两行左边缘会对不齐——主次只靠颜色区分。 */
 .cell-2.is-compact {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 .cell-2.is-compact > small {
@@ -74,7 +116,7 @@
   padding: 0;
   text-align: left;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--primary);
   cursor: pointer;
 }
@@ -94,7 +136,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-subtle);
 }
 .mark i {
@@ -169,9 +211,11 @@
       与表体的分界；左右与下方各 8px，让卡片和面板边缘、页脚分开。
    ④ 卡片自己不滚，滚动交给内层的 .gw-table-scroll，且**不画滚动条**（见下）。 */
 .gw-table-card {
-  /* 左右各 8px。宽度不能写 width: 100%——那等于面板全宽，再加上左右外边距会顶出
-     16px，面板的裁剪会把右边框和圆角切掉；按「100% - 左右外边距」算才严丝合缝 */
-  --gw-table-inset: 8px;
+  /* 左右内缩取面板头的水平内边距（.gw-panel-head 是 18px），表格左边缘才和面板
+     标题、图标落在同一条竖线上；取 8px 时卡片边框比标题多缩 10px，看着就是没对齐。
+     宽度不能写 width: 100%——那等于面板全宽，再加上左右外边距会顶出 36px，
+     面板的裁剪会把右边框和圆角切掉；按「100% - 左右外边距」算才严丝合缝 */
+  --gw-table-inset: 18px;
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -197,6 +241,21 @@
   min-height: 0;
   overflow: auto;
   scrollbar-width: none;
+  /* 横向"还能滚"的常驻提示：左右各一道渐隐阴影。
+     滚动条被藏了（见上），而列头那条投影只在支持 animation-timeline 的浏览器里
+     出现——Firefox / Safari 此前没有任何线索，13 列的请求表在窄屏上无从察觉。
+     用 background-attachment 的 local / scroll 组合做到"滚到头就消失"：
+     scroll 层是钉在边缘的阴影，local 层是同色的"盖子"、随内容滚动；滚到末端时
+     盖子移进视野把阴影盖住，所以表格不溢出时不会显示假提示。 */
+  background-image:
+    linear-gradient(to right, var(--card) 40%, transparent),
+    linear-gradient(to left, var(--card) 40%, transparent),
+    linear-gradient(to right, var(--table-sticky-shadow), transparent 70%),
+    linear-gradient(to left, var(--table-sticky-shadow), transparent 70%);
+  background-position: left center, right center, left center, right center;
+  background-size: 36px 100%, 36px 100%, 16px 100%, 16px 100%;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
 }
 .gw-table-scroll::-webkit-scrollbar {
   display: none;
@@ -293,6 +352,18 @@
   flex: 1 1 auto;
   min-height: 0;
   padding: 26px 22px 18px;
+  /* 切换时间范围时图表直接换一批数、没有任何过渡。组件按 range 作 key 重挂，
+     于是这里的一次淡入就等于"数据集换了"的过渡（首屏挂载时同样受益）。
+     只做 opacity：图里全是绝对定位的 SVG，transform 会牵动坐标换算。 */
+  animation: gw-chart-in var(--ap-dur) var(--ap-ease-out) both;
+}
+@keyframes gw-chart-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 /* 绘图区吃掉图例以外的全部高度：组件的 ResizeObserver 会把 viewBox 设为容器真实像素，
    面板越高图表越大，不留 letterbox 死区（悬停坐标换算零缩放误差）。
@@ -324,7 +395,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }
 /* 色块用原色：面积已经压到 0.14 的不透明度，图例再跟着淡就看不出是什么色了 */
@@ -340,7 +411,7 @@
 }
 .gw-legend-hint {
   margin-left: auto;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-subtle);
 }
 
@@ -358,14 +429,14 @@
 }
 .gw-chart-tip-date {
   margin-bottom: 7px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-subtle);
 }
 .gw-chart-tip-grid {
   display: grid;
   grid-template-columns: auto auto;
   gap: 3px 14px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .gw-chart-tip-grid > .k {
   color: var(--muted-foreground);
@@ -384,7 +455,7 @@
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 .gw-chart-tip-row + .gw-chart-tip-row {
   margin-top: 3px;
@@ -442,7 +513,7 @@
 }
 .gw-panel-meta {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-subtle);
 }
 /* 面板底部固定条（分页等）：不参与滚动区高度分配 */
@@ -468,7 +539,7 @@
   padding-block: 0;
   border-radius: 6px;
   background: var(--surface);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 .gw-settings-input::placeholder {
   color: var(--fg-subtle);
@@ -495,14 +566,15 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background: var(--card);
-  box-shadow: var(--shadow-panel);
+  /* 比主面板轻一档：KPI 是摘要，主面板才是内容，同高会没层级 */
+  box-shadow: var(--shadow-card);
   transition: border-color 0.18s ease;
 }
 .mission-strip .metric:hover {
   border-color: var(--border-strong);
 }
 .mission-strip .metric-k {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   letter-spacing: 0;
   color: var(--muted-foreground);
@@ -529,7 +601,7 @@
 }
 .mission-strip .metric-sub {
   margin-top: 3px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-subtle);
 }
 

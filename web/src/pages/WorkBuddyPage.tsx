@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
+  AlertTriangle,
   Boxes,
   CalendarCheck,
   Check,
@@ -20,6 +21,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Send,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -66,6 +68,7 @@ import {
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
 import { ActivityCell } from "@/components/accounts/ActivityCell";
+import { UsageStatsCell } from "@/components/accounts/UsageStatsCell";
 import { catalogTimeLabel, fmtLimit, modelRefreshOutcome } from "@/lib/format";
 import { useSessionCountdown } from "@/lib/countdown";
 import { cn, fmtCompact, fmtInt, parseCreditFactor } from "@/lib/utils";
@@ -432,10 +435,7 @@ export function WorkBuddyPage() {
 
   return (
     <section className="gw-workspace" aria-label="WorkBuddy 控制台">
-      {!ops && !loadError ? (
-        <div className="gw-skeleton" aria-hidden />
-      ) : (
-        <>
+      {/* 页头放在加载分支之外：首屏骨架不该把标题也一起吃掉 */}
       <div className="gw-page-head">
         <div>
           <h1 className="gw-page-title">WorkBuddy 号池</h1>
@@ -443,9 +443,15 @@ export function WorkBuddyPage() {
         </div>
       </div>
 
+      {!ops && !loadError ? (
+        <div className="gw-skeleton" aria-hidden />
+      ) : (
+        <>
+
       {loadError ? (
         <div className="banner is-danger" role="alert">
-          {loadError}
+          <AlertTriangle className="banner-ico" strokeWidth={1.9} aria-hidden />
+          <span>{loadError}</span>
         </div>
       ) : null}
 
@@ -495,14 +501,20 @@ export function WorkBuddyPage() {
           </div>
         </div>
         <div className="metric">
-          <div className="metric-k">24h 请求</div>
+          <div className="metric-k">
+            <Send className="metric-ico" strokeWidth={1.6} />
+            24h 请求
+          </div>
           <div className="metric-v">{fmtInt(totals?.requests ?? 0)}</div>
           <div className="metric-sub usage-metric-sub">
             失败 {fmtInt(totals?.failed ?? 0)} · 成功率 {fmtCompact(totals?.success_rate ?? 100)}%
           </div>
         </div>
         <div className="metric">
-          <div className="metric-k">24h tokens</div>
+          <div className="metric-k">
+            <Activity className="metric-ico" strokeWidth={1.6} />
+            24h tokens
+          </div>
           <div className="metric-v">{fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}</div>
           <div className="metric-sub usage-metric-sub">
             入 {fmtCompact(totals?.input_tokens ?? 0)} · 出 {fmtCompact(totals?.output_tokens ?? 0)}
@@ -524,11 +536,11 @@ export function WorkBuddyPage() {
                 disabled={checkinAllBusy || accounts.length === 0}
                 onClick={runAllCheckins}
               >
-                <CalendarCheck className="size-3.5" strokeWidth={1.75} />
+                <CalendarCheck className="size-3.5" strokeWidth={1.9} />
                 {checkinAllBusy ? "签到中…" : "一键全签"}
               </Button>
               <Button size="sm" onClick={() => setAddOpen(true)}>
-                <Plus className="size-3.5" strokeWidth={1.75} /> 添加账号
+                <Plus className="size-3.5" strokeWidth={1.9} /> 添加账号
               </Button>
             </div>
           </div>
@@ -544,14 +556,23 @@ export function WorkBuddyPage() {
                     <TableHead>积分</TableHead>
                     <TableHead>签到</TableHead>
                     <TableHead>最近请求</TableHead>
-                    <TableHead>累计 tokens</TableHead>
+                    {/* 与 Codex 账号表同一列名（那一列还多带成功率/失败，这边只有 tokens） */}
+                    <TableHead>历史用量</TableHead>
                     <TableHead className="table-col-actions">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {accounts.length === 0 ? (
                     <TableEmptyRow colSpan={7}>
-                      <Empty icon={CircleUserRound} />
+                      <Empty
+                        icon={CircleUserRound}
+                        text="还没有账号"
+                        action={
+                          <Button size="sm" variant="outline" onClick={() => setAddOpen(true)}>
+                            <Plus className="size-3.5" strokeWidth={1.9} aria-hidden /> 添加账号
+                          </Button>
+                        }
+                      />
                     </TableEmptyRow>
                   ) : (
                     accounts.map((account) => {
@@ -636,39 +657,35 @@ export function WorkBuddyPage() {
                               recent={account.recent_14 ?? []}
                             />
                           </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {/* 全时段累计（stats_total） */}
-                            {account.stats_total
-                              ? fmtCompact(
-                                  account.stats_total.input_tokens + account.stats_total.output_tokens,
-                                )
-                              : "0"}
+                          {/* 历史用量（全时段累计）：与 Codex 账号表同一格、同一口径 */}
+                          <TableCell>
+                            <UsageStatsCell total={account.stats_total} />
                           </TableCell>
                           <TableCell className="table-col-actions">
                             <div className="inline-flex items-center gap-1">
                               <ActionButton
                                 label={unsupported || (checkedToday ? "再签一次（幂等）" : "立即签到")}
-                                icon={<CalendarCheck className="size-3.5" strokeWidth={1.75} />}
+                                icon={<CalendarCheck className="size-3.5" strokeWidth={1.9} />}
                                 disabled={busy || Boolean(unsupported)}
                                 onClick={() => runCheckin(account)} />
                               {account.status === "active" ? (
                                 <ActionButton
-                                  label="暂停" icon={<Pause className="size-3.5" strokeWidth={1.75} />}
+                                  label="暂停" icon={<Pause className="size-3.5" strokeWidth={1.9} />}
                                   disabled={busy} onClick={() => runAccountAction(account, "pause")} />
                               ) : (
                                 <ActionButton
-                                  label="恢复" icon={<Play className="size-3.5" strokeWidth={1.75} />}
+                                  label="恢复" icon={<Play className="size-3.5" strokeWidth={1.9} />}
                                   disabled={busy} onClick={() => runAccountAction(account, "resume")} />
                               )}
                               <ActionButton
-                                label="复活（清除冷却/熔断）" icon={<RotateCcw className="size-3.5" strokeWidth={1.75} />}
+                                label="复活（清除冷却/熔断）" icon={<RotateCcw className="size-3.5" strokeWidth={1.9} />}
                                 disabled={busy} onClick={() => runAccountAction(account, "revive")} />
                               <ActionButton
-                                label="刷新 token" icon={<RefreshCw className="size-3.5" strokeWidth={1.75} />}
+                                label="刷新 token" icon={<RefreshCw className="size-3.5" strokeWidth={1.9} />}
                                 disabled={busy || !account.has_refresh_token}
                                 onClick={() => runAccountAction(account, "refresh")} />
                               <ActionButton
-                                label="删除" icon={<Trash2 className="size-3.5" strokeWidth={1.75} />}
+                                label="删除" icon={<Trash2 className="size-3.5" strokeWidth={1.9} />}
                                 disabled={busy} destructive
                                 onClick={() => removeAccount(account)} />
                             </div>
@@ -705,7 +722,7 @@ export function WorkBuddyPage() {
             >
               <RefreshCw
                 className={cn("size-3.5", reloading && "animate-spin")}
-                strokeWidth={1.75}
+                strokeWidth={1.9}
               />
             </Button>
           </div>
@@ -819,7 +836,7 @@ export function WorkBuddyPage() {
             <h2 className="gw-panel-title">Token 用量与请求次数</h2>
             <UsageRangeSelect value={usageRange} onChange={setUsageRange} className="ml-auto" />
           </div>
-          <TokenUsageChart provider="workbuddy" range={usageRange} />
+          <TokenUsageChart provider="workbuddy" range={usageRange} key={usageRange} />
         </section>
 
       </div>
@@ -1091,9 +1108,9 @@ function AddAccountDialog({
                     onClick={copyAuthUrl}
                   >
                     {copied ? (
-                      <Check className="size-3.5" strokeWidth={1.75} />
+                      <Check className="size-3.5" strokeWidth={1.9} />
                     ) : (
-                      <Copy className="size-3.5" strokeWidth={1.75} />
+                      <Copy className="size-3.5" strokeWidth={1.9} />
                     )}
                     {copied ? "已复制" : "复制"}
                   </Button>
@@ -1121,16 +1138,16 @@ function AddAccountDialog({
               </ol>
 
               {/* 换号警示：左侧色条强调，不再占一整块 */}
-              <div className="border-l-2 border-amber-500/50 pl-2.5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-500">
+              <div className="border-l-2 border-[var(--warning-border)] pl-2.5 text-[11px] leading-relaxed text-[var(--warning-text)]">
                 换号必须用无痕窗口：普通窗口会带上当前已登录的账号，直接完成授权。
               </div>
 
               {/* 状态条：等待 / 成功 / 过期 + 会话倒计时 */}
               <div className="border-border flex items-center gap-2 border-t pt-3 text-xs">
                 {loginDone ? (
-                  <Check className="size-3.5 shrink-0 text-emerald-500" strokeWidth={2} />
+                  <Check className="size-3.5 shrink-0 text-[var(--ok)]" strokeWidth={1.9} />
                 ) : loginMessage || expired ? (
-                  <span className="size-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden />
+                  <span className="size-1.5 shrink-0 rounded-full bg-[var(--meter-mid)]" aria-hidden />
                 ) : (
                   <RefreshCw
                     className="text-muted-foreground size-3.5 shrink-0 animate-spin"
@@ -1138,7 +1155,7 @@ function AddAccountDialog({
                     aria-hidden
                   />
                 )}
-                <span className={cn("min-w-0", loginDone ? "text-emerald-500" : "text-muted-foreground")}>
+                <span className={cn("min-w-0", loginDone ? "text-[var(--ok)]" : "text-muted-foreground")}>
                   {loginMessage ||
                     (expired ? "登录会话已过期，请重新发起" : "等待登录完成…")}
                 </span>
@@ -1161,7 +1178,7 @@ function AddAccountDialog({
                 className="shrink-0"
                 onClick={() => beginOAuth(realm)}
               >
-                <RefreshCw className="size-3.5" strokeWidth={1.75} /> 重试
+                <RefreshCw className="size-3.5" strokeWidth={1.9} /> 重试
               </Button>
             </div>
           ) : null}

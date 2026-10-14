@@ -108,7 +108,7 @@
   width: 15px;
   height: 15px;
 }.brand-name {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   letter-spacing: -0.01em;
 }.brand-name .brand-sub {
@@ -142,7 +142,7 @@
   border-radius: 0 !important;
   border: 0 !important;
   color: var(--muted-foreground) !important;
-  font-size: 13px !important;
+  font-size: var(--fs-md) !important;
   font-weight: 500 !important;
   letter-spacing: 0.02em !important;
   background: transparent !important;
@@ -174,7 +174,7 @@
   margin-left: -11px;
   border-radius: 999px;
   background: var(--primary);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--primary) 55%, transparent);
+  /* 不再加外发光：令牌体系写明「无渐变无发光」，指示条自己 2.5px 的实底已经够醒目 */
   pointer-events: none;
 }.nav-tab-icon {
   width: 14px;
@@ -265,6 +265,11 @@
 [data-slot="table-body"] > [data-slot="table-row"]:hover {
   background-color: var(--table-hover);
 }
+/* 行选中：--table-selected 此前只定义、没人用（表格没有选中态）。
+   按 aria-selected 接上，将来加多选时不必再补样式。 */
+[data-slot="table-body"] > [data-slot="table-row"][aria-selected="true"] {
+  background-color: var(--table-selected);
+}
 
 /* ══════════════════════════════════════════════
    列对齐：列头与单元格一律靠左（默认），操作列是唯一例外——居中对齐。
@@ -287,11 +292,15 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  /* 三栏分布：总数靠左、页码居中、每页靠右。
+     此前三组作为一整撮被父容器居中，左右两侧留着大片空白。 */
+  justify-content: space-between;
+  width: 100%;
   gap: 6px;
 }
 .pagination-total {
   margin-right: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-subtle);
   white-space: nowrap;
 }
@@ -309,7 +318,7 @@
   padding: 0 !important;
   border-radius: 8px !important;
   font-family: var(--font-mono) !important;
-  font-size: 12.5px !important;
+  font-size: var(--fs-sm) !important;
   font-weight: 500 !important;
   color: var(--muted-foreground) !important;
   background: var(--card) !important;
@@ -341,7 +350,7 @@
   width: 24px;
   height: 30px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted-foreground);
   user-select: none;
 }
@@ -353,7 +362,7 @@
   min-width: 6.5rem !important;
   height: 30px !important;
   font-family: var(--font-mono) !important;
-  font-size: 12px !important;
+  font-size: var(--fs-sm) !important;
   border-radius: var(--radius) !important;
 }
 

@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -187,7 +187,7 @@ function DialogContent({
              会与 motion.css 的 transform: translateY(-50%) 叠加成 -100%，
              弹窗整体上移半个身位、高弹窗顶部直接出屏。
              超高内容靠 max-h + 内部滚动保持顶部可达 */
-          "ap-dialog-content bg-card text-card-foreground fixed z-[70] grid h-fit max-h-[min(90vh,920px)] w-full max-w-[calc(100%-2rem)] gap-4 overflow-y-auto overscroll-contain rounded-lg border border-border p-5 shadow-none sm:max-w-lg",
+          "ap-dialog-content bg-card text-card-foreground fixed z-[70] grid h-fit max-h-[min(90vh,920px)] w-full max-w-[calc(100%-2rem)] gap-4 overflow-y-auto overscroll-contain rounded-lg border border-border p-5 shadow-[var(--shadow-pop)] sm:max-w-lg",
           className,
         )}
         {...props}
@@ -249,16 +249,20 @@ function DialogTitle({
 // ---------- Empty ----------
 
 /**
- * 空状态:图标 + 一行文案。全站统一形态,默认文案「暂无数据」,
- * 只有状态语义确实不同(如加载失败)时才通过 text 覆盖。
+ * 空状态:图标 + 一行文案 + 可选的下一步动作。
+ * 默认文案「暂无数据」;只有状态语义确实不同(如加载失败)时才通过 text 覆盖。
+ * `action` 用来给「第一次打开就是这样」的空态一个出口(如空号池里的「添加账号」)——
+ * 没有出口的空屏只告诉用户"这里什么都没有",不告诉他下一步该做什么。
  */
 function Empty({
   icon: Icon,
   text = "暂无数据",
+  action,
   className,
 }: {
   icon?: ComponentType<{ className?: string; strokeWidth?: number }>;
   text?: string;
+  action?: ReactNode;
   className?: string;
 }) {
   return (
@@ -271,10 +275,11 @@ function Empty({
     >
       {Icon ? (
         <div className="bg-muted text-muted-foreground mb-1 grid size-12 place-items-center rounded-2xl">
-          <Icon className="size-6 opacity-70" strokeWidth={1.5} />
+          <Icon className="size-6 opacity-70" strokeWidth={1.6} />
         </div>
       ) : null}
       <p className="text-muted-foreground text-sm">{text}</p>
+      {action ? <div className="mt-1">{action}</div> : null}
     </div>
   );
 }
@@ -392,7 +397,7 @@ export function Pagination({
           onClick={() => onPageChange(current - 1)}
           aria-label="上一页"
         >
-          <ChevronLeft className="size-3.5" strokeWidth={1.75} />
+          <ChevronLeft className="size-3.5" strokeWidth={1.9} />
         </Button>
 
         {pages.map((item, idx) =>
@@ -428,7 +433,7 @@ export function Pagination({
           onClick={() => onPageChange(current + 1)}
           aria-label="下一页"
         >
-          <ChevronRight className="size-3.5" strokeWidth={1.75} />
+          <ChevronRight className="size-3.5" strokeWidth={1.9} />
         </Button>
       </nav>
 
@@ -524,7 +529,7 @@ function SelectContent({
         data-slot="select-content"
         // z 须高于 Dialog(z-70)，否则高级设置内下拉被遮挡且无法点击
         className={cn(
-          "bg-popover text-popover-foreground relative z-[80] max-h-(--radix-select-content-available-height) min-w-[8rem] overflow-x-hidden overflow-y-auto rounded-lg border border-border shadow-md",
+          "bg-popover text-popover-foreground relative z-[80] max-h-(--radix-select-content-available-height) min-w-[8rem] overflow-x-hidden overflow-y-auto rounded-lg border border-border shadow-[var(--shadow-pop)]",
           "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
           position === "popper" &&
             "data-[side=bottom]:translate-y-1 data-[side=top]:-translate-y-1",
@@ -835,7 +840,7 @@ const toggleVariants = cva(
       variant: {
         default: "bg-transparent",
         outline:
-          "border border-input bg-transparent shadow-xs hover:bg-muted hover:text-foreground",
+          "border border-input bg-transparent hover:bg-muted hover:text-foreground",
       },
       size: {
         default: "h-9 px-2.5 min-w-9",
@@ -972,8 +977,8 @@ function TooltipContent({
           "z-[80] w-fit max-w-xs text-xs text-balance",
           "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
           surface
-            ? "bg-popover text-popover-foreground border-border rounded-lg border px-3 py-2.5 shadow-md"
-            : "bg-primary text-primary-foreground rounded-md px-3 py-1.5 shadow-md",
+            ? "bg-popover text-popover-foreground border-border rounded-lg border px-3 py-2.5 shadow-[var(--shadow-pop)]"
+            : "bg-primary text-primary-foreground rounded-md px-3 py-1.5 shadow-[var(--shadow-pop)]",
           className,
         )}
         {...props}

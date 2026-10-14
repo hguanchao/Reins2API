@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   Boxes,
   Check,
   CircleUserRound,
@@ -20,6 +21,7 @@ import {
   Pause,
   Plus,
   RefreshCw,
+  Send,
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -230,22 +232,25 @@ export function CodexPage() {
 
   return (
     <section className="gw-workspace" aria-label="Codex 控制台">
+      {/* 页头放在加载分支之外：首屏骨架不该把标题也一起吃掉——
+          那样用户看到的是一个没有上下文的空壳 */}
+      <div className="gw-page-head">
+        <div>
+          <h1 className="gw-page-title">Codex 号池</h1>
+          <p className="gw-page-sub">
+            ChatGPT 后端 Codex 服务 · OAuth 授权接入、加权选号、冷却熔断
+          </p>
+        </div>
+      </div>
+
       {!ops && !loadError ? (
         <div className="gw-skeleton" aria-hidden />
       ) : (
         <>
-          <div className="gw-page-head">
-            <div>
-              <h1 className="gw-page-title">Codex 号池</h1>
-              <p className="gw-page-sub">
-                ChatGPT 后端 Codex 服务 · OAuth 授权接入、加权选号、冷却熔断
-              </p>
-            </div>
-          </div>
-
           {loadError ? (
             <div className="banner is-danger" role="alert">
-              {loadError}
+              <AlertTriangle className="banner-ico" strokeWidth={1.9} aria-hidden />
+              <span>{loadError}</span>
             </div>
           ) : null}
 
@@ -297,14 +302,20 @@ export function CodexPage() {
               </div>
             </div>
             <div className="metric">
-              <div className="metric-k">24h 请求</div>
+              <div className="metric-k">
+                <Send className="metric-ico" strokeWidth={1.6} />
+                24h 请求
+              </div>
               <div className="metric-v">{fmtInt(totals?.requests ?? 0)}</div>
               <div className="metric-sub usage-metric-sub">
                 失败 {fmtInt(totals?.failed ?? 0)} · 成功率 {fmtCompact(totals?.success_rate ?? 100)}%
               </div>
             </div>
             <div className="metric">
-              <div className="metric-k">24h tokens</div>
+              <div className="metric-k">
+                <Activity className="metric-ico" strokeWidth={1.6} />
+                24h tokens
+              </div>
               <div className="metric-v">
                 {fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}
               </div>
@@ -327,17 +338,17 @@ export function CodexPage() {
                     disabled={quotaBusy || accounts.length === 0}
                     onClick={() => void refreshAllQuotas()}
                   >
-                    <Gauge className="size-3.5" strokeWidth={1.75} />
+                    <Gauge className="size-3.5" strokeWidth={1.9} />
                     {quotaBusy ? "刷新额度…" : "刷新额度"}
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => setTransfer("import")}>
-                    <Upload className="size-3.5" strokeWidth={1.75} /> 导入
+                    <Upload className="size-3.5" strokeWidth={1.9} /> 导入
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => setTransfer("export")}>
-                    <Download className="size-3.5" strokeWidth={1.75} /> 导出
+                    <Download className="size-3.5" strokeWidth={1.9} /> 导出
                   </Button>
                   <Button size="sm" onClick={() => setAddOpen(true)}>
-                    <Plus className="size-3.5" strokeWidth={1.75} /> 添加账号
+                    <Plus className="size-3.5" strokeWidth={1.9} /> 添加账号
                   </Button>
                 </div>
               </div>
@@ -346,6 +357,7 @@ export function CodexPage() {
                 busyUid={busyUid}
                 onAction={runAccountAction}
                 onDelete={removeAccount}
+                onAdd={() => setAddOpen(true)}
               />
             </section>
           </div>
@@ -370,7 +382,7 @@ export function CodexPage() {
                 >
                   <RefreshCw
                     className={cn("size-3.5", catalogBusy && "animate-spin")}
-                    strokeWidth={1.75}
+                    strokeWidth={1.9}
                   />
                 </Button>
               </div>
@@ -432,7 +444,7 @@ export function CodexPage() {
                 <h2 className="gw-panel-title">Token 用量与请求次数</h2>
                 <UsageRangeSelect value={usageRange} onChange={setUsageRange} className="ml-auto" />
               </div>
-              <TokenUsageChart provider="codex" range={usageRange} />
+              <TokenUsageChart provider="codex" range={usageRange} key={usageRange} />
             </section>
           </div>
 
@@ -668,9 +680,9 @@ function AddCodexDialog({
                     onClick={() => void copyAuthUrl()}
                   >
                     {copied ? (
-                      <Check className="size-3.5" strokeWidth={1.75} />
+                      <Check className="size-3.5" strokeWidth={1.9} />
                     ) : (
-                      <Copy className="size-3.5" strokeWidth={1.75} />
+                      <Copy className="size-3.5" strokeWidth={1.9} />
                     )}
                     {copied ? "已复制" : "复制"}
                   </Button>
@@ -720,7 +732,7 @@ function AddCodexDialog({
               </ol>
 
               {/* 换号警示：左侧色条强调，同 WorkBuddy */}
-              <div className="border-l-2 border-amber-500/50 pl-2.5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-500">
+              <div className="border-l-2 border-[var(--warning-border)] pl-2.5 text-[11px] leading-relaxed text-[var(--warning-text)]">
                 要添加另一个账号时请用无痕 / 隐私窗口：普通窗口会直接带上当前已登录的 ChatGPT
                 账号，完成授权的是它，而不是你想加的号。
               </div>
@@ -752,16 +764,16 @@ function AddCodexDialog({
                 {session.listening ? (
                   <div className="text-muted-foreground flex items-center gap-2 text-xs">
                     {loginDone ? (
-                      <Check className="size-3.5 shrink-0 text-emerald-500" strokeWidth={2} />
+                      <Check className="size-3.5 shrink-0 text-[var(--ok)]" strokeWidth={1.9} />
                     ) : loginMessage || expired ? (
-                      <span className="size-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden />
+                      <span className="size-1.5 shrink-0 rounded-full bg-[var(--meter-mid)]" aria-hidden />
                     ) : (
                       <RefreshCw className="size-3.5 shrink-0 animate-spin" strokeWidth={1.6} aria-hidden />
                     )}
                     <span
                       className={cn(
                         "min-w-0",
-                        loginDone ? "text-emerald-500" : expired ? "text-amber-600 dark:text-amber-500" : null,
+                        loginDone ? "text-[var(--ok)]" : expired ? "text-[var(--warning-text)]" : null,
                       )}
                     >
                       {loginMessage || (expired ? "授权会话已过期，请重新发起" : "等待授权完成…")}
@@ -787,7 +799,7 @@ function AddCodexDialog({
                 className="shrink-0"
                 onClick={() => void begin()}
               >
-                <RefreshCw className="size-3.5" strokeWidth={1.75} /> 重试
+                <RefreshCw className="size-3.5" strokeWidth={1.9} /> 重试
               </Button>
             </div>
           ) : null}

@@ -1,28 +1,39 @@
 import {
-  CircleCheck,
   CircleUserRound,
-  CircleX,
   Gauge,
-  Hash,
   Pause,
   Play,
+  Plus,
   RefreshCw,
   RotateCcw,
-  Send,
   Trash2,
 } from "lucide-react";
-import { Empty, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  Empty,
+  Table,
+  TableBody,
+  TableCell,
+  TableEmptyRow,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui";
 import type { CodexAccount } from "@/lib/api";
-import { cn, fmtCompact, fmtInt } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 import { ActivityCell } from "./ActivityCell";
+import { UsageStatsCell } from "./UsageStatsCell";
 
 /**
- * Codex 号池账号列表：一行一个账号（版式参考 codex2api 控制台）。
+ * Codex 号池账号列表：与 WorkBuddy 号池同一套表格（表头 + 行）。
  *
- * 列：凭证 / 套餐 / 可用状态 / 最近请求（带 14 天迷你柱状图）/ 历史用量（**全时段**）/
- * 额度 / 操作。**一张卡片 + 行间细线**，与 app 其它表格同一套视觉；没有列头，所以每格
- * 自带文字标签（只有图标看不出是什么）。
+ * 列：凭证 / 套餐 / 可用状态 / 最近请求（带结果条）/ 历史用量（**全时段**）/ 额度 / 操作。
+ * 与 WorkBuddy 表格同款 `gw-table-card` + `gw-table-scroll`（窄屏横向滚动）。
  *
  * 额度来自上游每次 `/responses` 响应头里的 `x-codex-{primary,secondary}-*`
  * 三件套（provider 回填到 accounts.rate_limit），或按需主动查 `/usage`
@@ -52,33 +63,37 @@ function resetIn(resetAtMs: number | null | undefined): string {
   return `${minutes}m 后重置`;
 }
 
-/** 账号生命周期 + 冷却/熔断 → (文案, 色调, 副行文案)。 */
-function stateOf(account: CodexAccount): { label: string; tone: string; sub: string } {
+/** 账号生命周期 + 冷却/熔断 → (文案, 色调)。副行固定显示调度权重，不再按状态换文案。 */
+function stateOf(account: CodexAccount): { label: string; tone: string } {
   const now = Date.now();
-  const cooldown = account.cooldown_until_ms > now;
-  const breaker = account.breaker_until_ms > now;
   if (account.status === "disabled") {
-    return { label: "已禁用", tone: "is-bad", sub: "需重新授权" };
+    return { label: "已禁用", tone: "is-bad" };
   }
   if (account.status === "paused") {
-    return { label: "已暂停", tone: "is-warn", sub: "人工暂停" };
+    return { label: "已暂停", tone: "is-warn" };
   }
-  if (breaker) {
-    return { label: "熔断中", tone: "is-bad", sub: `连败 ${account.breaker_count}` };
+  if (account.breaker_until_ms > now) {
+    return { label: "熔断中", tone: "is-bad" };
   }
-  if (cooldown) {
-    const kind: Record<string, string> = { soft: "限流", auth: "鉴权", waf: "WAF" };
-    const minutes = Math.ceil((account.cooldown_until_ms - now) / 60_000);
-    const left = minutes >= 60 ? `${Math.floor(minutes / 60)}h${minutes % 60}m` : `${Math.max(minutes, 0)}m`;
-    return { label: "冷却中", tone: "is-warn", sub: `${kind[account.cooldown_kind] ?? "冷却"} ${left}` };
+  if (account.cooldown_until_ms > now) {
+    return { label: "冷却中", tone: "is-warn" };
   }
   if (!account.has_access_token) {
-    return { label: "缺凭证", tone: "is-bad", sub: "无 access_token" };
+    return { label: "缺凭证", tone: "is-bad" };
   }
-  const sub = account.consecutive_failures > 0
-    ? `连败 ${account.consecutive_failures}`
-    : `权重 ${account.idle_boost.toFixed(1)}`;
-  return { label: "可用", tone: "is-ok", sub };
+  return { label: "可用", tone: "is-ok" };
+}
+
+/** 套餐档位 → 徽章档位色：免费中性灰、Plus 绿、Pro 品牌、组织档琥珀；未知档位回落灰。
+ *  标签统一大写（"plus" → "PLUS"），只改大小写、不改动上游给的原值。 */
+function planTier(plan: string): { label: string; tier: "free" | "plus" | "pro" | "team" } | null {
+  const key = plan.trim().toLowerCase();
+  if (!key) return null;
+  const label = key.toUpperCase();
+  if (key.includes("plus")) return { label, tier: "plus" };
+  if (key.includes("pro")) return { label, tier: "pro" };
+  if (/(team|business|enterprise|edu)/.test(key)) return { label, tier: "team" };
+  return { label, tier: "free" };
 }
 
 /** 凭证过期还有多久。 */
@@ -90,44 +105,9 @@ function expiresIn(ms: number): string {
   return `凭证 ${days} 天后到期`;
 }
 
-/** 历史用量的一格：图标 + 数值（含义在四格共用的那条悬停提示里，按格子顺序列）。 */
-function Stat({ icon, value, bad }: { icon: React.ReactNode; value: string; bad?: boolean }) {
-  return (
-    <div className="acct-stat">
-      <span className="acct-stat-ico">{icon}</span>
-      <span className={cn("acct-stat-v", bad && "is-bad")}>{value}</span>
-    </div>
-  );
-}
-
-/** 历史用量悬停卡片的一行：左边图标 + 名称（对应格子里认不出的图标），右边精确值。
- *  作为 grid 的两格渲染，所以返回值是 Fragment。 */
-function StatLegendRow({
-  icon,
-  label,
-  value,
-  bad,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  bad?: boolean;
-}) {
-  return (
-    <>
-      <span className="text-fg-subtle flex items-center gap-1.5">
-        <span className="inline-flex">{icon}</span>
-        {label}
-      </span>
-      <span className={cn("text-right font-mono tabular-nums", bad && "text-destructive")}>
-        {value}
-      </span>
-    </>
-  );
-}
-
 /**
- * 额度：一条进度条（用掉多少）+ 一行额度明细（主窗口剩余 · 重置倒计时 · 副窗口剩余）。
+ * 额度：一条**剩余水位条**（还剩多少）+ 一行额度明细（主窗口剩余 · 重置倒计时 · 副窗口剩余）。
+ * 条子按剩余量画：满格 = 额度充足，抽空 = 用尽；条尾的百分比与它同口径。
  * 不再有 head 行：那一行只有一个数字，白白把这一格撑成三行，明细并进 foot 一行说完。
  * 两条窗口各画一根条会让这一列变成全行最重的部分，所以副窗口只给数字。
  */
@@ -154,8 +134,9 @@ function QuotaCell({ rateLimit }: { rateLimit?: CodexAccount["rate_limit"] }) {
   // 是否"已用尽"以上游判定为准（主动查 /usage 才带这两个字段）；没有就用百分比兜底。
   // 实测有账号 used_percent=100 但 allowed=true —— 光看百分比会误报已用尽。
   const exhausted = rateLimit?.limit_reached === true || rateLimit?.allowed === false || used >= 100;
-  // 条子按用量分档：70/90 变色，100% 铺满画灰（见 .acct-bar.is-out）
-  const tone = used >= 100 ? "is-out" : used >= 90 ? "is-bad" : used >= 70 ? "is-warn" : "";
+  // 条子画的是**剩余**水位，所以分档也按剩余量走：剩 ≤30% 转琥珀、≤10% 转红；
+  // 剩 0%（用尽）时填充被抽空，改由底轨染一层浅红表示"用尽"而不是"没数据"。
+  const tone = remaining <= 0 ? "is-out" : remaining <= 10 ? "is-bad" : remaining <= 30 ? "is-warn" : "";
   const credits = rateLimit?.credits;
   const detail = [
     primary
@@ -173,8 +154,13 @@ function QuotaCell({ rateLimit }: { rateLimit?: CodexAccount["rate_limit"] }) {
     .join(" · ");
   return (
     <div className="acct-quota">
-      <div className={cn("acct-bar", tone)}>
-        <i style={{ width: `${used}%` }} />
+      {/* 剩余水位条 + 条尾的百分比：条子与数字同一个口径（都是剩余量），
+          满格 = 额度充足、抽空 = 用尽，和下方明细的「剩余 X%」「已用尽」也一致。 */}
+      <div className="acct-quota-row">
+        <div className={cn("acct-bar", tone)}>
+          <i style={{ width: `${remaining}%` }} />
+        </div>
+        <span className={cn("acct-quota-pct", tone)}>{remaining.toFixed(0)}%</span>
       </div>
       <div className="acct-quota-foot">{detail || "—"}</div>
     </div>
@@ -217,186 +203,182 @@ export function CodexAccountList({
   busyUid,
   onAction,
   onDelete,
+  onAdd,
 }: {
   accounts: CodexAccount[];
   busyUid: string | null;
   onAction: (account: CodexAccount, action: "pause" | "resume" | "revive" | "refresh" | "quota") => void;
   onDelete: (account: CodexAccount) => void;
+  /** 空池时的出口：新用户第一眼看到的就是这个空态，得告诉他下一步做什么 */
+  onAdd?: () => void;
 }) {
-  if (accounts.length === 0) {
-    return (
-      <div className="gw-table-card is-empty">
-        <Empty icon={CircleUserRound} />
-      </div>
-    );
-  }
-
   return (
-    <div className="gw-table-card">
+    <div className={cn("gw-table-card", accounts.length === 0 && "is-empty")}>
       <div className="gw-table-scroll">
-        <div className="acct-list">
-          {accounts.map((account) => {
-            const busy = busyUid === account.uid;
-            const state = stateOf(account);
-            // 历史用量：**全时段**（stats_total），不是近 7 天
-            const total = account.stats_total;
-            const requests = total?.requests ?? 0;
-            const failed = total?.failed ?? 0;
-            const okRate = requests > 0 ? ((requests - failed) / requests) * 100 : 0;
-            const tokens = (total?.input_tokens ?? 0) + (total?.output_tokens ?? 0);
-            // 凭证两行：上昵称、下邮箱。没有昵称的（旧 token / 导入凭证缺 name claim）
-            // 退化成上邮箱、下 uid，两行始终有内容且不重复。
-            const nickname = account.nickname.trim();
-            const email = account.email || account.label || "";
-            const credName = nickname || email || account.uid;
-            const credSub = nickname ? email || account.uid : account.uid;
-
-            return (
-              <article key={account.uid} className={cn("acct-row", busy && "is-busy")}>
-                {/* 凭证 */}
-                <div className="acct-cred">
-                  <span className="acct-avatar" aria-hidden>
-                    {credName.slice(0, 1)}
-                  </span>
-                  <div className="acct-cred-main">
-                    <div className="acct-cred-name" title={nickname ? `${nickname} · ${email}` : credName}>
-                      {credName}
-                    </div>
-                    <div className="acct-cred-sub" title={credSub}>
-                      {credSub}
-                    </div>
-                  </div>
-                </div>
-
-                {/* 套餐 */}
-                <div className="acct-plan">{account.plan_type || "—"}</div>
-
-                {/* 可用状态：last_error 的完整原文挂悬停，不额外占一个图标 */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div className={cn("acct-state", state.tone, account.last_error && "cursor-help")}>
-                      <b>{state.label}</b>
-                      <small>{state.sub}</small>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" tone="surface" className="max-w-xs">
-                    {account.last_error || `${state.label} · ${state.sub}`}
-                  </TooltipContent>
-                </Tooltip>
-
-                {/* 最近请求 + 最近 14 次请求结果条（WorkBuddy 表格同一格用同一组件） */}
-                <ActivityCell
-                  lastUsedMs={account.last_used_ms ?? 0}
-                  recent={account.recent_14 ?? []}
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>凭证</TableHead>
+              <TableHead>套餐</TableHead>
+              <TableHead>可用状态</TableHead>
+              <TableHead>最近请求</TableHead>
+              <TableHead>历史用量</TableHead>
+              <TableHead>额度</TableHead>
+              <TableHead className="table-col-actions">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {accounts.length === 0 ? (
+              <TableEmptyRow colSpan={7}>
+                <Empty
+                  icon={CircleUserRound}
+                  text="还没有账号"
+                  action={
+                    onAdd ? (
+                      <Button size="sm" variant="outline" onClick={onAdd}>
+                        <Plus className="size-3.5" strokeWidth={1.9} aria-hidden /> 添加账号
+                      </Button>
+                    ) : undefined
+                  }
                 />
+              </TableEmptyRow>
+            ) : (
+              accounts.map((account) => {
+                const busy = busyUid === account.uid;
+                const state = stateOf(account);
+                // 凭证两行：上昵称、下邮箱。没有昵称的（旧 token / 导入凭证缺 name claim）
+                // 退化成上邮箱、下 uid，两行始终有内容且不重复。
+                const nickname = account.nickname.trim();
+                const email = account.email || account.label || "";
+                const credName = nickname || email || account.uid;
+                const credSub = nickname ? email || account.uid : account.uid;
+                const plan = planTier(account.plan_type);
 
-                {/* 历史用量（全时段）：四格共用一条提示——图标 + 名称 + 精确值逐行对齐
-                    （格子里的数字是紧凑写法，悬停看准数），悬停任意一格都能对上 */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div className="acct-stats">
-                      <Stat
-                        icon={<Send className="size-3" strokeWidth={1.9} />}
-                        value={fmtCompact(requests)}
-                      />
-                      <Stat
-                        icon={<Hash className="size-3" strokeWidth={1.9} />}
-                        value={fmtCompact(tokens)}
-                      />
-                      <Stat
-                        icon={<CircleCheck className="size-3" strokeWidth={1.9} />}
-                        value={requests > 0 ? `${okRate.toFixed(1)}%` : "—"}
-                      />
-                      <Stat
-                        icon={<CircleX className="size-3" strokeWidth={1.9} />}
-                        value={fmtCompact(failed)}
-                        bad={failed > 0}
-                      />
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" tone="surface">
-                    <div className="w-[13.5rem]">
-                      <div className="text-fg-subtle mb-1.5 text-[11.5px]">全时段累计</div>
-                      <div className="grid grid-cols-[auto_1fr] items-center gap-x-2.5 gap-y-1.5">
-                        <StatLegendRow
-                          icon={<Send className="size-3.5" strokeWidth={1.9} />}
-                          label="请求"
-                          value={fmtInt(requests)}
-                        />
-                        <StatLegendRow
-                          icon={<Hash className="size-3.5" strokeWidth={1.9} />}
-                          label="Tokens"
-                          value={fmtInt(tokens)}
-                        />
-                        <StatLegendRow
-                          icon={<CircleCheck className="size-3.5" strokeWidth={1.9} />}
-                          label="成功率"
-                          value={requests > 0 ? `${okRate.toFixed(1)}%` : "—"}
-                        />
-                        <StatLegendRow
-                          icon={<CircleX className="size-3.5" strokeWidth={1.9} />}
-                          label="失败"
-                          value={fmtInt(failed)}
-                          bad={failed > 0}
-                        />
+                return (
+                  <TableRow key={account.uid} className={cn(busy && "opacity-60")}>
+                    {/* 凭证 */}
+                    <TableCell>
+                      <div className="acct-cred">
+                        <span className="acct-avatar" aria-hidden>
+                          {credName.slice(0, 1)}
+                        </span>
+                        <div className="acct-cred-main">
+                          <div className="acct-cred-name" title={nickname ? `${nickname} · ${email}` : credName}>
+                            {credName}
+                          </div>
+                          <div className="acct-cred-sub" title={credSub}>
+                            {credSub}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </TooltipContent>
-                </Tooltip>
+                    </TableCell>
 
-                {/* 额度（上游响应头回填）*/}
-                <QuotaCell rateLimit={account.rate_limit} />
+                    {/* 套餐 */}
+                    <TableCell>
+                      {plan ? (
+                        <Badge variant="outline" className={cn("plan-badge", `tier-${plan.tier}`)}>
+                          {plan.label}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground text-[12.5px]">—</span>
+                      )}
+                    </TableCell>
 
-                {/* 操作 */}
-                <div className="acct-actions">
-                  <div className="acct-btns">
-                    <IconAction
-                      label="刷新 token"
-                      icon={<RefreshCw className="size-3.5" strokeWidth={1.9} />}
-                      disabled={busy || !account.has_refresh_token}
-                      onClick={() => onAction(account, "refresh")}
-                    />
-                    <IconAction
-                      label="刷新额度（查上游 /usage）"
-                      icon={<Gauge className="size-3.5" strokeWidth={1.9} />}
-                      disabled={busy || !account.has_access_token}
-                      onClick={() => onAction(account, "quota")}
-                    />
-                    {account.status === "active" ? (
-                      <IconAction
-                        label="暂停"
-                        icon={<Pause className="size-3.5" strokeWidth={1.9} />}
-                        disabled={busy}
-                        onClick={() => onAction(account, "pause")}
+                    {/* 可用状态：只有状态与权重两行。有 last_error 时才包一层悬停，
+                        把上游原文挂上去——那是这一列唯一能看到真实报错的地方。 */}
+                    <TableCell>
+                      {account.last_error ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className={cn("acct-state", state.tone, "cursor-help")}>
+                              <b>{state.label}</b>
+                              <small>权重 {account.idle_boost.toFixed(1)}</small>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" tone="surface" className="max-w-xs">
+                            {account.last_error}
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        <div className={cn("acct-state", state.tone)}>
+                          <b>{state.label}</b>
+                          <small>权重 {account.idle_boost.toFixed(1)}</small>
+                        </div>
+                      )}
+                    </TableCell>
+
+                    {/* 最近请求 + 最近 14 次请求结果条（WorkBuddy 表格同一格用同一组件） */}
+                    <TableCell>
+                      <ActivityCell
+                        lastUsedMs={account.last_used_ms ?? 0}
+                        recent={account.recent_14 ?? []}
                       />
-                    ) : (
-                      <IconAction
-                        label="恢复"
-                        icon={<Play className="size-3.5" strokeWidth={1.9} />}
-                        disabled={busy}
-                        onClick={() => onAction(account, "resume")}
-                      />
-                    )}
-                    <IconAction
-                      label="复活（清除冷却/熔断）"
-                      icon={<RotateCcw className="size-3.5" strokeWidth={1.9} />}
-                      disabled={busy}
-                      onClick={() => onAction(account, "revive")}
-                    />
-                    <IconAction
-                      label="删除账号"
-                      icon={<Trash2 className="size-3.5" strokeWidth={1.9} />}
-                      disabled={busy}
-                      danger
-                      onClick={() => onDelete(account)}
-                    />
-                  </div>
-                  <span className="acct-expiry">{expiresIn(account.token_expires_ms)}</span>
-                </div>
-              </article>
-            );
-          })}
-        </div>
+                    </TableCell>
+
+                    {/* 历史用量（全时段累计）：四个数排成 2×2，悬停展开精确值 */}
+                    <TableCell>
+                      <UsageStatsCell total={account.stats_total} />
+                    </TableCell>
+
+                    {/* 额度（上游响应头回填）*/}
+                    <TableCell>
+                      <QuotaCell rateLimit={account.rate_limit} />
+                    </TableCell>
+
+                    {/* 操作 */}
+                    <TableCell className="table-col-actions">
+                      <div className="acct-actions">
+                        <div className="acct-btns">
+                          <IconAction
+                            label="刷新 token"
+                            icon={<RefreshCw className="size-3.5" strokeWidth={1.9} />}
+                            disabled={busy || !account.has_refresh_token}
+                            onClick={() => onAction(account, "refresh")}
+                          />
+                          <IconAction
+                            label="刷新额度（查上游 /usage）"
+                            icon={<Gauge className="size-3.5" strokeWidth={1.9} />}
+                            disabled={busy || !account.has_access_token}
+                            onClick={() => onAction(account, "quota")}
+                          />
+                          {account.status === "active" ? (
+                            <IconAction
+                              label="暂停"
+                              icon={<Pause className="size-3.5" strokeWidth={1.9} />}
+                              disabled={busy}
+                              onClick={() => onAction(account, "pause")}
+                            />
+                          ) : (
+                            <IconAction
+                              label="恢复"
+                              icon={<Play className="size-3.5" strokeWidth={1.9} />}
+                              disabled={busy}
+                              onClick={() => onAction(account, "resume")}
+                            />
+                          )}
+                          <IconAction
+                            label="复活（清除冷却/熔断）"
+                            icon={<RotateCcw className="size-3.5" strokeWidth={1.9} />}
+                            disabled={busy}
+                            onClick={() => onAction(account, "revive")}
+                          />
+                          <IconAction
+                            label="删除账号"
+                            icon={<Trash2 className="size-3.5" strokeWidth={1.9} />}
+                            disabled={busy}
+                            danger
+                            onClick={() => onDelete(account)}
+                          />
+                        </div>
+                        <span className="acct-expiry">{expiresIn(account.token_expires_ms)}</span>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
       </div>
     </div>
   );

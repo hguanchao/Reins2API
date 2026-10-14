@@ -79,6 +79,14 @@
     border-color var(--ap-dur-fast) ease;
 }
 
+/* 表行进场：轮询刷新时新行/换页后的行直接"跳"出来很生硬。
+   只在挂载时播一次——表行都以稳定 id 作 key（uid / model.id / row.id），
+   10s 轮询更新数据不会让它们重挂，所以不会反复闪。
+   只做 opacity：<tr> 上的 transform 在部分浏览器里会被忽略。 */
+[data-slot="table-body"] > [data-slot="table-row"] {
+  animation: ap-row-in var(--ap-dur-fast) var(--ap-ease-out) both;
+}
+
 /* Toast 已由 sonner 自带动画；补一层容器不抢 */
 
 /* 加载/刷新旋转：全局定义，避免依赖 tailwind 默认 spin 未生成 */
@@ -157,6 +165,15 @@
 }
 
 @keyframes ap-dialog-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ap-row-in {
   from {
     opacity: 0;
   }

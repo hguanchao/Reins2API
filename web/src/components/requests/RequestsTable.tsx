@@ -54,7 +54,7 @@ export function RequestsTable({
               <TableHead>耗时</TableHead>
               <TableHead>Token</TableHead>
               <TableHead>缓存</TableHead>
-              <TableHead className="usage-col-reason">原因</TableHead>
+              <TableHead>原因</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -227,7 +227,7 @@ export function RequestsTable({
                     </TableCell>
                     {/* 原因：只有非 200 才显示上游原始报错；成功请求显示占位「—」，
                         与 demo 一致（留空会让整列看起来缺内容） */}
-                    <TableCell className="usage-col-reason">
+                    <TableCell>
                       {row.http_status !== 200 && row.error_message ? (
                         <Tooltip>
                           <TooltipTrigger asChild>

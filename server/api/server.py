@@ -389,6 +389,17 @@ _SERIES_DAYS = 14         # 账号行迷你柱状图的桶数（按天，最旧 
 _RECENT_REQUESTS = 14     # 请求结果条：每号保留最近多少次请求的结果
 
 
+def _empty_account_stats() -> dict[str, int]:
+    """按账号聚合的零值（全时段 total 与近 7 天 stats 共用同一套字段）。"""
+    return {
+        "requests": 0,
+        "failed": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_tokens": 0,
+    }
+
+
 def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
     """按账号聚合 requests 遥测（统计单一代数事实源，docs §7.2）。
 
@@ -406,11 +417,14 @@ def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
     # 以全时段聚合打底：这样"14 天内没跑过、但历史上有量"的账号也会出现在结果里。
     for uid, total in provider_store.account_totals().items():
         entries[uid] = {
-            "total": {k: total[k] for k in ("requests", "failed", "input_tokens", "output_tokens")},
+            "total": {
+                k: total[k]
+                for k in ("requests", "failed", "input_tokens", "output_tokens", "cached_tokens")
+            },
             "last_used_ms": total["last_used_ms"],
             "daily": [0] * _SERIES_DAYS,
             "recent": [],
-            "stats": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
+            "stats": _empty_account_stats(),
         }
 
     now = int(time.time() * 1000)
@@ -420,11 +434,11 @@ def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
         if not uid:
             continue
         entry = entries.setdefault(uid, {
-            "total": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
+            "total": _empty_account_stats(),
             "last_used_ms": 0,
             "daily": [0] * _SERIES_DAYS,
             "recent": [],
-            "stats": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
+            "stats": _empty_account_stats(),
         })
         created = int(row.get("created_ms") or 0)
         status = int(row.get("http_status") or 0)
@@ -451,6 +465,7 @@ def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
                 bucket["failed"] += 1
             bucket["input_tokens"] += int(row.get("input_tokens") or 0)
             bucket["output_tokens"] += int(row.get("output_tokens") or 0)
+            bucket["cached_tokens"] += int(row.get("cached_tokens") or 0)
         entry["last_used_ms"] = max(entry["last_used_ms"], created)
     return entries
 

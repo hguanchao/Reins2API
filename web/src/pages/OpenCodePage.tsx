@@ -8,10 +8,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Boxes,
-  Database,
+  CircleCheck,
   Gauge,
   Inbox,
   RefreshCw,
+  Send,
   Timer,
   Zap,
 } from "lucide-react";
@@ -272,22 +273,23 @@ export function OpenCodePage() {
 
   return (
     <section className="gw-workspace" aria-label="OpenCode 控制台">
+      {/* 页头放在加载分支之外：首屏骨架不该把标题也一起吃掉 */}
+      <div className="gw-page-head">
+        <div>
+          <h1 className="gw-page-title">OpenCode 控制台</h1>
+          <p className="gw-page-sub">上游 opencode zen · 免费档模型代理与流量遥测</p>
+        </div>
+      </div>
+
       {loading && !ops ? (
         <div className="gw-skeleton" aria-hidden />
       ) : (
         <>
-          <div className="gw-page-head">
-            <div>
-              <h1 className="gw-page-title">OpenCode 控制台</h1>
-              <p className="gw-page-sub">上游 opencode zen · 免费档模型代理与流量遥测</p>
-            </div>
-          </div>
-
           {/* ── KPI 条 ── */}
           <div className="mission-strip mission-strip-gw" role="group" aria-label="OpenCode KPI">
             <div className="metric">
               <div className="metric-k">
-                <Activity className="metric-ico" strokeWidth={1.6} />
+                <Send className="metric-ico" strokeWidth={1.6} />
                 24h 请求
               </div>
               <div className="metric-v">{totals?.requests ?? 0}</div>
@@ -297,7 +299,7 @@ export function OpenCodePage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Zap className="metric-ico" strokeWidth={1.6} />
+                <CircleCheck className="metric-ico" strokeWidth={1.6} />
                 成功率
               </div>
               <div
@@ -316,7 +318,7 @@ export function OpenCodePage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Boxes className="metric-ico" strokeWidth={1.6} />
+                <Activity className="metric-ico" strokeWidth={1.6} />
                 Tokens
               </div>
               <div className="metric-v">
@@ -328,7 +330,7 @@ export function OpenCodePage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Database className="metric-ico" strokeWidth={1.6} />
+                <Zap className="metric-ico" strokeWidth={1.6} />
                 缓存命中率
               </div>
               <div
@@ -393,7 +395,7 @@ export function OpenCodePage() {
                 >
                   <RefreshCw
                     className={cn("size-3.5", reloading && "animate-spin")}
-                    strokeWidth={1.75}
+                    strokeWidth={1.9}
                   />
                 </Button>
               </div>
@@ -467,7 +469,7 @@ export function OpenCodePage() {
                 <h2 className="gw-panel-title">Token 用量与请求次数</h2>
                 <UsageRangeSelect value={usageRange} onChange={setUsageRange} className="ml-auto" />
               </div>
-              <TokenUsageChart provider="opencode" range={usageRange} />
+              <TokenUsageChart provider="opencode" range={usageRange} key={usageRange} />
             </section>
           </div>
 

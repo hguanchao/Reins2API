@@ -1,43 +1,8 @@
-/* ── 账号池行列表（Codex 页）────────────────────────────────────────────
-   版式参考 codex2api 控制台：一行一个账号，而不是 7 列宽表。
-   视觉上跟 app 既有的表格语言对齐——**一张卡片 + 行间细线**，不是每行一张带边框的卡
-   （那会在 gw-panel 里套出双层边框）。绿只用在状态与指示条上，头像等非语义元素保持中性。
+/* ── 账号池表格单元格（Codex 页）────────────────────────────────────────
+   Codex 号池与 WorkBuddy 号池同为 `gw-table-card` 表格；这里只放**单元格内部**的样式
+   （凭证 / 套餐 / 状态 / 结果条 / 统计 / 额度 / 操作按钮）。行与列宽交给表格本身。
+   绿只用在状态与指示条上，头像等非语义元素保持中性。
    */
-
-.acct-list {
-  display: flex;
-  flex-direction: column;
-}
-
-/* 一行 = 7 列栅格。没有列头，所以列宽按内容给、间距收紧，
-   避免短内容（套餐/状态）在宽列里"飘"。 */
-.acct-row {
-  display: grid;
-  /* 凭证列封顶（邮箱就 190px 上下），富余宽度留给额度条——否则宽屏下凭证列吃掉
-     350px、中间空一大片，额度条反而很短。 */
-  grid-template-columns:
-    minmax(200px, 264px)    /* 凭证（够放下完整邮箱，不截断） */
-    52px                    /* 套餐 */
-    108px                   /* 可用状态 */
-    118px                   /* 最近请求 */
-    180px                   /* 历史用量（= 2×84 + 12 间距；写死同理，fr 会把整块留在左半边） */
-    minmax(215px, 1.2fr)    /* 额度 */
-    148px;                  /* 操作 */
-  gap: 16px;
-  align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--hairline);
-  transition: background-color var(--ap-dur-fast) ease;
-}
-.acct-row:last-child {
-  border-bottom: 0;
-}
-.acct-row:hover {
-  background: var(--table-hover);
-}
-.acct-row.is-busy {
-  opacity: 0.55;
-}
 
 /* ── 凭证 ── */
 .acct-cred {
@@ -57,7 +22,7 @@
   border: 1px solid var(--border);
   background: var(--muted);
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -70,7 +35,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--foreground);
 }
@@ -79,14 +44,69 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-subtle);
 }
 
-/* ── 套餐 ── */
-.acct-plan {
-  font-size: 12.5px;
-  color: var(--muted-foreground);
+/* ── 套餐徽章（柔光玻璃）──────────────────────────────────────────────
+   令牌体系写明「无渐变无发光」，这里是**刻意的局部破例**，且只发生在套餐这一列：
+   半透明的档位底 + 一层斜向柔光 + 发丝级顶缘高光，做出磨砂玻璃的质感；
+   表格其余列保持扁平。
+   --tier 是档位色（按档位给，见 tier-* 类），底与边由档位色按透明度混出，
+   深浅两套主题自动跟随；rgba 白/黑只用于高光与接触阴影——那是物理上的反射，
+   不属于主题色板。深色主题下白高光收敛、底更实（见下方 dark 覆盖）。
+   注：徽章坐在实底表行上，backdrop-filter 没有可糊的东西，它的作用只是让这层
+   半透明底和周围"接"得更自然；真正的玻璃感来自柔光与顶缘高光。
+   ───────────────────────────────────────────────────────────────── */
+.plan-badge {
+  --tier: var(--fg-subtle);
+  /* 全大写标签在 11.5px 下不加字距会挤成一坨，加一点呼吸感 */
+  letter-spacing: 0.03em;
+  /* 底走透明档位色（不是与卡片色混——混出来是实色，就没有"透"这回事了） */
+  background-color: color-mix(in srgb, var(--tier) 16%, transparent);
+  /* 柔光：左上受光、中段几乎透明、右下回一点亮，模拟玻璃的漫反射 */
+  background-image: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.5) 0%,
+    rgba(255, 255, 255, 0.06) 46%,
+    rgba(255, 255, 255, 0.2) 100%
+  );
+  backdrop-filter: blur(8px) saturate(1.6);
+  border-color: color-mix(in srgb, var(--tier) 34%, transparent);
+  color: color-mix(in srgb, var(--tier) 76%, var(--foreground));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.05),
+    0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* 深色主题：底更实一档（深底上半透明会糊成灰）、白高光收敛成一层薄霜 */
+.dark .plan-badge,
+[data-theme="dark"] .plan-badge {
+  background-color: color-mix(in srgb, var(--tier) 20%, transparent);
+  background-image: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.24) 0%,
+    rgba(255, 255, 255, 0.02) 46%,
+    rgba(255, 255, 255, 0.12) 100%
+  );
+  border-color: color-mix(in srgb, var(--tier) 38%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.28),
+    0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.plan-badge.tier-free {
+  --tier: var(--fg-subtle);
+}
+.plan-badge.tier-plus {
+  --tier: var(--ok);
+}
+.plan-badge.tier-pro {
+  --tier: var(--primary);
+}
+.plan-badge.tier-team {
+  --tier: var(--warn);
 }
 
 /* ── 可用状态 ── */
@@ -97,14 +117,14 @@
   min-width: 0;
 }
 .acct-state b {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 .acct-state small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-subtle);
 }
 .acct-state.is-ok b {
@@ -131,7 +151,7 @@
   align-items: center;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--foreground);
 }
 .acct-spark {
@@ -165,23 +185,28 @@
   cursor: help;                /* 只有失败柱带悬停详情，给个可查的暗示 */
 }
 
-/* ── 历史用量：图标贴数值的迷你规格表（四格共用一条悬停提示，含义按格子顺序列）──
-   两列都写死 84px，不用 1fr / max-content：四格的内容宽度逐行不同（"100.0%" vs "—"），
-   按内容撑列会让第二组（#/⊗）跟着每行的第一个数左右滑、行与行对不齐；而 1fr +
-   space-between 又会把图标和自己的数字拉开 60px+。84px = 图标 12 + 间隙 6 +
-   最宽数值 42（"100.0%"）+ 余量，数值在各自列里左对齐，所以整块逐行完全重合。 */
+/* ── 历史用量：图标 + 数值的迷你规格表（四格 2×2，悬停展开精确值）──
+   两列写死 96px，不用 1fr / max-content：四格的内容宽度逐行不同（"100.0%" vs "—"），
+   按内容撑列会让第二组（缓存/成功率）跟着每行的第一个数左右滑、行与行对不齐；而 1fr +
+   space-between 又会把图标和自己的数字拉开一大截。96px = 图标 14 + 图文间距 30 +
+   最宽数值 43（"100.0%"）+ 余量，数值在各自列里左对齐，所以整块逐行完全重合。
+   列间距取 0：两列直接相邻，列宽里那点余量就是两组之间唯一的间隔。它比格内的图文
+   间距（30）小，所以四格读起来是一整片"四连格"而不是两对；要更强的分组感就把列间距
+   调回大于 30。 */
 .acct-stats {
   display: grid;
-  grid-template-columns: 84px 84px;
-  gap: 4px 12px;
+  grid-template-columns: 96px 96px;
+  gap: 5px 0;
   cursor: help;
 }
+/* 图标与数值之间留 30px：数字贴着图标时会被当成图标的尾巴，认不出是两样东西 */
 .acct-stat {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 30px;
   min-width: 0;
 }
+/* 图标保持中性灰：它们是这四格的图例，不是语义信号（见 tokens.css 的用色约定） */
 .acct-stat-ico {
   display: inline-flex;
   align-items: center;
@@ -189,12 +214,34 @@
 }
 .acct-stat-v {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
 }
-.acct-stat-v.is-bad {
-  color: var(--destructive);
+
+/* 悬停提示：四格排成 2 行 2 列（上标签、下数值）。
+   min-width 是给 1fr 列一个落脚点，否则 tooltip 宽度会缩到最长那行文字。 */
+.acct-legend {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 18px;
+  min-width: 11.5rem;
+}
+.acct-legend-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.acct-legend-k {
+  font-size: var(--fs-xs);
+  color: var(--fg-subtle);
+}
+.acct-legend-v {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── 额度 ── */
@@ -204,18 +251,45 @@
   gap: 4px;
   min-width: 0;
 }
+/* 水位条那一行：条子吃满剩余宽度，百分比钉在条尾。
+   条子只有 4px 高，数字没法压在条上，所以是"条 + 紧跟其后的标签"这个排法。 */
+.acct-quota-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.acct-quota-row .acct-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* 条尾百分比：用等宽数字，数值在 0~100 之间跳动时宽度不抖 */
+.acct-quota-pct {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+/* 与条子同一套告警色：条子变琥珀/红时数字跟着变，扫一眼就知道哪个号吃紧 */
+.acct-quota-pct.is-warn {
+  color: var(--warning-text);
+}
+.acct-quota-pct.is-bad {
+  color: var(--destructive);
+}
 /* 明细一行说全：窗口剩余 · 重置倒计时 · 副窗口剩余（原 head 那行只有一个数字，
    白白把这一格撑成三行，已并入这里） */
 .acct-quota-foot {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-subtle);
   font-variant-numeric: tabular-nums;
 }
 .acct-quota-empty {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-subtle);
   cursor: help;
 }
@@ -232,19 +306,23 @@
   background: var(--meter-high);
   transition: width var(--ap-dur) var(--ap-ease-out);
 }
+/* 条子画剩余水位，所以下面三档的触发条件是**剩余**：≤30% 琥珀、≤10% 红。 */
 .acct-bar.is-warn > i {
   background: var(--meter-mid);
 }
-/* 用量 ≥90%：用语义红（--destructive），与本行「剩余 0%」的文字、结果条的失败柱同色。
+/* 剩余 ≤10%：用语义红（--destructive），与本行的百分比、结果条的失败柱同色。
    --meter-low（玫红 #f43f5e）是给 5px 色点、短条那种小面积指示物配的（见 tokens.css），
-   铺成一条几百 px 的满格条时又亮又粉，且整站没有第二处这个色相。 */
+   铺成一条几百 px 的条时又亮又粉，且整站没有第二处这个色相。 */
 .acct-bar.is-bad > i {
   background: var(--destructive);
 }
-/* 额度用尽（用掉 100%）：铺满但不上色——灰比红安静，状态由明细里的「已用尽」说。
-   填充要比底轨深一档，否则和底轨糊成同一条。 */
-.acct-bar.is-out > i {
-  background: var(--border-strong);
+/* 额度用尽（剩余 0%）：填充宽度是 0，条子被抽空——空轨很容易被读成"没数据"，
+   所以这里把**底轨**染一层浅红，明确表示"用尽"。 */
+.acct-bar.is-out {
+  background: color-mix(in srgb, var(--destructive) 16%, transparent);
+}
+.acct-quota-pct.is-out {
+  color: var(--destructive);
 }
 
 /* ── 操作 ── */
@@ -285,39 +363,6 @@
   color: var(--destructive);
 }
 .acct-expiry {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-subtle);
-}
-
-/* 窄屏（侧栏收起的桌面窗口 / 平板）：7 列压不下，改成两列堆叠——
-   凭证与操作同一行，其余整行排下来：状态 / 最近请求 / 统计四项平分 / 额度整行。
-   额度必须在窄模式下显式占整行：不写的话它会被自动排进右边那条 auto 列，
-   变成 110px 宽的窄条（.acct-actions 已占满该列时甚至无处可放）。 */
-@media (max-width: 1080px) {
-  .acct-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    row-gap: 10px;
-    padding: 14px 16px;
-  }
-  .acct-cred {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  .acct-actions {
-    grid-column: 2;
-    grid-row: 1;
-  }
-  .acct-plan {
-    display: none; /* 套餐在窄屏没有独立行的价值，并入状态行副文案 */
-  }
-  .acct-state,
-  .acct-stats,
-  .acct-quota,
-  .acct-quota-empty {
-    grid-column: 1 / -1;
-  }
-  .acct-stats {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 4px 16px;
-  }
 }

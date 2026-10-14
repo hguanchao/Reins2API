@@ -25,7 +25,7 @@
   align-items: center;
   gap: 5px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .usage-stream > i {
   flex: none;
@@ -49,7 +49,7 @@
 
 /* 思考强度：纯文字色阶（demo 的 .effort） */
 .usage-effort {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   text-transform: lowercase;
 }
@@ -78,7 +78,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: default;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--destructive);
 }
 
@@ -91,7 +91,7 @@
   align-items: flex-start;
   gap: 1px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.35;
   cursor: default;
   font-variant-numeric: tabular-nums;
@@ -141,6 +141,6 @@
 }
 .usage-cache-num {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }

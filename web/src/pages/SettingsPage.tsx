@@ -198,17 +198,18 @@ export function SettingsPage() {
 
   return (
     <section className="gw-workspace" aria-label="系统配置">
+      {/* 页头放在加载分支之外：首屏骨架不该把标题也一起吃掉 */}
+      <div className="gw-page-head">
+        <div>
+          <h1 className="gw-page-title">系统配置</h1>
+          <p className="gw-page-sub">出站链路与运行参数</p>
+        </div>
+      </div>
+
       {!config ? (
         <div className="gw-skeleton" aria-hidden />
       ) : (
         <>
-        <div className="gw-page-head">
-          <div>
-            <h1 className="gw-page-title">系统配置</h1>
-            <p className="gw-page-sub">出站链路与运行参数</p>
-          </div>
-        </div>
-
         <section className="gw-panel">
           <div className="gw-panel-head">
             <Network className="size-3.5" strokeWidth={1.6} aria-hidden />
@@ -262,7 +263,7 @@ export function SettingsPage() {
                       <span className="inline-flex items-center gap-2 text-[13.5px] font-medium">
                         <Icon
                           className={cn("size-4", active ? "text-primary" : "text-muted-foreground")}
-                          strokeWidth={1.75}
+                          strokeWidth={1.9}
                           aria-hidden
                         />
                         {option.label}

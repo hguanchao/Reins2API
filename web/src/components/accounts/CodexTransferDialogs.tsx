@@ -171,7 +171,7 @@ export function CodexImportDialog({
               variant="outline"
               onClick={() => fileRef.current?.click()}
             >
-              <Upload className="size-3.5" strokeWidth={1.75} />
+              <Upload className="size-3.5" strokeWidth={1.9} />
               选择 .json 文件
             </Button>
             <span className="text-fg-subtle text-[11px]">可多选，或直接粘贴到下面</span>
@@ -318,7 +318,7 @@ export function CodexExportDialog({
             取消
           </Button>
           <Button size="sm" type="button" disabled={busy || count === 0} onClick={() => void submit()}>
-            <Download className="size-3.5" strokeWidth={1.75} />
+            <Download className="size-3.5" strokeWidth={1.9} />
             {busy ? "导出中…" : "导出 .json"}
           </Button>
         </DialogFooter>

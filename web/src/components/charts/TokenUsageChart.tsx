@@ -310,18 +310,20 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
                     y={gy + 3.5}
                     textAnchor="end"
                     style={{ fill: "var(--fg-subtle)" }}
-                    fontSize={10}
+                    fontSize={11}
                   >
                     {fmtCompact(tokV)}
                   </text>
                 ) : null}
+                {/* 右轴刻度染成请求线的琥珀色：两条轴此前都是同一档灰、字号也一样，
+                    除了图例里那句「(右轴)」没有任何线索说哪根轴管哪条序列。 */}
                 {showReq ? (
                   <text
                     x={W - PAD_R + 6}
                     y={gy + 3.5}
                     textAnchor="start"
-                    style={{ fill: "var(--fg-subtle)" }}
-                    fontSize={10}
+                    style={{ fill: C_REQ }}
+                    fontSize={11}
                   >
                     {Math.round(reqV)}
                   </text>
@@ -333,12 +335,12 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
               填充不透明度、线宽、点半径全部取 demo 的值 */}
           <path
             d={geo.inputPath}
-            style={{ fill: C_INPUT, stroke: C_INPUT, fillOpacity: 0.14 }}
+            style={{ fill: C_INPUT, stroke: C_INPUT, fillOpacity: 0.2 }}
             strokeWidth={1.6}
           />
           <path
             d={geo.outputPath}
-            style={{ fill: C_OUTPUT, stroke: C_OUTPUT, fillOpacity: 0.14 }}
+            style={{ fill: C_OUTPUT, stroke: C_OUTPUT, fillOpacity: 0.2 }}
             strokeWidth={1.6}
           />
           {/* 请求次数折线(右轴) */}
@@ -394,7 +396,7 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
               y={H - 8}
               textAnchor="middle"
               style={{ fill: "var(--fg-subtle)" }}
-              fontSize={10}
+              fontSize={11}
             >
               {t.label}
             </text>

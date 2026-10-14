@@ -172,7 +172,8 @@ class ProviderStore:
         """按账号的**全时段**聚合（历史用量列）。
 
         在 SQL 侧 GROUP BY，不把整表读进内存——遥测只进不出，表会一直长。
-        返回 {uid: {requests, failed, input_tokens, output_tokens, last_used_ms}}。
+        返回 {uid: {requests, failed, input_tokens, output_tokens, cached_tokens,
+        last_used_ms}}。
         """
         try:
             with self._lock:
@@ -182,6 +183,7 @@ class ProviderStore:
                     " SUM(CASE WHEN http_status < 200 OR http_status >= 300 THEN 1 ELSE 0 END) AS failed,"
                     " SUM(input_tokens) AS input_tokens,"
                     " SUM(output_tokens) AS output_tokens,"
+                    " SUM(cached_tokens) AS cached_tokens,"
                     " MAX(created_ms) AS last_used_ms"
                     " FROM requests WHERE account_uid != '' GROUP BY account_uid"
                 ).fetchall()
@@ -194,6 +196,7 @@ class ProviderStore:
                 "failed": int(row["failed"] or 0),
                 "input_tokens": int(row["input_tokens"] or 0),
                 "output_tokens": int(row["output_tokens"] or 0),
+                "cached_tokens": int(row["cached_tokens"] or 0),
                 "last_used_ms": int(row["last_used_ms"] or 0),
             }
             for row in rows

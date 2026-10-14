@@ -29,12 +29,29 @@ function resolveSlotCount(width: number): number {
   return Math.min(MAX_SLOTS, Math.max(MIN_SLOTS, fit));
 }
 
-/** "MM/DD HH:MM:SS"。 */
-export function fmtStamp(ms: number): string {
+/** 绝对时间："MM/DD HH:MM:SS"。悬停详情里用——那一刻要的是精确值，不是"多久以前"。 */
+export function fmtStampFull(ms: number): string {
   if (!ms) return "—";
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** 距今多久：7 天以内走「x天 / x小时 / x分钟 / x秒」，满 7 天回落到绝对时间。
+ *  不足 1 秒（含时钟漂移导致的"未来时间"）统一显示「刚刚」，不写"0秒"。 */
+export function fmtStamp(ms: number): string {
+  if (!ms) return "—";
+  const diff = Date.now() - ms;
+  if (diff < 1000) return "刚刚";
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}秒`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}分钟`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour}小时`;
+  const day = Math.floor(hour / 24);
+  if (day < 7) return `${day}天`;
+  return fmtStampFull(ms);
 }
 
 const isOk = (item: AccountRecentRequest) => item.http_status >= 200 && item.http_status < 300;
@@ -45,7 +62,7 @@ function FailureDetail({ item }: { item: AccountRecentRequest }) {
   return (
     <div className="w-[15.5rem]">
       <div className="text-fg-subtle mb-1.5 font-mono text-[11.5px]">
-        {fmtStamp(item.created_ms)}
+        {fmtStampFull(item.created_ms)}
       </div>
       <div className="grid grid-cols-[auto_1fr] items-baseline gap-x-3.5 gap-y-1">
         <span className="text-fg-subtle">状态</span>

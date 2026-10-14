@@ -139,7 +139,7 @@ export function ThemeToggle({ className }: { className?: string }) {
               aria-label={`主题：${meta.label}`}
             >
               <TooltipTrigger>
-                <Icon className="size-3.5" strokeWidth={1.75} />
+                <Icon className="size-3.5" strokeWidth={1.9} />
               </TooltipTrigger>
             </ToggleGroupItem>
             <TooltipContent side="bottom">{meta.label}</TooltipContent>

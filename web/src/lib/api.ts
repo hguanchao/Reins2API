@@ -328,9 +328,21 @@ export interface WorkBuddyAccount {
   checkin_updated_ms: number;
   created_ms: number;
   updated_ms: number;
-  stats_7d?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
+  stats_7d?: {
+    requests: number;
+    failed: number;
+    input_tokens: number;
+    output_tokens: number;
+    cached_tokens: number;
+  };
   /** 全时段累计（口径同 stats_7d，只是不限时间窗） */
-  stats_total?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
+  stats_total?: {
+    requests: number;
+    failed: number;
+    input_tokens: number;
+    output_tokens: number;
+    cached_tokens: number;
+  };
   last_used_ms?: number;
   /** 近 14 天逐日请求数（最旧在前；按天口径） */
   daily_14d?: number[];
@@ -504,9 +516,21 @@ export interface CodexAccount {
   last_error: string;
   created_ms: number;
   updated_ms: number;
-  stats_7d?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
+  stats_7d?: {
+    requests: number;
+    failed: number;
+    input_tokens: number;
+    output_tokens: number;
+    cached_tokens: number;
+  };
   /** 全时段用量（历史用量列；不限于 7 天） */
-  stats_total?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
+  stats_total?: {
+    requests: number;
+    failed: number;
+    input_tokens: number;
+    output_tokens: number;
+    cached_tokens: number;
+  };
   last_used_ms?: number;
   /** 近 14 天逐日请求数（最旧在前；按天口径） */
   daily_14d?: number[];
