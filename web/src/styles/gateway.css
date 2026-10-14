@@ -456,22 +456,19 @@
   border-top: 1px solid var(--hairline);
 }
 
-/* ── 系统配置页的标签与输入框：规格取自 demo 的 .label / .input（12.5px、36px 高、
-   10px 圆角、surface 底色、mono 12.5px、聚焦 3px --ring 光环）。
-   这两个类只服务这一页：组件库的 Input/Label 是通用件，用工具类去改它的
+/* ── 系统配置页的输入框：它长在「手动填写」卡片里当一行值用，所以刻意压扁——
+   高度对齐同排的 11.5px/1.5 文本行（约 22px），编辑态才不把卡片顶高一截；
+   常规输入框的 36px 在这个位置会把整行卡片撑开。
+   这个类只服务这一页：组件库的 Input 是通用件，用工具类去改它的
    height / border-radius / 焦点环会跟组件自带的同名工具类打架（谁在产物 CSS 里
    靠后谁赢，不可控），所以在这里用未分层的 CSS 明确压住。 */
-.gw-settings-label {
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--foreground);
-}
 .gw-settings-input {
-  height: 36px;
-  padding-inline: 12px;
-  border-radius: var(--radius-lg);
+  height: 22px;
+  padding-inline: 8px;
+  padding-block: 0;
+  border-radius: 6px;
   background: var(--surface);
-  font-size: 12.5px;
+  font-size: 11.5px;
 }
 .gw-settings-input::placeholder {
   color: var(--fg-subtle);

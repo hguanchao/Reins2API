@@ -118,7 +118,18 @@
 }
 
 /* ── 最近请求 + 请求结果条 ── */
+/* 外层收成 fit-content：柱排与上方时间戳两端对齐（宽度就取时间戳那一行文本的宽度），
+   而不是两行各自贴格子左边、右边各留一段空。 */
+.acct-activity {
+  width: fit-content;
+  max-width: 100%;
+}
+/* inline-flex 是为了让这行文本可以被量宽——柱数按它反解（见 ActivityCell.tsx）：
+   块级元素会撑满外层，量出来就是外层的宽度而不是文字的宽度，柱数会跟自己对上。 */
 .acct-when {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--foreground);
@@ -128,12 +139,13 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 2px;
-  width: 100px;
+  width: 100%;
+  min-width: 28px;             /* 5 根柱（5×6−2）：外层 fit-content 不该被柱排拖得更窄 */
   height: 14px;
   margin-top: 5px;
 }
-/* 窄柱均匀铺满整格（与上方时间文本两端对齐）：固定 4px 宽 + space-between，
-   不再自由拉宽——14 根各自撑宽会把格子填满、柱子看起来像色块。 */
+/* 窄柱均匀铺满整条：固定 4px 宽 + space-between，由**间距**吸收余量——柱子各自
+   撑宽会把整条填成色块。柱数不写死：按时间戳宽度反解，5~14 根（见 ActivityCell.tsx）。 */
 .acct-spark i {
   display: block;
   width: 4px;

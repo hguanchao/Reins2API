@@ -21,7 +21,6 @@ import {
   RefreshCw,
   RotateCcw,
   Trash2,
-  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -77,76 +76,6 @@ const LOGIN_POLL_MS = 3_000;
 /** 最近请求默认每页条数 */
 const DEFAULT_PAGE_SIZE = 20;
 
-/** 耗时统一秒显示（0.01s 粒度；精确毫秒放 title） */
-/** 毫秒 → 秒。digits 默认 2（KPI 用）；最近请求的耗时列用 1 位，
- *  与首字对齐成 0.1s / 1.0s 的同一量级。 */
-/** 思考强度档位配色（同 grok-rego effortTone，配合 usage.css 的 .usage-effort 分档） */
-/** 账号生命周期状态色调（active/paused/disabled） */
-function accountStatusTone(status: string): "success" | "warning" | "destructive" {
-  if (status === "active") return "success";
-  if (status === "paused") return "warning";
-  return "destructive";
-}
-
-/** last_error 分类 → 中文短语（与 providers/workbuddy/classify.py 的 kind 对齐）。
- *  未收录的分类原样透出 kind——将来新增分类时宁可显示英文也不吞掉信息。 */
-const ERROR_KIND_LABEL: Record<string, string> = {
-  soft_rate: "上游限流",
-  hard_credit: "积分不足",
-  session_dead: "会话失效",
-  account_fault: "账号异常",
-  model_blocked: "模型不可用",
-  not_found: "上游 404",
-  server: "上游 5xx",
-  waf_block: "WAF 拦截",
-  prompt_too_long: "请求超长",
-  image_invalid: "图片无效",
-  content_blocked: "内容审核",
-  bad_params: "参数非法",
-  client: "上游 4xx",
-};
-
-/** 「分类: 上游响应体」摘要串 → 工具提示要的核心字段。
- *
- *  last_error 由服务端写成 `{kind}: {响应体}`，响应体截到 160 字符——完整 JSON
- *  常被切断在 displayMsg 一半（截断后的串 JSON.parse 必失败），所以解析走两段：
- *  先按完整 JSON 取 displayMsg.en（官方整句）或 msg，失败再用正则从截断文本里
- *  捞（msg / code 一般落在截断点之前）。两段都没捞到就退回原文，不丢信息。 */
-function accountErrorBrief(lastError: string): {
-  kind: string;
-  code: string;
-  message: string;
-  requestId: string;
-} {
-  const sep = lastError.indexOf(": ");
-  const kind = sep > 0 ? lastError.slice(0, sep) : "";
-  const body = sep > 0 ? lastError.slice(sep + 2) : lastError;
-  let code = "";
-  let message = "";
-  let requestId = "";
-  try {
-    const parsed = JSON.parse(body) as Record<string, unknown>;
-    const display = (parsed.displayMsg as Record<string, unknown> | undefined)?.en;
-    if (typeof display === "string" && display) message = display;
-    else if (typeof parsed.msg === "string") message = parsed.msg;
-    if (parsed.code != null) code = String(parsed.code);
-    if (typeof parsed.requestId === "string") requestId = parsed.requestId;
-  } catch {
-    code = /"code"\s*:\s*"?([^",}]+)"?/.exec(body)?.[1] ?? "";
-    message = /"msg"\s*:\s*"([^"]*)"/.exec(body)?.[1] ?? "";
-    requestId = /"requestId"\s*:\s*"([^"]+)"/.exec(body)?.[1] ?? "";
-  }
-  return {
-    kind: ERROR_KIND_LABEL[kind] ?? kind,
-    code,
-    // 兜底：非 JSON 响应体（WAF/网关的 HTML 错误页）剥标签再收空白，
-    // 否则提示框里是一串 <html><body>…
-    message: message || body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(),
-    requestId,
-  };
-}
-
-/** 缓存命中条：与 OpenCode 用量明细同款（命中率 ≥70% 绿 / ≥30% 黄 / 其余红） */
 /** 冷却剩余（毫秒 → "2h13m"/"45s"），未冷却返回空。 */
 function fmtCooldown(untilMs: number): string {
   const remain = untilMs - Date.now();
@@ -154,6 +83,47 @@ function fmtCooldown(untilMs: number): string {
   const minutes = Math.ceil(remain / 60_000);
   if (minutes >= 60) return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
   return `${minutes}m`;
+}
+
+/** 账号可用性：把生命周期与冷却/熔断归一成「现在能不能被派号」的结论
+ *  （判据对照 pool._healthy），徽章给结论、副行给原因与剩余时间。
+ *  只看 active/paused/disabled 会把冷却中的号显示成「可用」，与实际选号结果相反。 */
+function availabilityOf(account: WorkBuddyAccount): {
+  label: string;
+  tone: "success" | "warning" | "destructive";
+  sub: string;
+} {
+  if (account.status === "disabled") {
+    // status_reason 只有两个来源：人工禁用 / 会话失效到刷新重试上限
+    return {
+      label: "已禁用",
+      tone: "destructive",
+      sub: account.status_reason.startsWith("session invalid") ? "会话失效，需重新登录" : "人工禁用",
+    };
+  }
+  if (account.status === "paused") {
+    return { label: "已暂停", tone: "warning", sub: "人工暂停" };
+  }
+  const breaker = fmtCooldown(account.breaker_until_ms);
+  if (breaker) return { label: "熔断中", tone: "destructive", sub: `${breaker} 后恢复` };
+  const cooldown = fmtCooldown(account.cooldown_until_ms);
+  if (cooldown) {
+    // cooldown_kind 是罚因大类：软罚（限流/404/会话类）统一记 soft
+    const kind: Record<string, string> = { soft: "限流", hard: "积分不足", waf: "WAF" };
+    return {
+      label: "冷却中",
+      tone: "warning",
+      sub: `${kind[account.cooldown_kind] ?? "冷却"} ${cooldown} 后恢复`,
+    };
+  }
+  if (!account.has_access_token) {
+    return { label: "缺凭证", tone: "destructive", sub: "无 access_token" };
+  }
+  return {
+    label: "可用",
+    tone: "success",
+    sub: account.consecutive_failures > 0 ? `连败 ${account.consecutive_failures}` : "",
+  };
 }
 
 /** 倍率文案归一：上游两种写法混着来（"x0.59 credits" 与 "0.00x"），
@@ -164,12 +134,6 @@ function normalizeRate(raw: string): string {
     .replace(/^(\d+(?:\.\d+)?)\s*x$/i, "x$1")
     .trim();
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  active: "可用",
-  paused: "暂停",
-  disabled: "禁用",
-};
 
 /** 北京日期 YYYY-MM-DD（签到按 UTC+8 结算一天，与后端 checkin.beijing_today 对齐）。 */
 function beijingToday(): string {
@@ -546,7 +510,7 @@ export function WorkBuddyPage() {
         </div>
       </div>
 
-      {/* ── 账号表（全宽：8 列挤在半宽栅格里会不断折行）── */}
+      {/* ── 账号表（全宽：7 列挤在半宽栅格里会不断折行）── */}
       <div className="gw-grid gw-grid-1">
         <section className="gw-panel">
           <div className="gw-panel-head">
@@ -576,10 +540,9 @@ export function WorkBuddyPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>账号</TableHead>
-                    <TableHead>状态</TableHead>
+                    <TableHead>可用性</TableHead>
                     <TableHead>积分</TableHead>
                     <TableHead>签到</TableHead>
-                    <TableHead>冷却/熔断</TableHead>
                     <TableHead>最近请求</TableHead>
                     <TableHead>累计 tokens</TableHead>
                     <TableHead className="table-col-actions">操作</TableHead>
@@ -587,19 +550,15 @@ export function WorkBuddyPage() {
                 </TableHeader>
                 <TableBody>
                   {accounts.length === 0 ? (
-                    <TableEmptyRow colSpan={8}>
+                    <TableEmptyRow colSpan={7}>
                       <Empty icon={CircleUserRound} />
                     </TableEmptyRow>
                   ) : (
                     accounts.map((account) => {
                       const busy = busyUid === account.uid;
-                      const cooldown = fmtCooldown(account.cooldown_until_ms);
-                      const breaker = fmtCooldown(account.breaker_until_ms);
+                      const avail = availabilityOf(account);
                       const unsupported = checkinUnsupported(account);
                       const checkedToday = account.last_checkin_day === beijingToday();
-                      const errorBrief = account.last_error
-                        ? accountErrorBrief(account.last_error)
-                        : null;
                       return (
                         <TableRow key={account.uid}>
                           <TableCell>
@@ -620,40 +579,16 @@ export function WorkBuddyPage() {
                               </TooltipContent>
                             </Tooltip>
                           </TableCell>
+                          {/* 可用性：生命周期 + 冷却/熔断归一成一个结论，副行给原因与剩余时间 */}
                           <TableCell>
-                            <div className="flex items-center gap-1.5">
-                              <Badge variant={accountStatusTone(account.status)}>
-                                <i className="badge-dot" aria-hidden />
-                                {STATUS_LABEL[account.status] ?? account.status}
-                              </Badge>
-                              {errorBrief ? (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    {/* 用图标而非文字字形：emoji 字形会落到彩色字体里、
-                                        字号与基线随系统变。warning 档琥珀色＝「有记录、
-                                        不阻塞」，与徽章的绿/琥珀/红生命周期色不撞。 */}
-                                    <span className="inline-flex cursor-help text-[var(--warning-text)]">
-                                      <TriangleAlert className="size-3.5" strokeWidth={1.75} aria-hidden />
-                                    </span>
-                                  </TooltipTrigger>
-                                  {/* 提示框是绿底白字：次要信息靠 alpha 降级，不能用灰
-                                      （灰在 primary 底上读不出来） */}
-                                  <TooltipContent side="top" className="max-w-xs">
-                                    <div className="text-[10.5px] text-primary-foreground/75">
-                                      上次错误 · {errorBrief.kind}
-                                      {errorBrief.code ? ` · code ${errorBrief.code}` : ""}
-                                    </div>
-                                    <p className="mt-1 text-[11.5px] leading-[1.5] break-words">
-                                      {errorBrief.message}
-                                    </p>
-                                    {errorBrief.requestId ? (
-                                      <div className="mt-1 font-mono text-[10.5px] break-all text-primary-foreground/75">
-                                        requestId {errorBrief.requestId}
-                                      </div>
-                                    ) : null}
-                                  </TooltipContent>
-                                </Tooltip>
-                              ) : null}
+                            <div className="cell-2">
+                              <span>
+                                <Badge variant={avail.tone}>
+                                  <i className="badge-dot" aria-hidden />
+                                  {avail.label}
+                                </Badge>
+                              </span>
+                              {avail.sub ? <small>{avail.sub}</small> : null}
                             </div>
                           </TableCell>
                           <TableCell className="font-mono text-xs">
@@ -694,10 +629,7 @@ export function WorkBuddyPage() {
                               </div>
                             )}
                           </TableCell>
-                          <TableCell className="text-xs">
-                            {cooldown ? `冷却 ${cooldown}` : breaker ? `熔断 ${breaker}` : "—"}
-                          </TableCell>
-                          {/* 最近请求：时间戳 + 最近 14 次请求结果条（失败红；与 Codex 号池同一组件） */}
+                          {/* 最近请求：时间戳 + 最近 N 次请求结果条（5~14 根按列宽自适应，失败红；与 Codex 号池同一组件） */}
                           <TableCell>
                             <ActivityCell
                               lastUsedMs={account.last_used_ms ?? 0}
