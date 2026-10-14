@@ -119,9 +119,8 @@ class _CallbackHandler(BaseHTTPRequestHandler):
 class LoginManager:
     """PKCE 登录会话（session_id → _Session，TTL 淘汰）+ 本机回调监听。"""
 
-    def __init__(self, store: CodexStore, on_account_added=None, callback_port: int | None = None):
+    def __init__(self, store: CodexStore, callback_port: int | None = None):
         self._store = store
-        self._on_account_added = on_account_added  # 可选回调：新号入库后
         self._port = _CALLBACK_PORT if callback_port is None else callback_port
         self._lock = threading.Lock()
         self._sessions: dict[str, _Session] = {}
@@ -234,11 +233,6 @@ class LoginManager:
             session.status = "done"
             session.result = result
         logger.info(f"[codex] 新账号已入库 uid={uid[:8]}… plan={info.plan_type}")
-        if self._on_account_added is not None:
-            try:
-                self._on_account_added(uid)
-            except Exception as exc:
-                logger.warning(f"[codex] 新账号入库后置处理失败(不影响登录): {exc}")
         return result
 
     # ── 本机回调监听（HTTP handler 与测试共用）──
@@ -332,9 +326,11 @@ class LoginManager:
                 pending = any(s.status == "pending" for s in self._sessions.values())
             if pending:
                 return
+            # 关闭必须在持锁期间完成：否则并发的 _ensure_listener 看到 None 就立刻去
+            # 抢同一个端口，而旧 socket 尚未关闭，bind 直接失败（退化成手动粘贴）。
             self._listener = None
-        server.shutdown()
-        server.server_close()
+            server.shutdown()
+            server.server_close()
         logger.info(f"[codex] 回调监听已释放(空闲) port={self._port}")
 
     def _sweep_locked(self) -> None:

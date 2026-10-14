@@ -902,6 +902,51 @@ def test_login_callback_listener_completes_login():
             store.close()
 
 
+def test_note_rate_limit_syncs_plan_when_usage_flat():
+    """用量没动但响应头带了新档位 → 仍要同步 plan_type。
+
+    回归点：早退条件只看 used_percent，用量持平时会把档位变化一起吞掉，
+    plan_type 永远停在旧值（响应头是档位的权威来源）。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1", plan_type="plus")
+            store.update_runtime(
+                "acc-1",
+                rate_limit={"primary": {"used_percent": 37.0, "window_minutes": 300.0}},
+            )
+            provider = CodexProvider(store=store)
+            provider._note_rate_limit(store.get_account("acc-1"), {
+                "x-codex-primary-used-percent": "37",
+                "x-codex-primary-window-minutes": "300",
+                "x-codex-plan-type": "pro",
+            })
+            assert store.get_account("acc-1").plan_type == "pro"
+        finally:
+            store.close()
+
+
+def test_penalize_auth_counts_from_fresh_row():
+    """AUTH 连败以库里的最新值为基准累加（并发下传入的 account 快照可能过期）。
+
+    回归点：RATE_LIMIT 分支读库里最新值、AUTH 分支用快照值，同函数两种口径；
+    并发下 AUTH 会少算连败、够不到熔断阈值。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1")
+            store.update_runtime("acc-1", consecutive_failures=2)
+            provider = CodexProvider(store=store)
+            # 过期快照（连败 0）：应从库里的 2 续到 3，而不是从 0 记成 1
+            stale = Account(uid="acc-1", access_token="at", refresh_token="rt")
+            provider._penalize(stale, classify.classify(401, "unauthorized"), "unauthorized")
+            assert store.get_account("acc-1").consecutive_failures == 3
+        finally:
+            store.close()
+
+
 # ── 内建运行入口（无 pytest 环境直接跑）──
 
 _ALL = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

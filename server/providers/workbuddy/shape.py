@@ -9,9 +9,14 @@ thinking.go + cache_key.go，单 pass，顺序即 Go 版顺序不可换）。
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
 from providers import parts, profiles
+
+# 本网关注入的缓存键形态 `wb2a-<uid8>-<32hex>`；用它区分「客户端自带键」与
+# 「上一轮我们自己写的键」——换号重试时必须按新 uid 重算，不能沿用上个账号的键。
+_GATEWAY_KEY_RE = re.compile(r"^wb2a-.+-[0-9a-f]{32}$")
 
 # effort 档位从低到高（payload.go effortRank）。
 _EFFORT_RANK = {"off": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6}
@@ -521,13 +526,17 @@ def ensure_console_system(body: dict[str, Any]) -> bool:
 def inject_prompt_cache_key(body: dict[str, Any], uid: str, conversation_id: str) -> bool:
     """注入按账号隔离的稳定缓存键 `wb2a-<uid8>-<convHex>`。
 
-    优先级：客户端已带 prompt_cache_key → 原值保留；body 带 conversation_id →
+    优先级：客户端自带的 prompt_cache_key → 原值保留；body 带 conversation_id →
     用它做会话哈希源；否则用入站 conversation_id。uid 是硬隔离因子——跨账号
     复用同键会让上游命中错账号的前缀缓存、泄露对方对话。
+
+    本函数在轮换循环内被逐次调用：换号重试时 body 里还留着上一个账号的键，
+    必须**按本次 uid 重算覆盖**（否则 B 号带着 A 号的键打上游，正好踩中上面那条
+    隔离失效）。只尊重「客户端自带」的键——网关键有固定形态，用它来区分。
     """
     existing = body.get("prompt_cache_key")
-    if isinstance(existing, str) and existing:
-        return False
+    if isinstance(existing, str) and existing and not _GATEWAY_KEY_RE.match(existing):
+        return False  # 客户端自带键：尊重原值
     conv = conversation_id
     for key in ("conversation_id", "conversationId"):
         value = body.get(key)
@@ -536,5 +545,8 @@ def inject_prompt_cache_key(body: dict[str, Any], uid: str, conversation_id: str
             break
     uid8 = (uid or "-")[:8]
     digest = hashlib.sha256(f"{uid}|{conv}".encode()).hexdigest()[:32]
-    body["prompt_cache_key"] = f"wb2a-{uid8}-{digest}"
+    new_key = f"wb2a-{uid8}-{digest}"
+    if existing == new_key:
+        return False
+    body["prompt_cache_key"] = new_key
     return True

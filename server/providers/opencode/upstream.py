@@ -21,7 +21,6 @@ from providers import parts, profiles
 UPSTREAM = "https://opencode.ai/zen"
 PUBLIC_KEY = "public"
 # 推理流不设本地超时（含连接/空闲）：上限由上游决定，项目侧不掐长生成。
-DISCOVERY_TIMEOUT = 30
 USER_AGENT = "opencode/1.18.31 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14"
 
 _CORE_TOOLS = ("bash", "edit", "glob", "grep", "read")

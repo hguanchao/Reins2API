@@ -35,6 +35,17 @@ MODALITY_PARTS: Mapping[str, str] = {
     "pdf": "file",
 }
 
+# /v1/models 能力块的合法键：provider 目录声明与档案默认都只能出现这些，其余键丢弃。
+# 显式词表防止某家写错键名（如把 max_input_tokens 写成 max_input）静默漂移，
+# 也让「三家对外声明的键集」可一眼对照。
+CAPABILITY_KEYS: frozenset[str] = frozenset({
+    "input_modalities", "output_modalities",
+    "context_window", "max_input_tokens", "max_output_tokens",
+    "supports_vision", "supports_video_input", "supports_pdf_input",
+    "supports_reasoning", "supports_function_calling",
+    "supports_structured_output", "supports_system_messages", "supports_web_search",
+})
+
 
 @dataclass(frozen=True)
 class UpstreamProfile:
@@ -67,7 +78,7 @@ def capability_block(
     merged: dict[str, Any] = {}
     for source in (profile.defaults, declared or {}):
         for key, value in source.items():
-            if value is None:
+            if value is None or key not in CAPABILITY_KEYS:
                 continue
             merged[key] = value
     modalities = merged.get("input_modalities")

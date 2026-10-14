@@ -7,33 +7,18 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from core.logger import logger
 from gateway.base import ModelInfo, RequestIDs, Route, UpstreamResponse
 from providers import models_dev, profiles
 from providers.capabilities import as_flag, capability_block
+from providers.common import BEIJING_TZ, refresh_result, stamp
 from providers.identity import derive_request_ids
 from providers.opencode.discovery import discover
 from providers.opencode.routing import ModelIndex, ModelRecord, Router
 from providers.opencode.upstream import UPSTREAM, send_upstream, shape_free_request_body
-
-_BEIJING_TZ = timezone(timedelta(hours=8))
-
-
-def _stamp(ms: int) -> str | None:
-    """epoch ms → 北京时间字符串（status 展示用）。"""
-    if not ms:
-        return None
-    return datetime.fromtimestamp(ms / 1000, _BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _refresh_result(
-    *, added: int = 0, removed: int = 0, failed: int = 0, error: str = ""
-) -> dict[str, Any]:
-    """手动刷新的回报形状（三家同形状，api 层按同一组键拼响应与界面提示）。"""
-    return {"added": added, "removed": removed, "failed": failed, "error": error}
 
 
 class OpenCodeProvider:
@@ -79,14 +64,16 @@ class OpenCodeProvider:
                 logger.warning(
                     f"[opencode] 能力目录拉取失败, 且没有可保留的旧目录 errors={len(errors)}"
                 )
-            return _refresh_result(
+            return refresh_result(
                 failed=len(errors) or 1, error="; ".join(errors) or "能力目录拉取失败"
             )
         with self._lock:
             self._index.replace(records)
             if available is not None:
                 self._index.set_available(available)
-            self._refreshed_at = datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                self._index.set_available_unknown()  # 清单没拉到：不过滤，别用旧清单挡新模型
+            self._refreshed_at = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
             counts = self._index.counts()
             listed = {entry["id"] for entry in self._router.list()}
         added = sorted(listed - previous)
@@ -97,9 +84,9 @@ class OpenCodeProvider:
         if snapshot_models:
             meta = {"available": available} if available is not None else None
             written = models_snapshot.write("opencode", snapshot_models, meta)
-            self._cached_at_ms = int(
-                models_snapshot.read_meta("opencode").get("updated_at_ms") or 0
-            )
+            cached_at_ms = int(models_snapshot.read_meta("opencode").get("updated_at_ms") or 0)
+            with self._lock:
+                self._cached_at_ms = cached_at_ms
             if written:
                 logger.info("[opencode] 快照已更新(旧文件轮转为 models.json.bak)")
         detail = []
@@ -109,11 +96,11 @@ class OpenCodeProvider:
             detail.append(f"移除={len(removed)}({', '.join(removed[:5])})")
         logger.info(
             f"[opencode] 模型目录刷新完成 protocols={counts['protocols']} "
-            f"available={counts['available']}"
+            f"servable={len(listed)}"
             + (f" errors={len(errors)}" if errors else "")
             + f" {' '.join(detail) or '无变化'}"
         )
-        return _refresh_result(
+        return refresh_result(
             added=len(added), removed=len(removed), failed=len(errors),
             error="; ".join(errors),
         )
@@ -153,7 +140,8 @@ class OpenCodeProvider:
                 self._index.replace(records)
                 if isinstance(available, list) and available:
                     self._index.set_available([str(item) for item in available])
-        self._cached_at_ms = int(meta.get("updated_at_ms") or 0)
+        with self._lock:
+            self._cached_at_ms = int(meta.get("updated_at_ms") or 0)
         logger.info(
             f"[opencode] 目录从快照恢复 protocols={len(records)} "
             f"available={len(available) if isinstance(available, list) else '未知'}"
@@ -161,16 +149,21 @@ class OpenCodeProvider:
         return len(records)
 
     def status(self) -> dict[str, Any]:
-        return {
-            "upstream": UPSTREAM,
-            "refreshed_at": self._refreshed_at,
-            "cached_at": _stamp(self._cached_at_ms),
-            "models": len(self._router.list()),
-        }
+        with self._lock:
+            return {
+                "upstream": UPSTREAM,
+                "refreshed_at": self._refreshed_at,
+                "cached_at": stamp(self._cached_at_ms),
+                "models": len(self._router.list()),
+            }
 
     def list_models(self) -> list[ModelInfo]:
+        # 索引读在锁内取快照（refresh 会整体替换索引）；构建在锁外做，避免持锁跑
+        # models.dev 兜底查找。routing.list() 返回的是记录的副本，锁外读安全。
+        with self._lock:
+            entries = self._router.list()
         out: list[ModelInfo] = []
-        for entry in self._router.list():
+        for entry in entries:
             # 目录是 models.dev 的字段名（inputModalities / structuredOutput / …），
             # 只在这一层翻译成标准化能力名；缺省的字段交给上游档案，档案也没有就不输出。
             # metadata 是索引记录的副本（routing.list 拷过），就地补兜底值安全。
@@ -212,10 +205,12 @@ class OpenCodeProvider:
     # ── 路由 ──
 
     def supported(self, model: str) -> bool:
-        return self._router.supported(self._bare(model))
+        with self._lock:
+            return self._router.supported(self._bare(model))
 
     def route(self, model: str) -> Route:
-        return self._router.route(self._bare(model))
+        with self._lock:
+            return self._router.route(self._bare(model))
 
     def _bare(self, model: str) -> str:
         """别名 oc:xxx（及旧式 opencode/xxx）→ 上游裸名。"""

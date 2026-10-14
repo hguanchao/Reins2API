@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from providers import models_dev  # noqa: E402
+from providers import models_dev
 
 _STATE_FIELDS = (
     "_index",

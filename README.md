@@ -100,6 +100,9 @@ server/
 │   └── base.py          Provider 接口 + registry(插件轴,前缀路由)
 ├── providers/           共享层:identity(会话标识派生) / models_snapshot(上游目录快照)
 │                        / capabilities·parts·profiles(能力档案与出站附件归一)
+│                        / common(北京时间·刷新回报·错误体·retry-after)
+│                        / account_store·account_pool(两个号池 provider 的公共内核:
+│                          SQLite 管道 + 选号/租约/粘性;子类只声明列集与三处钩子)
 ├── providers/opencode/  OpenCode Zen 接入:routing/discovery/upstream
 ├── providers/workbuddy/ WorkBuddy 号池接入:pool/store/classify/shape/dsml/streamwrap/upstream/login/checkin
 ├── providers/codex/     Codex 号池接入:pool/store/classify/shape/oauth/upstream/login

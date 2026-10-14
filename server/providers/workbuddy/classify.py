@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
+
+from providers.common import (  # noqa: F401  (apply_retry_after 对外沿用)
+    BEIJING_TZ,
+    apply_retry_after,
+)
 
 # ErrKind：分类结果常量（str 便于日志与遥测直接可读）。
 NONE = "none"
@@ -66,11 +70,7 @@ _MODEL_BLOCK_MSG = "service info not found"
 _RE_MODEL_RATE_LIMIT = re.compile(r'"code"\s*:\s*"?6004"?')
 _RE_RESET_CN = re.compile(r"将在 (.+?) 重置")
 _RE_RESET_EN = re.compile(r"reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", re.IGNORECASE)
-_RESET_LAYOUT = "%Y-%m-%d %H:%M:%S"
-_RESET_TZ = timezone(timedelta(hours=8))  # 上游文案的重置时间固定按 UTC+8 解释
-
-_RETRY_AFTER_HEADERS = ("retry-after", "retry-after-ms", "x-ratelimit-reset")
-_RETRY_AFTER_SANITY_S = 2 * 3600  # 超过视为上游异常值丢弃（与软冷却封顶同量级）
+_RESET_LAYOUT = "%Y-%m-%d %H:%M:%S"  # 上游文案的重置时间固定按 UTC+8 解释（BEIJING_TZ）
 
 
 @dataclass
@@ -228,40 +228,13 @@ def classify(status: int, body: str) -> Classified:
     return out
 
 
-def apply_retry_after(result: Classified, headers: dict[str, str] | None) -> Classified:
-    """从响应头解析上游明示等待时长（retry-after → retry-after-ms → x-ratelimit-reset）。
-
-    纯数字才解析（HTTP-Date 不支持，宁缺毋滥）；非正/超上限丢弃，回落本地计算。
-    """
-    if not headers:
-        return result
-    lowered = {str(k).lower(): str(v).strip() for k, v in headers.items()}
-    now_s = time.time()
-    for name in _RETRY_AFTER_HEADERS:
-        raw = lowered.get(name) or ""
-        if not raw or not raw.isdigit() or len(raw) > 16:
-            continue
-        n = int(raw)
-        if name == "x-ratelimit-reset":
-            # epoch 时刻而非时长：秒口径（10 位）与毫秒口径（13 位）折算剩余量
-            if len(raw) < 8:
-                continue
-            epoch_s = n / 1000.0 if len(raw) >= 13 else float(n)
-            n = int(epoch_s - now_s)
-        if n <= 0 or n > _RETRY_AFTER_SANITY_S:
-            continue
-        result.retry_after_s = float(n)
-        break
-    return result
-
-
 def _parse_rate_reset(body: str) -> int:
     """解析 6004 文案里的重置墙钟（CN「将在 … 重置」/ EN "reset at ..."），返回毫秒。"""
     match = _RE_RESET_CN.search(body) or _RE_RESET_EN.search(body)
     if not match:
         return 0
     try:
-        at = datetime.strptime(match.group(1).strip(), _RESET_LAYOUT).replace(tzinfo=_RESET_TZ)
+        at = datetime.strptime(match.group(1).strip(), _RESET_LAYOUT).replace(tzinfo=BEIJING_TZ)
     except ValueError:
         return 0
     return int(at.timestamp() * 1000)
@@ -269,8 +242,7 @@ def _parse_rate_reset(body: str) -> int:
 
 def hard_cooldown_until_ms(now: datetime | None = None) -> int:
     """402 硬冷却到期时刻：次日 04:00（北京时间）。"""
-    tz = timezone(timedelta(hours=8))
-    current = (now or datetime.now(tz)).astimezone(tz)
+    current = (now or datetime.now(BEIJING_TZ)).astimezone(BEIJING_TZ)
     target = current.replace(hour=4, minute=0, second=0, microsecond=0)
     if target <= current:
         target += timedelta(days=1)

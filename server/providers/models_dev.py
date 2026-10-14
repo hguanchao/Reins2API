@@ -231,8 +231,7 @@ def _build_index(doc: Any) -> dict[str, dict[str, Any]]:
             entry["votes"] += 1
             entry["vendor"] = entry["vendor"] or provider in VENDOR_SOURCES
             # 候选的 provider 身份取已见最小名（确定性 tie-break 用）
-            if provider < entry["provider"]:
-                entry["provider"] = provider
+            entry["provider"] = min(entry["provider"], provider)
     out: dict[str, dict[str, Any]] = {}
     for model_id, slot in candidates.items():
         best: dict[str, Any] | None = None
@@ -264,7 +263,7 @@ def _better(candidate: dict[str, Any], current: dict[str, Any]) -> bool:
 
 
 def _load_cache_locked() -> None:
-    global _cache, _cache_loaded
+    global _cache_loaded  # _cache 只做原地赋值（无需 global）
     if _cache_loaded:
         return
     _cache_loaded = True

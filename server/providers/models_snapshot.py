@@ -79,6 +79,12 @@ def core_entry(**fields: Any) -> dict[str, Any]:
     return {key: value for key, value in fields.items() if value is not None}
 
 
+def sort_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按 id 排序条目：上游字典序不稳定，未排序会让「内容未变」被 write 判成变了，
+    每次刷新都白轮转 .bak 并重写文件（write 的 no-op 判定是整体相等）。"""
+    return sorted(entries, key=lambda entry: str(entry.get("id") or ""))
+
+
 def _default() -> dict[str, Any]:
     return {"opencode": [], "workbuddy": {"cn": [], "glb": []}, "codex": []}
 

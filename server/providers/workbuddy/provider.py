@@ -16,7 +16,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from curl_cffi import requests as crequests
@@ -47,6 +47,7 @@ from gateway.base import (
 )
 from providers import models_dev, models_snapshot, profiles
 from providers.capabilities import as_flag, capability_block
+from providers.common import BEIJING_TZ, RawBytes, refresh_result, stamp
 from providers.identity import derive_request_ids  # 通用会话派生（provider 共享层）
 from providers.workbuddy import checkin, classify, dsml, sanitize, shape
 from providers.workbuddy import upstream as wb_upstream
@@ -58,18 +59,10 @@ from providers.workbuddy.store import (
     default_store,
 )
 
-_BEIJING_TZ = timezone(timedelta(hours=8))
-
-
-def _stamp(ms: int) -> str | None:
-    """epoch ms → 北京时间字符串（status 展示用）。"""
-    if not ms:
-        return None
-    return datetime.fromtimestamp(ms / 1000, _BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-
 # token 到期前主动刷新窗口(对齐 wb2api keepalive 语义)
 _REFRESH_AHEAD_MS = 10 * 60 * 1000
+# 请求路径等刷新锁的上限（秒）：另一个刷新在途时最多等这么久，超时按失败处理
+_REFRESH_LOCK_WAIT_S = 30.0
 # 不罚号类别(classify.RETRYABLE 之外且非 CLIENT 透传类的请求级错误)
 _NO_PENALTY_KINDS = frozenset({
     classify.PROMPT_TOO_LONG, classify.IMAGE_INVALID,
@@ -102,24 +95,6 @@ def _parse_prefix(model: str) -> tuple[str | None, str]:
         if realm is not None:
             return realm, tail
     return None, model
-
-
-class _RawBytes:
-    """已整包读出的上游错误体视图（满足 UpstreamResponse 的 raw 契约）。"""
-
-    def __init__(self, data: bytes):
-        self._data = data
-
-    @property
-    def content(self) -> bytes:
-        return self._data
-
-    def iter_content(self, chunk_size: int = 8192):
-        if self._data:
-            yield self._data
-
-    def close(self) -> None:
-        return None
 
 
 def _snapshot_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -181,13 +156,6 @@ def _entry_from_snapshot(entry: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in out.items() if value is not None}
 
 
-def _refresh_result(
-    *, added: int = 0, removed: int = 0, failed: int = 0, error: str = ""
-) -> dict[str, Any]:
-    """手动刷新的回报形状（三家同形状，api 层按同一组键拼响应与界面提示）。"""
-    return {"added": added, "removed": removed, "failed": failed, "error": error}
-
-
 class WorkBuddyProvider:
     name = "workbuddy"
     upstream_url = WB_UPSTREAM_BASE
@@ -201,6 +169,10 @@ class WorkBuddyProvider:
         # 快照内容的最后变更时间(models.json 的 meta.updated_at_ms);本进程从快照
         # 冷启动时它是唯一的时间线索,与各册的 refreshed_at(本进程刷新时间)分开。
         self._cached_at_ms = 0
+        # 按账号串行化 token 刷新：refresh_token 会轮换，而池允许同号多请求在途
+        # （WB_MAX_IN_FLIGHT），并发刷同一个号会让 RT 双花（一个成功一个失效）。
+        self._refresh_locks: dict[str, threading.Lock] = {}
+        self._refresh_locks_guard = threading.Lock()
         from providers.workbuddy.login import LoginManager
 
         # 登录完成只顺带拉积分（见 _on_account_added）：不再自动拉模型目录
@@ -252,7 +224,9 @@ class WorkBuddyProvider:
                 )
                 continue
             # 统一核心字段条目(快照用;上游原样条目只进内存目录)
-            snapshot_by_alias[_REALM_ALIAS[realm]] = [_snapshot_entry(e) for e in entries]
+            snapshot_by_alias[_REALM_ALIAS[realm]] = models_snapshot.sort_entries(
+                [_snapshot_entry(e) for e in entries]
+            )
             models: dict[str, dict[str, Any]] = {}
             efforts: dict[str, list[str]] = {}
             default_efforts: dict[str, str] = {}
@@ -277,7 +251,7 @@ class WorkBuddyProvider:
             with self._lock:
                 self._catalogs[realm] = _Catalog(
                     models=models, efforts=efforts, default_efforts=default_efforts,
-                    refreshed_at=datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                    refreshed_at=datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 )
             detail = []
             if realm_added:
@@ -296,7 +270,7 @@ class WorkBuddyProvider:
         self._load_cached_at()
         if written:
             logger.info("[workbuddy] 快照已更新(旧文件轮转为 models.json.bak)")
-        return _refresh_result(added=added, removed=removed, failed=failed, error="; ".join(errors))
+        return refresh_result(added=added, removed=removed, failed=failed, error="; ".join(errors))
 
     def load_from_snapshot(self) -> int:
         """用上次落盘的快照填充内存目录（冷启动的唯一数据源），返回条目数。
@@ -384,7 +358,7 @@ class WorkBuddyProvider:
         return {
             "upstream": WB_UPSTREAM_BASE,
             "refreshed_at": per_realm["cn"]["refreshed_at"],
-            "cached_at": _stamp(self._cached_at_ms),
+            "cached_at": stamp(self._cached_at_ms),
             "models": per_realm["cn"]["models"] + per_realm["global"]["models"],
             "realms": per_realm,
             "pool": {
@@ -632,7 +606,7 @@ class WorkBuddyProvider:
                 self._penalize(account, classified, bare_model, text)
                 self._bump_used_seq(account)
                 last_error = UpstreamResponse(
-                    status=status, headers=dict(response.headers), raw=_RawBytes(raw),
+                    status=status, headers=dict(response.headers), raw=RawBytes(raw),
                     account=account.uid,
                 )
                 attempts += 1
@@ -689,39 +663,72 @@ class WorkBuddyProvider:
 
     # ── token 刷新 ──
 
+    def _needs_refresh(self, account: Account) -> bool:
+        """是否已到期或临近到期（token_expires_ms=0 未知，视为需刷新）。"""
+        if not account.refresh_token:
+            return False
+        if not account.token_expires_ms:
+            return True
+        return int(time.time() * 1000) + _REFRESH_AHEAD_MS >= account.token_expires_ms
+
+    def _refresh_lock(self, uid: str) -> threading.Lock:
+        with self._refresh_locks_guard:
+            lock = self._refresh_locks.get(uid)
+            if lock is None:
+                lock = threading.Lock()
+                self._refresh_locks[uid] = lock
+            return lock
+
     def _maybe_refresh(self, account: Account) -> None:
         """到期前主动刷新（对齐 wb2api keepalive）；失败不阻塞本次发送。"""
-        now_ms = int(time.time() * 1000)
-        if account.token_expires_ms and now_ms + _REFRESH_AHEAD_MS < account.token_expires_ms:
-            return
-        if not account.refresh_token:
+        if not self._needs_refresh(account):
             return
         self._try_refresh(account, quiet=True)
 
     def _try_refresh(self, account: Account, quiet: bool = False,
-                     sync_credits: bool = False) -> bool:
-        try:
-            data = wb_upstream.refresh_request(account)
-        except Exception as exc:
-            level = logger.info if quiet else logger.warning
-            level(f"[workbuddy] uid={account.uid[:8]}… token 刷新失败: {type(exc).__name__}: {exc}")
+                     sync_credits: bool = False, *, force: bool = False) -> bool:
+        """用 RT 换新 AT 并落库。按账号串行化：并发调用只有一个真的去打上游。
+
+        拿到锁后**重读库**：并发下别人可能刚刷完，用库里最新的 RT 才不会再轮换一次；
+        非 force（请求路径/巡检）在重读后若已不过期就直接返回，省掉一次多余刷新。
+        force=True（人工「刷新」按钮）无论如何都打一次上游。
+        """
+        lock = self._refresh_lock(account.uid)
+        if not lock.acquire(timeout=_REFRESH_LOCK_WAIT_S):
             return False
-        expires_ms = wb_upstream.refresh_expires_ms(data.get("expiresIn"))
-        self._store.update_tokens(
-            account.uid,
-            str(data.get("accessToken") or ""),
-            str(data.get("refreshToken") or ""),
-            expires_ms,
-            str(data.get("domain") or ""),
-        )
-        logger.info(f"[workbuddy] uid={account.uid[:8]}… token 已刷新")
-        # 积分只在此刻顺带取回（拿到新 token 是唯一时机）：手动刷新同步等结果，
-        # 自动刷新走后台线程——billing RPC 的延迟不进聊天路径。
-        if sync_credits:
-            self._refresh_credits(account.uid, quiet=quiet)
-        else:
-            self._refresh_credits_async(account.uid)
-        return True
+        try:
+            fresh = self._store.get_account(account.uid) or account
+            if not fresh.refresh_token:
+                return False
+            if not force and not self._needs_refresh(fresh):
+                return True  # 已被并发刷新过
+            try:
+                data = wb_upstream.refresh_request(fresh)
+            except Exception as exc:
+                level = logger.info if quiet else logger.warning
+                level(
+                    f"[workbuddy] uid={fresh.uid[:8]}… token 刷新失败: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return False
+            expires_ms = wb_upstream.refresh_expires_ms(data.get("expiresIn"))
+            self._store.update_tokens(
+                fresh.uid,
+                str(data.get("accessToken") or ""),
+                str(data.get("refreshToken") or ""),
+                expires_ms,
+                str(data.get("domain") or ""),
+            )
+            logger.info(f"[workbuddy] uid={fresh.uid[:8]}… token 已刷新")
+            # 积分只在此刻顺带取回（拿到新 token 是唯一时机）：手动刷新同步等结果，
+            # 自动刷新走后台线程——billing RPC 的延迟不进聊天路径。
+            if sync_credits:
+                self._refresh_credits(fresh.uid, quiet=quiet)
+            else:
+                self._refresh_credits_async(fresh.uid)
+            return True
+        finally:
+            lock.release()
 
     # ── 积分（只在取得新 token 时拉取：登录入库 / 手动导入 / token 刷新）──
 
@@ -904,6 +911,9 @@ class WorkBuddyProvider:
             else:
                 fields["cooldown_until_ms"] = now_ms + int(cooldown_s * 1000)
                 fields["cooldown_kind"] = "soft"
+                # 账号级软限流要累加连败，下一轮的指数退避才真的 ×2^n（模型级
+                # 6004 只挡该模型、账号本身健康，不动连败计数）。
+                fields["consecutive_failures"] = failures + 1
         elif kind == classify.NOT_FOUND:
             fields["cooldown_until_ms"] = now_ms + WB_COOLDOWN_404 * 1000
             fields["cooldown_kind"] = "soft"
@@ -1021,8 +1031,9 @@ class WorkBuddyProvider:
         elif action == "revive":
             self.revive_account(uid)
         elif action == "refresh":
-            # 同步等积分结果：返回的 public_dict 直接带最新余额，前端按钮立即可见
-            if not self._try_refresh(account, sync_credits=True):
+            # 人工「刷新」= 强制换票（不看是否临近过期），并同步等积分结果：
+            # 返回的 public_dict 直接带最新余额，前端按钮立即可见
+            if not self._try_refresh(account, sync_credits=True, force=True):
                 raise RuntimeError("token 刷新失败（凭证可能已失效，请重新登录）")
         else:
             raise ValueError(f"未知动作: {action}")

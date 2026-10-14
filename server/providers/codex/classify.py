@@ -13,8 +13,9 @@ Codex 上游的错误体是 Responses 风格 `{"error":{"message","type","code"}
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass, field
+
+from providers.common import apply_retry_after  # noqa: F401  (对外沿用 classify.apply_retry_after)
 
 NONE = "none"
 AUTH = "auth"                # 401/403 凭证问题 → 先刷新同号重试，失败则冷却
@@ -25,9 +26,6 @@ WAF = "waf"                  # Cloudflare 拦截（403 无业务信封）→ 冷
 CLIENT = "client"            # 其余 4xx（坏参数等）→ 不罚号，透传
 
 RETRYABLE = frozenset({AUTH, RATE_LIMIT, NOT_FOUND, SERVER, WAF})
-
-_RETRY_AFTER_HEADERS = ("retry-after", "retry-after-ms", "x-ratelimit-reset")
-_RETRY_AFTER_SANITY_S = 2 * 3600  # 超过视为上游异常值丢弃
 
 
 @dataclass
@@ -94,29 +92,3 @@ def classify(status: int, body: str) -> Classified:
         out.kind = CLIENT
         return out
     return out
-
-
-def apply_retry_after(result: Classified, headers: dict[str, str] | None) -> Classified:
-    """从响应头解析上游明示等待时长（retry-after → retry-after-ms → x-ratelimit-reset）。
-
-    纯数字才解析；非正/超上限丢弃，回落本地退避计算。
-    """
-    if not headers:
-        return result
-    lowered = {str(k).lower(): str(v).strip() for k, v in headers.items()}
-    now_s = time.time()
-    for name in _RETRY_AFTER_HEADERS:
-        raw = lowered.get(name) or ""
-        if not raw or not raw.isdigit() or len(raw) > 16:
-            continue
-        n = int(raw)
-        if name == "x-ratelimit-reset":
-            if len(raw) < 8:
-                continue
-            epoch_s = n / 1000.0 if len(raw) >= 13 else float(n)
-            n = int(epoch_s - now_s)
-        if n <= 0 or n > _RETRY_AFTER_SANITY_S:
-            continue
-        result.retry_after_s = float(n)
-        break
-    return result

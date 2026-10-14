@@ -16,7 +16,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from curl_cffi import requests as crequests
@@ -50,9 +50,9 @@ from providers.codex import classify, oauth, shape
 from providers.codex import upstream as cx_upstream
 from providers.codex.pool import Pool
 from providers.codex.store import STATUS_ACTIVE, Account, CodexStore, default_store
+from providers.common import BEIJING_TZ, RawBytes, refresh_result, stamp
 from providers.identity import derive_request_ids
 
-_BEIJING_TZ = timezone(timedelta(hours=8))
 # 请求路径等刷新锁的上限（秒）：另一个刷新在途时最多等这么久，超时按失败处理
 _REFRESH_LOCK_WAIT_S = 30.0
 # 不罚号类别（请求级错误：换号无用，直接透传）
@@ -68,20 +68,6 @@ class _Catalog:
     # 缓存内容的最后变更时间（models.json 的 meta.updated_at_ms）：本进程从快照
     # 冷启动时它是唯一的时间线索，与 refreshed_at（本进程刷新时间）分开不混用。
     cached_at_ms: int = 0
-
-
-def _stamp(ms: int) -> str | None:
-    """epoch ms → 北京时间字符串（status 展示用）。"""
-    if not ms:
-        return None
-    return datetime.fromtimestamp(ms / 1000, _BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _refresh_result(
-    *, added: int = 0, removed: int = 0, failed: int = 0, error: str = ""
-) -> dict[str, Any]:
-    """手动刷新的回报形状（三家同形状，api 层按同一组键拼响应与界面提示）。"""
-    return {"added": added, "removed": removed, "failed": failed, "error": error}
 
 
 def _core_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -185,20 +171,20 @@ class CodexProvider:
             logger.warning(
                 f"[codex] 模型目录本轮无产出, 保留旧目录 models={len(previous)} errors={errors}"
             )
-            return _refresh_result(failed=errors or 1, error=reason)
+            return refresh_result(failed=errors or 1, error=reason)
         if not merged:
             if not seen_account:
                 logger.info("[codex] 无可用账号, 跳过模型目录刷新")
-                return _refresh_result(failed=1, error="无可用账号")
+                return refresh_result(failed=1, error="无可用账号")
             # 上游确实一个模型都没有（新装的号可能如此）：如实写下空目录
             logger.info("[codex] 上游目录为空")
         added = sorted(set(merged) - set(previous))
         removed = sorted(set(previous) - set(merged))
-        written = models_snapshot.write("codex", list(merged.values()))
+        written = models_snapshot.write("codex", models_snapshot.sort_entries(list(merged.values())))
         with self._lock:
             self._catalog = _Catalog(
                 models=merged,
-                refreshed_at=datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                refreshed_at=datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 cached_at_ms=int(models_snapshot.read_meta("codex").get("updated_at_ms") or 0),
             )
         detail = []
@@ -210,7 +196,7 @@ class CodexProvider:
             f"[codex] 模型目录刷新完成 models={len(merged)} errors={errors} "
             f"落盘={'是' if written else '无变化'} {' '.join(detail) or '无变化'}"
         )
-        return _refresh_result(added=len(added), removed=len(removed), failed=errors)
+        return refresh_result(added=len(added), removed=len(removed), failed=errors)
 
     def load_from_snapshot(self) -> int:
         """用上次落盘的快照填充内存目录（冷启动的唯一数据源），返回条目数。
@@ -242,7 +228,7 @@ class CodexProvider:
                     models=models, refreshed_at=None, cached_at_ms=cached_at_ms
                 )
         logger.info(
-            f"[codex] 目录从快照恢复 models={len(models)} 缓存更新于={_stamp(cached_at_ms) or '未知'}"
+            f"[codex] 目录从快照恢复 models={len(models)} 缓存更新于={stamp(cached_at_ms) or '未知'}"
         )
         return len(models)
 
@@ -257,7 +243,7 @@ class CodexProvider:
         return {
             "upstream": CODEX_BASE,
             "refreshed_at": refreshed_at,
-            "cached_at": _stamp(cached_at_ms),
+            "cached_at": stamp(cached_at_ms),
             "models": models,
             "pool": {
                 "accounts": len(accounts),
@@ -440,7 +426,7 @@ class CodexProvider:
                 self._penalize(account, classified, text)
                 self._bump_used_seq(account)
                 last_error = UpstreamResponse(
-                    status=status, headers=dict(response.headers), raw=_RawBytes(raw),
+                    status=status, headers=dict(response.headers), raw=RawBytes(raw),
                     account=account.uid,
                 )
                 attempts += 1
@@ -497,15 +483,21 @@ class CodexProvider:
         for key in ("allowed", "limit_reached", "credits", "reset_credits"):
             if key in previous and key not in snapshot:
                 snapshot[key] = previous[key]
-        if all(
+        usage_unchanged = all(
             (previous.get(window) or {}).get("used_percent")
             == (snapshot.get(window) or {}).get("used_percent")
             for window in ("primary", "secondary")
-        ):
-            return
-        fields: dict[str, Any] = {"rate_limit": snapshot}
+        )
+        # 档位变化也要落库：早退条件必须把它算进来，否则用量没动、订阅档位变了时
+        # plan_type 永远不同步（响应头是档位的权威来源）。
         plan = str(snapshot.get("plan_type") or "")
-        if plan and plan != account.plan_type:
+        plan_changed = bool(plan) and plan != account.plan_type
+        if usage_unchanged and not plan_changed:
+            return
+        fields: dict[str, Any] = {}
+        if not usage_unchanged:
+            fields["rate_limit"] = snapshot
+        if plan_changed:
             fields["plan_type"] = plan
         self._store.update_runtime(account.uid, **fields)
 
@@ -518,9 +510,11 @@ class CodexProvider:
         if kind in _NO_PENALTY_KINDS:
             self._store.update_runtime(account.uid, **fields)
             return
+        # 统一读一次库里的最新连败计数：并发请求下 account 快照可能过期，用快照会让
+        # AUTH 路径少算连败、够不到熔断阈值（同一函数内两条分支取数口径必须一致）。
+        current = self._store.get_account(account.uid)
+        failures = max((current or account).consecutive_failures, 0)
         if kind == classify.RATE_LIMIT:
-            current = self._store.get_account(account.uid)
-            failures = max(current.consecutive_failures if current else 0, 0)
             if classified.retry_after_s > 0:
                 cooldown_s = classified.retry_after_s
             else:
@@ -531,7 +525,7 @@ class CodexProvider:
             fields["cooldown_kind"] = "soft"
             fields["consecutive_failures"] = failures + 1
         elif kind == classify.AUTH:
-            failures = account.consecutive_failures + 1
+            failures += 1
             fields["cooldown_until_ms"] = now_ms + CODEX_COOLDOWN_AUTH * 1000
             fields["cooldown_kind"] = "auth"
             fields["consecutive_failures"] = failures
@@ -832,21 +826,3 @@ class CodexProvider:
 
     def pool_snapshot(self) -> dict[str, Any]:
         return self._pool.snapshot()
-
-
-class _RawBytes:
-    """已整包读出的上游错误体视图（满足 UpstreamResponse 的 raw 契约）。"""
-
-    def __init__(self, data: bytes):
-        self._data = data
-
-    @property
-    def content(self) -> bytes:
-        return self._data
-
-    def iter_content(self, chunk_size: int = 8192):
-        if self._data:
-            yield self._data
-
-    def close(self) -> None:
-        return None

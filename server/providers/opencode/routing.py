@@ -56,6 +56,14 @@ class ModelIndex:
         self._available = set(ids)
         self._listed = True
 
+    def set_available_unknown(self) -> None:
+        """本次没拉到凭证清单（可用性未知）：退回"不过滤"。
+
+        清单是"凭证能不能到"的过滤器；未知时保留旧清单会把本次新发现的模型挡在
+        门外（旧清单里没有它们），所以宁可不过滤，也不拿陈旧信息做否定判断。"""
+        self._available = set()
+        self._listed = False
+
     def record(self, model: str) -> ModelRecord | None:
         return self._records.get(model)
 

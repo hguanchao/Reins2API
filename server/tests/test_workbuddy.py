@@ -1131,6 +1131,127 @@ def test_send_injects_account_scoped_cache_key():
 
 
 
+# ── 回归：换号/刷新/罚号的一致性 ──
+
+
+def test_send_rederives_cache_key_on_rotation():
+    """换号重试时 prompt_cache_key 必须按新账号重算。
+
+    回归点：键在轮换循环内注入，换号后 body 里还留着上一个账号的键；旧实现
+    「见键即跳过注入」，B 号会带着 A 号的键打上游——正好踩中「uid 是硬隔离因子、
+    跨账号复用同键会串前缀缓存」的禁令。
+    """
+    import providers.workbuddy.upstream as wb_upstream
+    from gateway.base import RequestIDs
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            for uid in ("u_alpha", "u_beta"):
+                store.upsert_account(Account(
+                    uid=uid, realm="cn", access_token="at",
+                    token_expires_ms=int(time.time() * 1000) + 3_600_000,
+                ))
+            provider = _provider_with_catalog(store, ["cn-only"], [])
+            provider._refresh_credits_async = lambda uid: None
+
+            class _Resp:
+                def __init__(self, status: int, body: bytes):
+                    self.status_code = status
+                    self.headers: dict[str, str] = {}
+                    self._body = body
+
+                def iter_content(self, chunk_size: int = 8192):
+                    yield self._body
+
+                def close(self) -> None:
+                    pass
+
+            ok = json.dumps({"id": "x", "choices": []}).encode()
+            seen: list[tuple[str, str]] = []
+
+            def fake_chat(account, body, **kwargs):
+                seen.append((account.uid, json.loads(body).get("prompt_cache_key") or ""))
+                if len(seen) == 1:
+                    return _Resp(500, b'{"error":{"message":"boom"}}')
+                return _Resp(200, ok)
+
+            original_chat = wb_upstream.chat_request
+            original_sleep = time.sleep
+            wb_upstream.chat_request = fake_chat
+            time.sleep = lambda s: None
+            try:
+                provider.send(
+                    provider.route("cn:cn-only"), "chat",
+                    json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode(),
+                    RequestIDs(session="s", request="r", project="p"), stream=True,
+                )
+            finally:
+                wb_upstream.chat_request = original_chat
+                time.sleep = original_sleep
+
+            assert len(seen) == 2
+            assert seen[0][0] != seen[1][0]  # 确实换号了
+            for uid, key in seen:
+                assert key.startswith(f"wb2a-{uid[:8]}-"), (uid, key)
+        finally:
+            store.close()
+
+
+def test_soft_rate_penalty_increments_failures():
+    """账号级软限流要累加 consecutive_failures，否则指数退避永远停在基数。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(uid="u_1", realm="cn", access_token="at"))
+            provider = _provider_with_catalog(store, ["m"], [])
+            classified = classify.classify(429, "too many requests")
+            provider._penalize(store.get_account("u_1"), classified, "m", "too many requests")
+            first = store.get_account("u_1")
+            assert first.consecutive_failures == 1
+            assert first.cooldown_kind == "soft"
+            provider._penalize(store.get_account("u_1"), classified, "m", "too many requests")
+            assert store.get_account("u_1").consecutive_failures == 2
+        finally:
+            store.close()
+
+
+def test_try_refresh_skips_fresh_token_unless_forced():
+    """非 force 的 _try_refresh 在 token 仍有效时不打上游；force 才强制换票。
+
+    这是按账号刷新锁「拿锁后重读、已刷新就跳过」的语义：并发下后到者不会
+    再轮换一次 RT，而人工「刷新」按钮仍要能强制换一张新票。
+    """
+    import providers.workbuddy.upstream as wb_upstream
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(
+                uid="u_1", realm="cn", access_token="at", refresh_token="rt",
+                token_expires_ms=int(time.time() * 1000) + 3_600_000,
+            ))
+            provider = _provider_with_catalog(store, ["m"], [])
+            provider._refresh_credits_async = lambda uid: None
+            calls: list[str] = []
+
+            def fake_refresh(account):
+                calls.append(account.uid)
+                return {"accessToken": "at2", "refreshToken": "rt2", "expiresIn": 3600}
+
+            original = wb_upstream.refresh_request
+            wb_upstream.refresh_request = fake_refresh
+            try:
+                assert provider._try_refresh(store.get_account("u_1")) is True
+                assert calls == []  # 仍有效：不打上游
+                assert provider._try_refresh(store.get_account("u_1"), force=True) is True
+                assert calls == ["u_1"]  # force：真打一次
+            finally:
+                wb_upstream.refresh_request = original
+        finally:
+            store.close()
+
+
 # ── 内建运行入口（无 pytest 环境直接跑）──
 
 _ALL = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

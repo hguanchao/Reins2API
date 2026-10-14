@@ -268,50 +268,5 @@ def markup_stream_tool_calls(calls: list[MarkupCall], base: int) -> list[dict[st
     ]
 
 
-def markup_message_tool_calls(calls: list[MarkupCall]) -> list[dict[str, Any]]:
-    """非流式 message.tool_calls 数组（不带 index——那是流式分片归属标记）。"""
-    return [
-        {
-            "id": _call_id(i),
-            "type": "function",
-            "function": {"name": call.name, "arguments": call.arguments},
-        }
-        for i, call in enumerate(calls)
-    ]
-
-
 def _call_id(idx: int) -> str:
     return f"call_{time.time_ns()}_{idx}"
-
-
-def repair_aggregated(resp: dict[str, Any], allowed: set[str] | None) -> MarkupRepair | None:
-    """非流式聚合响应的标记还原：只在该 choice 无结构化 tool_calls 且
-    finish_reason 为 stop 时生效（不覆盖真实调用 / 不解释被截断的正文）。"""
-    repair = enabled_repair(allowed)
-    if repair is None:
-        return None
-    choices = resp.get("choices")
-    if not isinstance(choices, list):
-        return repair
-    for choice in choices:
-        if not isinstance(choice, dict):
-            continue
-        message = choice.get("message")
-        if not isinstance(message, dict):
-            continue
-        existing = message.get("tool_calls")
-        if isinstance(existing, list) and existing:
-            continue
-        if choice.get("finish_reason") != "stop":
-            continue
-        text = message.get("content")
-        if not isinstance(text, str) or not text or MARKUP_PIPE not in text:
-            continue
-        emit, calls = repair.feed(text)
-        emit += repair.flush()
-        if not calls:
-            continue
-        message["content"] = emit
-        message["tool_calls"] = markup_message_tool_calls(calls)
-        choice["finish_reason"] = "tool_calls"
-    return repair

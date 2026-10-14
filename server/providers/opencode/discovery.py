@@ -32,6 +32,22 @@ from providers.opencode.routing import (
 DISCOVERY_TIMEOUT = 30
 
 
+def _as_int(value: Any) -> int:
+    """宽容取非负整数：非数字/None 一律 0。上游单个坏字段不该让整份目录失效
+    （_parse_capabilities 在 discover 的同一个 try 里，一处 ValueError 会清空 records）。"""
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def discover(
     upstream: str,
     credential: str | None,
@@ -136,7 +152,7 @@ def _parse_capabilities(
             snapshot_by_id[model_id] = _snapshot_entry(
                 model_id, model, protocol, records[model_id].free
             )
-    return records, list(snapshot_by_id.values())
+    return records, models_snapshot.sort_entries(list(snapshot_by_id.values()))
 
 
 def _snapshot_entry(
@@ -232,9 +248,9 @@ def _metadata_for(model: dict[str, Any]) -> dict[str, Any]:
     metadata = empty_metadata()
     limit = model.get("limit")
     if is_object(limit):
-        metadata["contextWindow"] = int(limit.get("context") or 0)
-        metadata["maxInput"] = int(limit.get("input") or 0)
-        metadata["maxOutput"] = int(limit.get("output") or 0)
+        metadata["contextWindow"] = _as_int(limit.get("context"))
+        metadata["maxInput"] = _as_int(limit.get("input"))
+        metadata["maxOutput"] = _as_int(limit.get("output"))
     metadata["reasoning"] = model.get("reasoning") is True
     # reasoning_options 归一化为字符串档位:effort 取 values(如 low/medium/high),toggle 等记类型名
     options = model.get("reasoning_options")
@@ -271,5 +287,5 @@ def _is_free(model: dict[str, Any], model_id: str) -> bool:
     目录未标价时才回退 -free 命名惯例。"""
     cost = model.get("cost")
     if is_object(cost):
-        return float(cost.get("input") or 0) == 0 and float(cost.get("output") or 0) == 0
+        return _as_float(cost.get("input")) == 0 and _as_float(cost.get("output")) == 0
     return bool(re.search("free", model_id, re.IGNORECASE))
