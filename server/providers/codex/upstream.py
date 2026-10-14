@@ -98,6 +98,11 @@ def parse_rate_limits(headers: dict[str, str]) -> dict[str, Any] | None:
         reset = _float(lowered.get(prefix + "reset-after-seconds"))
         if used is None and window is None and reset is None:
             continue
+        # 窗口长度就是窗口的定义。上游在没有第二窗口时会发一组全 0 的 secondary 头
+        # （used-percent/window-minutes 都是 0），那是占位而不是真窗口；收下它会让
+        # 界面上出现「额度 剩余 100%」——和主窗口的「已用尽」并排，自相矛盾。
+        if window is not None and window <= 0:
+            continue
         entry: dict[str, Any] = {
             "used_percent": used,
             "window_minutes": window,
@@ -127,6 +132,9 @@ def _window_from_payload(raw: Any, now_ms: int) -> dict[str, Any] | None:
     reset_at = _float(raw.get("reset_at"))
     reset_after = _float(raw.get("reset_after_seconds"))
     if used is None and seconds is None and reset_at is None and reset_after is None:
+        return None
+    # 同 parse_rate_limits：长度非正的窗口是"没有这个窗口"的占位写法，不是真窗口
+    if seconds is not None and seconds <= 0:
         return None
     entry: dict[str, Any] = {
         "used_percent": used,

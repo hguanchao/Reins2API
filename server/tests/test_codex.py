@@ -947,6 +947,46 @@ def test_penalize_auth_counts_from_fresh_row():
             store.close()
 
 
+def test_zero_length_windows_are_placeholders_not_windows():
+    """长度非正的窗口 = "没有这个窗口"的占位写法，不能当窗口收下。
+
+    回归点：上游在没有第二窗口时会发一组全 0 的 secondary（响应头与 /usage 都一样）。
+    照单全收会让界面渲染出「额度 剩余 100%」，与主窗口的「已用尽」并排、自相矛盾。
+    """
+    from providers.codex import upstream
+
+    by_headers = upstream.parse_rate_limits({
+        "x-codex-primary-used-percent": "100",
+        "x-codex-primary-window-minutes": "43200",
+        "x-codex-primary-reset-after-seconds": "1986178",
+        "x-codex-secondary-used-percent": "0",
+        "x-codex-secondary-window-minutes": "0",
+    })
+    assert by_headers is not None and "primary" in by_headers
+    assert "secondary" not in by_headers
+
+    by_usage = upstream.parse_usage_payload(
+        {
+            "plan_type": "free",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 100,
+                    "limit_window_seconds": 2592000,
+                    "reset_after_seconds": 1986178,
+                },
+                "secondary_window": {
+                    "used_percent": 0,
+                    "limit_window_seconds": 0,
+                    "reset_after_seconds": 0,
+                },
+            },
+        },
+        now_ms=1_000_000,
+    )
+    assert by_usage is not None and "primary" in by_usage
+    assert "secondary" not in by_usage
+
+
 # ── 内建运行入口（无 pytest 环境直接跑）──
 
 _ALL = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

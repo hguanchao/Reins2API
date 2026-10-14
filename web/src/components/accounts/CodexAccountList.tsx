@@ -138,14 +138,19 @@ function QuotaCell({ rateLimit }: { rateLimit?: CodexAccount["rate_limit"] }) {
   // 剩 0%（用尽）时填充被抽空，改由底轨染一层浅红表示"用尽"而不是"没数据"。
   const tone = remaining <= 0 ? "is-out" : remaining <= 10 ? "is-bad" : remaining <= 30 ? "is-warn" : "";
   const credits = rateLimit?.credits;
+  // 副窗口只在**长度大于 0** 时才说。上游在没有第二窗口时会发一组全 0 的占位
+  // （used_percent/window_minutes 都是 0），照单全收就会渲染出「额度 剩余 100%」——
+  // 和旁边主窗口的「已用尽」直接打架。后端解析已挡新数据，这里同时兜住库里已有的旧快照。
+  const secondaryText =
+    secondary && secondary.used_percent != null && (secondary.window_minutes ?? 0) > 0
+      ? `${windowLabel(secondary.window_minutes)} 剩余 ${Math.max(0, 100 - secondary.used_percent).toFixed(0)}%`
+      : "";
   const detail = [
     primary
       ? `${windowLabel(primary.window_minutes)} ${exhausted ? "已用尽" : `剩余 ${remaining.toFixed(0)}%`}`
       : "",
     resetIn(primary?.reset_at_ms),
-    secondary && secondary.used_percent != null
-      ? `${windowLabel(secondary.window_minutes)} 剩余 ${Math.max(0, 100 - secondary.used_percent).toFixed(0)}%`
-      : "",
+    secondaryText,
     // 具体额度：只有带积分的档位上游才给（free 档这些字段全是空的，不会显示）
     credits?.unlimited ? "额度不限" : credits?.balance != null ? `余额 ${credits.balance}` : "",
     rateLimit?.reset_credits ? `重置券 ×${rateLimit.reset_credits}` : "",
@@ -215,15 +220,18 @@ export function CodexAccountList({
   return (
     <div className={cn("gw-table-card", accounts.length === 0 && "is-empty")}>
       <div className="gw-table-scroll">
-        <Table>
+        {/* 列宽在 accounts.css 的 .acct-table 里显式分配（table-layout: fixed），
+            不再由"最长的那条内容"决定——否则凭证列的邮箱、额度列的明细会各自
+            把列撑到跟自己一样宽，横向比例散掉 */}
+        <Table className="acct-table">
           <TableHeader>
             <TableRow>
-              <TableHead>凭证</TableHead>
-              <TableHead>套餐</TableHead>
-              <TableHead>可用状态</TableHead>
-              <TableHead>最近请求</TableHead>
-              <TableHead>历史用量</TableHead>
-              <TableHead>额度</TableHead>
+              <TableHead className="col-cred">凭证</TableHead>
+              <TableHead className="col-plan">套餐</TableHead>
+              <TableHead className="col-state">可用状态</TableHead>
+              <TableHead className="col-recent">最近请求</TableHead>
+              <TableHead className="col-usage">历史用量</TableHead>
+              <TableHead className="col-quota">额度</TableHead>
               <TableHead className="table-col-actions">操作</TableHead>
             </TableRow>
           </TableHeader>
