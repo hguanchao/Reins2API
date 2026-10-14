@@ -56,6 +56,7 @@ class RequestRecord:
     cached_tokens: int = 0
     # 来源
     client_ip: str = ""            # 发起端 IP（优先 X-Forwarded-For/X-Real-IP）
+    egress_ip: str = ""            # 出口 IP：上游看到的地址（探测缓存回填；空 = 当时还没探到）
     client_ua: str = ""            # 客户端 User-Agent 原文
     # 结果
     first_byte_ms: int = 0         # 首字耗时（上游首个非空字节，0 = 未采到/失败请求）

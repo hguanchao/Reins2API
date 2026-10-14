@@ -17,6 +17,7 @@ from curl_cffi import requests as crequests
 
 from core.logger import logger
 from gateway.jsonutil import is_object
+from gateway.types import PROTOCOL_ANTHROPIC, PROTOCOL_CHAT, PROTOCOL_RESPONSES
 from net.proxy import proxies_for
 from providers import models_snapshot
 from providers.capabilities import as_flag
@@ -132,12 +133,21 @@ def _parse_capabilities(
                 metadata=_metadata_for(model),
                 free=_is_free(model, model_id),
             )
-            snapshot_by_id[model_id] = _snapshot_entry(model_id, model)
+            snapshot_by_id[model_id] = _snapshot_entry(
+                model_id, model, protocol, records[model_id].free
+            )
     return records, list(snapshot_by_id.values())
 
 
-def _snapshot_entry(model_id: str, model: dict[str, Any]) -> dict[str, Any]:
-    """models.dev 条目 → models.json 统一核心字段（见 models_snapshot.core_entry）。"""
+def _snapshot_entry(
+    model_id: str, model: dict[str, Any], protocol: str, free: bool
+) -> dict[str, Any]:
+    """models.dev 条目 → models.json 统一核心字段（见 models_snapshot.core_entry）。
+
+    protocol / free 是路由必需项、max_input / structured_output 是详情弹窗要显示的
+    字段：冷启动不再打上游，索引只能由快照重建，缺了它们重启后模型不可路由或字段
+    全空（见 record_from_snapshot 的逆向投影）。
+    """
     limit = model.get("limit") if is_object(model.get("limit")) else {}
     modalities = model.get("modalities") if is_object(model.get("modalities")) else {}
     inputs = modalities.get("input") if isinstance(modalities.get("input"), list) else None
@@ -152,6 +162,11 @@ def _snapshot_entry(model_id: str, model: dict[str, Any]) -> dict[str, Any]:
                 values = option.get("values")
                 if isinstance(values, list):
                     efforts.extend(str(v) for v in values)
+    extras = {
+        "max_input": limit.get("input"),
+        "structured_output": model.get("structured_output"),
+    }
+    extras = {key: value for key, value in extras.items() if value is not None}
     return models_snapshot.core_entry(
         id=model_id,
         name=name if isinstance(name, str) and name else model_id,
@@ -164,6 +179,52 @@ def _snapshot_entry(model_id: str, model: dict[str, Any]) -> dict[str, Any]:
         supports_reasoning=as_flag(model.get("reasoning")),
         supports_tool_call=as_flag(model.get("tool_call")),
         reasoning_efforts=efforts or None,
+        protocol=protocol,
+        free=free,
+        extras=extras or None,
+    )
+
+
+def record_from_snapshot(entry: dict[str, Any]) -> ModelRecord | None:
+    """快照条目 → ModelRecord（冷启动重建索引，语义等价 discovery 的产出）。
+
+    protocol 不在快照里（老版本快照）就重建不了路由 → 返回 None，调用方据此决定
+    丢弃还是补一次拉取。metadata 按 models.dev 的驼峰键名重建（list_models 与
+    管理台都按那套键读）。
+    """
+    protocol = str(entry.get("protocol") or "")
+    if protocol not in (PROTOCOL_ANTHROPIC, PROTOCOL_CHAT, PROTOCOL_RESPONSES):
+        return None
+    metadata = empty_metadata()
+    context = entry.get("context_window")
+    if isinstance(context, int):
+        metadata["contextWindow"] = context
+    output = entry.get("max_output_tokens")
+    if isinstance(output, int):
+        metadata["maxOutput"] = output
+    extras = entry.get("extras") if is_object(entry.get("extras")) else {}
+    if isinstance(extras.get("max_input"), int):
+        metadata["maxInput"] = extras["max_input"]
+    if isinstance(entry.get("name"), str):
+        metadata["name"] = entry["name"]
+    if isinstance(entry.get("description"), str):
+        metadata["description"] = entry["description"]
+    inputs = entry.get("input_modalities")
+    if isinstance(inputs, list):
+        metadata["inputModalities"] = inputs
+    outputs = entry.get("output_modalities")
+    if isinstance(outputs, list):
+        metadata["outputModalities"] = outputs
+    metadata["reasoning"] = entry.get("supports_reasoning") is True
+    metadata["toolCall"] = entry.get("supports_tool_call") is True
+    metadata["structuredOutput"] = extras.get("structured_output") is True
+    efforts = entry.get("reasoning_efforts")
+    if isinstance(efforts, list) and efforts:
+        metadata["reasoningOptions"] = efforts
+    return ModelRecord(
+        protocol=protocol,
+        metadata=metadata,
+        free=entry.get("free") is True,
     )
 
 

@@ -45,7 +45,7 @@ export function RequestsTable({
               <TableHead>时间</TableHead>
               {showAccount ? <TableHead>账号</TableHead> : null}
               <TableHead>客户端</TableHead>
-              <TableHead>请求 IP</TableHead>
+              <TableHead>出口 IP</TableHead>
               <TableHead>模型</TableHead>
               <TableHead>协议</TableHead>
               <TableHead>流式</TableHead>
@@ -107,13 +107,16 @@ export function RequestsTable({
                         </TooltipContent>
                       </Tooltip>
                     </TableCell>
+                    {/* 出口 IP：上游看到的地址（本机直连时请求 IP 恒为 127.0.0.1，没有信息量）；
+                        发起端挪进悬停提示，反代/局域网部署时仍看得到 */}
                     <TableCell>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <span className="usage-ip mono text-xs">{row.client_ip || "—"}</span>
+                          <span className="usage-ip mono text-xs">{row.egress_ip || "—"}</span>
                         </TooltipTrigger>
                         <TooltipContent side="top" className="font-mono text-[11px]">
-                          {row.client_ip || "—"}
+                          出口 {row.egress_ip || "—（尚未探测）"}
+                          <span className="mt-1 block">发起端 {row.client_ip || "—"}</span>
                         </TooltipContent>
                       </Tooltip>
                     </TableCell>

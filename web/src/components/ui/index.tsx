@@ -953,9 +953,15 @@ function TooltipTrigger({
 function TooltipContent({
   className,
   sideOffset = 6,
+  /** solid（默认）：主色绿底，短标签专用；surface：灰白浮层卡片（带边框），
+   *  长内容 / 错误详情用——红字压在绿底上读不了，也得配得上 SelectContent 那层皮 */
+  tone = "solid",
   children,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Content> & {
+  tone?: "solid" | "surface";
+}) {
+  const surface = tone === "surface";
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
@@ -963,14 +969,22 @@ function TooltipContent({
         sideOffset={sideOffset}
         // z 须高于 Dialog(z-70)，否则高级设置内问号说明被遮挡
         className={cn(
-          "bg-primary text-primary-foreground z-[80] w-fit max-w-xs rounded-md px-3 py-1.5 text-xs text-balance shadow-md",
+          "z-[80] w-fit max-w-xs text-xs text-balance",
           "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
+          surface
+            ? "bg-popover text-popover-foreground border-border rounded-lg border px-3 py-2.5 shadow-md"
+            : "bg-primary text-primary-foreground rounded-md px-3 py-1.5 shadow-md",
           className,
         )}
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow className="bg-primary fill-primary z-[80] size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px]" />
+        <TooltipPrimitive.Arrow
+          className={cn(
+            "z-[80] size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px]",
+            surface ? "bg-popover fill-popover" : "bg-primary fill-primary",
+          )}
+        />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   );

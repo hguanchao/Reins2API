@@ -133,6 +133,36 @@ def test_fill_limits_only_fills_missing():
         _restore(saved)
 
 
+def test_fill_limits_prefer_overrides_vendor_value():
+    """prefer=True（目录优先）：匹配到就按目录来，没匹配到保留厂商值。
+
+    场景就是 codex 页的上下文：manifest 声明 272000、目录给 1050000，取目录值；
+    目录没收录的模型原样保留厂商声明；目录只给了上下文时不编造输出上限。
+    """
+    saved = _isolate({"m": {"context_window": 1_050_000, "max_output_tokens": 128_000}})
+    try:
+        values: dict = {"context_window": 272_000, "max_output_tokens": None}
+        filled = models_dev.fill_limits("m", values, prefer=True)
+        assert values["context_window"] == 1_050_000, values   # 覆盖厂商值
+        assert values["max_output_tokens"] == 128_000, values
+        assert filled == ["context_window", "max_output_tokens"], filled
+
+        # 目录未收录 → 一个字段都不动（调用方本来就把厂商值落好了）
+        unknown: dict = {"context_window": 272_000, "max_output_tokens": None}
+        assert models_dev.fill_limits("not-in-index", unknown, prefer=True) == []
+        assert unknown == {"context_window": 272_000, "max_output_tokens": None}, unknown
+    finally:
+        _restore(saved)
+
+    saved = _isolate({"m": {"context_window": 1_050_000, "max_output_tokens": 0}})
+    try:
+        half: dict = {"context_window": 272_000, "max_output_tokens": 64_000}
+        assert models_dev.fill_limits("m", half, prefer=True) == ["context_window"]
+        assert half == {"context_window": 1_050_000, "max_output_tokens": 64_000}, half
+    finally:
+        _restore(saved)
+
+
 def test_fill_limits_unknown_output_not_invented():
     """索引里输出为 0（未知）→ 不写该键；上下文照补。"""
     saved = _isolate({"m": {"context_window": 1000, "max_output_tokens": 0}})
@@ -157,6 +187,105 @@ def test_fill_limits_custom_keys_and_cache_fallback():
         assert values == {"contextWindow": 1000, "maxOutput": 64}, values
     finally:
         _restore(saved)
+
+
+def test_index_carries_modalities_and_splits_candidates():
+    """模态随条目进索引；limit 相同但模态不同算两个候选，不互相投票。"""
+    doc = {
+        "openai": {"models": {"m": {
+            "limit": {"context": 1000, "output": 100},
+            "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]},
+        }}},
+        "agg-a": {"models": {"m": {
+            "limit": {"context": 1000, "output": 100},          # limit 与 openai 相同
+            "modalities": {"input": ["Text", " image "], "output": ["text"]},
+        }}},
+        "agg-b": {"models": {"m": {                             # 没有 modalities
+            "limit": {"context": 1000, "output": 100},
+        }}},
+    }
+    index = models_dev._build_index(doc)
+    # 官方源胜出：模态与 limit 都取 openai 的原文（归一化后）
+    assert index["m"] == {
+        "context_window": 1000, "max_output_tokens": 100,
+        "input_modalities": ["text", "image", "pdf"], "output_modalities": ["text"],
+    }, index["m"]
+
+    # 没有官方源时：模态不同的两票各自成组，不会把 text/image 与 text/image/pdf 混票
+    split = models_dev._build_index({
+        "agg-a": {"models": {"m": {
+            "limit": {"context": 1000, "output": 100},
+            "modalities": {"input": ["text", "image"], "output": ["text"]},
+        }}},
+        "agg-b": {"models": {"m": {
+            "limit": {"context": 1000, "output": 100},
+            "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]},
+        }}},
+    })
+    assert split["m"]["input_modalities"] == ["text", "image"], split["m"]  # 名字典序 aaa… 胜
+
+
+def test_fill_limits_modalities_follow_prefer():
+    """模态列表也走「目录优先」；目录没收录/没模态时保留厂商值。"""
+    saved = _isolate({
+        "m": {"context_window": 1000, "max_output_tokens": 100,
+              "input_modalities": ["text", "image", "pdf"]},
+        "no-mods": {"context_window": 1000, "max_output_tokens": 100},
+    })
+    try:
+        keys = {"input_modalities": "input_modalities", "output_modalities": "output_modalities"}
+        # prefer：目录的模态覆盖厂商的（manifest 只声明两个）；数值字段也一律按目录写
+        values: dict = {"context_window": 1000, "max_output_tokens": 100,
+                        "input_modalities": ["text", "image"]}
+        filled = models_dev.fill_limits("m", values, prefer=True, list_keys=keys)
+        assert values["input_modalities"] == ["text", "image", "pdf"], values
+        assert filled == ["context_window", "max_output_tokens", "input_modalities"], filled
+        # 目录没有 output 模态列表 → 不写那个键（不编造）
+        assert "output_modalities" not in values, values
+
+        # 不 prefer：已有列表不动（只有空列表才补）
+        keep: dict = {"context_window": 1000, "max_output_tokens": 100,
+                      "input_modalities": ["text"]}
+        assert models_dev.fill_limits("m", keep, list_keys=keys) == [], keep
+        assert keep["input_modalities"] == ["text"], keep
+        empty: dict = {"context_window": 1000, "max_output_tokens": 100,
+                       "input_modalities": []}
+        assert models_dev.fill_limits("m", empty, list_keys=keys) == ["input_modalities"], empty
+        assert empty["input_modalities"] == ["text", "image", "pdf"], empty
+
+        # 目录收录了但没模态 → 厂商值原样保留（数值仍是按目录写的）
+        bare: dict = {"context_window": 1000, "max_output_tokens": 100,
+                      "input_modalities": ["text"]}
+        filled = models_dev.fill_limits("no-mods", bare, prefer=True, list_keys=keys)
+        assert filled == ["context_window", "max_output_tokens"], filled
+        assert bare["input_modalities"] == ["text"], bare
+    finally:
+        _restore(saved)
+
+
+def test_cache_keeps_modalities():
+    """缓存把模态一并落盘（下次冷启动不必重拉目录）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "modelsdev.json"
+        saved = _isolate(
+            {"m": {"context_window": 1000, "max_output_tokens": 128,
+                   "input_modalities": ["text", "image"]}},
+            cache_path=cache_path,
+        )
+        try:
+            models_dev.lookup("m")
+            models_dev._write_cache_locked()
+            raw = json.loads(cache_path.read_text(encoding="utf-8"))
+            assert raw["models"]["m"]["input_modalities"] == ["text", "image"], raw
+            # 回读也带模态
+            reloaded = models_dev._load_cache_locked
+            models_dev._cache_loaded = False
+            models_dev._cache = {}
+            models_dev._index = None
+            reloaded()
+            assert models_dev._cache["m"]["input_modalities"] == ["text", "image"], models_dev._cache
+        finally:
+            _restore(saved)
 
 
 def test_lookup_unknown_model_is_none():

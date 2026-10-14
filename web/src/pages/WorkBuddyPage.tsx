@@ -66,7 +66,8 @@ import {
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
-import { fmtLimit, fmtTokens } from "@/lib/format";
+import { ActivityCell } from "@/components/accounts/ActivityCell";
+import { catalogTimeLabel, fmtLimit, modelRefreshOutcome } from "@/lib/format";
 import { useSessionCountdown } from "@/lib/countdown";
 import { cn, fmtCompact, fmtInt, parseCreditFactor } from "@/lib/utils";
 
@@ -380,13 +381,15 @@ export function WorkBuddyPage() {
     return () => window.clearInterval(timer);
   }, [load]);
 
-  /** 手动重新拉取上游模型目录（POST /api/workbuddy/refresh），完成后静默刷新页面数据 */
+  /** 手动重新拉取上游模型目录（唯一的常规刷新路径），完成后静默刷新页面数据 */
   const reloadCatalog = useCallback(async () => {
     if (reloading) return;
     setReloading(true);
     try {
       const result = await refreshProviderModels("workbuddy");
-      toast.success(`模型目录已刷新（${result.models} 个模型）`);
+      const outcome = modelRefreshOutcome(result);
+      if (outcome.ok) toast.success(outcome.text);
+      else toast.error(outcome.text);
       await load(true);
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "拉取模型目录失败");
@@ -524,7 +527,7 @@ export function WorkBuddyPage() {
           </div>
           <div className="metric-v">{ops?.status.models ?? 0}</div>
           <div className="metric-sub usage-metric-sub">
-            {ops?.status.refreshed_at ? `刷新于 ${ops.status.refreshed_at}` : "尚未拉取目录"}
+            {catalogTimeLabel(ops?.status ?? {}, (ops?.status.models ?? 0) > 0).text}
           </div>
         </div>
         <div className="metric">
@@ -536,9 +539,9 @@ export function WorkBuddyPage() {
         </div>
         <div className="metric">
           <div className="metric-k">24h tokens</div>
-          <div className="metric-v">{fmtTokens((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}</div>
+          <div className="metric-v">{fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}</div>
           <div className="metric-sub usage-metric-sub">
-            入 {fmtTokens(totals?.input_tokens ?? 0)} · 出 {fmtTokens(totals?.output_tokens ?? 0)}
+            入 {fmtCompact(totals?.input_tokens ?? 0)} · 出 {fmtCompact(totals?.output_tokens ?? 0)}
           </div>
         </div>
       </div>
@@ -577,8 +580,8 @@ export function WorkBuddyPage() {
                     <TableHead>积分</TableHead>
                     <TableHead>签到</TableHead>
                     <TableHead>冷却/熔断</TableHead>
-                    <TableHead>7d 请求</TableHead>
-                    <TableHead>7d tokens</TableHead>
+                    <TableHead>最近请求</TableHead>
+                    <TableHead>累计 tokens</TableHead>
                     <TableHead className="table-col-actions">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -694,38 +697,19 @@ export function WorkBuddyPage() {
                           <TableCell className="text-xs">
                             {cooldown ? `冷却 ${cooldown}` : breaker ? `熔断 ${breaker}` : "—"}
                           </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {account.stats_7d ? (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  {/* 请求数 / 失败数：不带文字标签，含义由颜色（绿=请求、
-                                      红=失败）与 hover 提示兜住。失败为 0 时不染红——
-                                      每个号都顶个红 0 是纯噪音。 */}
-                                  <span className="cursor-default tabular-nums">
-                                    <span className="text-ok">{account.stats_7d.requests}</span>
-                                    <span className="text-fg-subtle"> / </span>
-                                    <span
-                                      className={
-                                        account.stats_7d.failed > 0
-                                          ? "text-destructive font-medium"
-                                          : "text-fg-subtle"
-                                      }
-                                    >
-                                      {account.stats_7d.failed}
-                                    </span>
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent side="top">
-                                  7 天 {account.stats_7d.requests} 次请求 · 失败 {account.stats_7d.failed} 次
-                                </TooltipContent>
-                              </Tooltip>
-                            ) : (
-                              "0"
-                            )}
+                          {/* 最近请求：时间戳 + 最近 14 次请求结果条（失败红；与 Codex 号池同一组件） */}
+                          <TableCell>
+                            <ActivityCell
+                              lastUsedMs={account.last_used_ms ?? 0}
+                              recent={account.recent_14 ?? []}
+                            />
                           </TableCell>
                           <TableCell className="font-mono text-xs">
-                            {account.stats_7d
-                              ? fmtTokens(account.stats_7d.input_tokens + account.stats_7d.output_tokens)
+                            {/* 全时段累计（stats_total） */}
+                            {account.stats_total
+                              ? fmtCompact(
+                                  account.stats_total.input_tokens + account.stats_total.output_tokens,
+                                )
                               : "0"}
                           </TableCell>
                           <TableCell className="table-col-actions">
@@ -775,16 +759,22 @@ export function WorkBuddyPage() {
           <div className="gw-panel-head">
             <Boxes className="size-3.5" strokeWidth={1.6} aria-hidden />
             <h2 className="gw-panel-title">模型列表({ops?.models.length ?? 0})</h2>
+            {/* 目录不再自动刷新：这是唯一的常规获取入口（三页同一枚图标按钮） */}
             <Button
               type="button"
-              variant="outline"
-              size="sm"
-              className="ml-auto"
+              variant="ghost"
+              size="icon"
+              className="ml-auto size-6"
               disabled={reloading}
               onClick={() => void reloadCatalog()}
+              title="获取模型（重新拉取上游目录）"
+              aria-label="获取模型"
               aria-busy={reloading}
             >
-              {reloading ? "获取中…" : "获取模型"}
+              <RefreshCw
+                className={cn("size-3.5", reloading && "animate-spin")}
+                strokeWidth={1.75}
+              />
             </Button>
           </div>
           <div className={cn("gw-table-card", !ops?.models.length && "is-empty")}>

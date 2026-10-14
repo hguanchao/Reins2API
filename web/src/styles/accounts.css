@@ -13,15 +13,15 @@
    避免短内容（套餐/状态）在宽列里"飘"。 */
 .acct-row {
   display: grid;
-  /* 凭证列封顶（邮箱就 190px 上下），富余宽度留给额度条与用量——否则宽屏下
-     凭证列吃掉 350px、中间空一大片，额度条反而很短。 */
+  /* 凭证列封顶（邮箱就 190px 上下），富余宽度留给额度条——否则宽屏下凭证列吃掉
+     350px、中间空一大片，额度条反而很短。 */
   grid-template-columns:
     minmax(200px, 264px)    /* 凭证（够放下完整邮箱，不截断） */
     52px                    /* 套餐 */
     108px                   /* 可用状态 */
     118px                   /* 最近请求 */
-    minmax(170px, 1fr)      /* 历史用量（全时段） */
-    minmax(230px, 1.4fr)    /* 额度 */
+    180px                   /* 历史用量（= 2×84 + 12 间距；写死同理，fr 会把整块留在左半边） */
+    minmax(215px, 1.2fr)    /* 额度 */
     148px;                  /* 操作 */
   gap: 16px;
   align-items: center;
@@ -117,7 +117,7 @@
   color: var(--destructive);
 }
 
-/* ── 最近请求 + 迷你柱状图 ── */
+/* ── 最近请求 + 请求结果条 ── */
 .acct-when {
   font-family: var(--font-mono);
   font-size: 11.5px;
@@ -137,40 +137,43 @@
 .acct-spark i {
   display: block;
   width: 4px;
+  height: 2px;                 /* 还没跑满的位置：留一个椭圆点 */
   flex: 0 0 auto;
-  border-radius: 1px;
+  border-radius: 999px;        /* 胶囊圆头：4px 宽的柱子上下收成椭圆头 */
   background: var(--border);
 }
+/* 每根柱 = 一次请求：成功绿、失败红（同高，颜色即结果） */
 .acct-spark i.is-on {
+  height: 12px;
   background: var(--meter-high);
 }
-/* 今天：竖长椭圆（胶囊）指示条，略高于其余柱、向上连到"最近请求"时间行；
-   高度是强调用的固定值，不再反映当天量级（其它柱仍按数值缩放）。
-   行内 height 是动态值，这里用 !important 覆盖。 */
-.acct-spark i.is-today {
-  height: 12px !important;
-  margin-top: -8px;
-  border-radius: 999px;
-  background: var(--primary);
+.acct-spark i.is-fail {
+  height: 12px;
+  background: var(--destructive);
+  cursor: help;                /* 只有失败柱带悬停详情，给个可查的暗示 */
 }
 
-/* ── 历史用量：左标签右数值的迷你规格表（只有图标看不出是什么）── */
+/* ── 历史用量：图标贴数值的迷你规格表（四格共用一条悬停提示，含义按格子顺序列）──
+   两列都写死 84px，不用 1fr / max-content：四格的内容宽度逐行不同（"100.0%" vs "—"），
+   按内容撑列会让第二组（#/⊗）跟着每行的第一个数左右滑、行与行对不齐；而 1fr +
+   space-between 又会把图标和自己的数字拉开 60px+。84px = 图标 12 + 间隙 6 +
+   最宽数值 42（"100.0%"）+ 余量，数值在各自列里左对齐，所以整块逐行完全重合。 */
 .acct-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px 14px;
+  grid-template-columns: 84px 84px;
+  gap: 4px 12px;
+  cursor: help;
 }
 .acct-stat {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  align-items: center;
   gap: 6px;
   min-width: 0;
 }
-.acct-stat-k {
-  font-size: 10.5px;
+.acct-stat-ico {
+  display: inline-flex;
+  align-items: center;
   color: var(--fg-subtle);
-  white-space: nowrap;
 }
 .acct-stat-v {
   font-family: var(--font-mono);
@@ -189,26 +192,8 @@
   gap: 4px;
   min-width: 0;
 }
-.acct-quota-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--fg-subtle);
-}
-.acct-quota-head b {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--foreground);
-  font-variant-numeric: tabular-nums;
-}
-.acct-quota-head b.is-warn {
-  color: var(--warning-text);
-}
-.acct-quota-head b.is-bad {
-  color: var(--destructive);
-}
+/* 明细一行说全：窗口剩余 · 重置倒计时 · 副窗口剩余（原 head 那行只有一个数字，
+   白白把这一格撑成三行，已并入这里） */
 .acct-quota-foot {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -238,8 +223,16 @@
 .acct-bar.is-warn > i {
   background: var(--meter-mid);
 }
+/* 用量 ≥90%：用语义红（--destructive），与本行「剩余 0%」的文字、结果条的失败柱同色。
+   --meter-low（玫红 #f43f5e）是给 5px 色点、短条那种小面积指示物配的（见 tokens.css），
+   铺成一条几百 px 的满格条时又亮又粉，且整站没有第二处这个色相。 */
 .acct-bar.is-bad > i {
-  background: var(--meter-low);
+  background: var(--destructive);
+}
+/* 额度用尽（用掉 100%）：铺满但不上色——灰比红安静，状态由明细里的「已用尽」说。
+   填充要比底轨深一档，否则和底轨糊成同一条。 */
+.acct-bar.is-out > i {
+  background: var(--border-strong);
 }
 
 /* ── 操作 ── */
@@ -313,6 +306,6 @@
   }
   .acct-stats {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 2px 16px;
+    gap: 4px 16px;
   }
 }

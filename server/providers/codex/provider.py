@@ -65,12 +65,33 @@ class _Catalog:
 
     models: dict[str, dict[str, Any]] = field(default_factory=dict)  # 裸名 → 条目
     refreshed_at: str | None = None
+    # 缓存内容的最后变更时间（models.json 的 meta.updated_at_ms）：本进程从快照
+    # 冷启动时它是唯一的时间线索，与 refreshed_at（本进程刷新时间）分开不混用。
+    cached_at_ms: int = 0
+
+
+def _stamp(ms: int) -> str | None:
+    """epoch ms → 北京时间字符串（status 展示用）。"""
+    if not ms:
+        return None
+    return datetime.fromtimestamp(ms / 1000, _BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _refresh_result(
+    *, added: int = 0, removed: int = 0, failed: int = 0, error: str = ""
+) -> dict[str, Any]:
+    """手动刷新的回报形状（三家同形状，api 层按同一组键拼响应与界面提示）。"""
+    return {"added": added, "removed": removed, "failed": failed, "error": error}
 
 
 def _core_entry(entry: dict[str, Any]) -> dict[str, Any]:
     """上游 manifest 条目 → 统一核心字段条目（目录与 models.json 快照共用，
     见 models_snapshot.core_entry）。manifest 里的 base_instructions 等大块字段
-    目录侧用不到（ModelInfo 只取名字），不进内存也不落盘。"""
+    目录侧用不到（ModelInfo 只取名字），不进内存也不落盘。
+
+    protocol 一并落盘：快照现在是冷启动的唯一数据源，读的人（包括人工排障）不用
+    再去翻这家固定走 responses 的代码。
+    """
     model_id = str(entry.get("id") or entry.get("slug") or "").strip()
     levels = entry.get("supported_reasoning_levels")
     efforts: list[str] | None = None
@@ -100,6 +121,7 @@ def _core_entry(entry: dict[str, Any]) -> dict[str, Any]:
         ),
         reasoning_efforts=efforts,
         default_effort=entry.get("default_reasoning_level"),
+        protocol="responses",
     )
 
 
@@ -118,12 +140,19 @@ class CodexProvider:
         self._refresh_locks_guard = threading.Lock()
         from providers.codex.login import LoginManager
 
-        self._login = LoginManager(self._store, on_account_added=self._on_account_added)
+        # 不挂 on_account_added：新号入库不再自动拉模型目录（目录只在手动
+        # 「获取模型」时刷新，见 refresh 的 docstring）。
+        self._login = LoginManager(self._store)
 
     # ── 目录 ──
 
-    def refresh(self) -> None:
-        """逐账号拉模型目录并合并（各账号可见集合可能不同）；失败保留旧册。"""
+    def refresh(self) -> dict[str, Any]:
+        """逐账号拉模型目录并合并（各账号可见集合可能不同）；失败保留旧册。
+
+        手动刷新是常规路径下唯一的触发点（周期自动刷新已移除），所以失败要能回报
+        给界面，不能只写日志。返回 {added, removed, failed, error} ——与另两家的
+        手动刷新同一个形状，api 层按同一组键拼响应。
+        """
         merged: dict[str, dict[str, Any]] = {}
         seen_account = False
         errors = 0
@@ -143,39 +172,60 @@ class CodexProvider:
                 model_id = str(entry.get("id") or "").strip()
                 if model_id:
                     merged.setdefault(model_id, _core_entry(entry))
-        if merged or (seen_account and errors == 0):
-            with self._lock:
-                self._catalog = _Catalog(
-                    models=merged,
-                    refreshed_at=datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
-                )
-            # 目录里存的就是统一核心字段条目（见 _core_entry），直接落快照；
-            # 全失败时保留旧快照
-            models_snapshot.write("codex", list(merged.values()))
-            logger.info(f"[codex] 模型目录刷新完成 models={len(merged)} errors={errors}")
-            return
-        if not seen_account:
-            logger.info("[codex] 无可用账号, 跳过模型目录刷新")
-        else:
-            logger.warning(f"[codex] 模型目录刷新全失败, 保留旧目录 errors={errors}")
-        self._load_catalog_from_snapshot()
+        with self._lock:
+            previous = dict(self._catalog.models)
+        # 空结果护栏：本地本来有目录，上游这次一个模型都没给（账号全失败/上游抽风），
+        # 保留旧目录与旧快照——否则网关会变成"没有任何模型"，推理全挂。
+        # 失败与"上游确实为空"要分开报：前者是故障，后者（罕见）也不该当成功处理。
+        if not merged and previous:
+            reason = (
+                f"{errors} 个账号拉取失败（已保留原目录）" if errors
+                else "上游返回空目录（已保留原目录）"
+            )
+            logger.warning(
+                f"[codex] 模型目录本轮无产出, 保留旧目录 models={len(previous)} errors={errors}"
+            )
+            return _refresh_result(failed=errors or 1, error=reason)
+        if not merged:
+            if not seen_account:
+                logger.info("[codex] 无可用账号, 跳过模型目录刷新")
+                return _refresh_result(failed=1, error="无可用账号")
+            # 上游确实一个模型都没有（新装的号可能如此）：如实写下空目录
+            logger.info("[codex] 上游目录为空")
+        added = sorted(set(merged) - set(previous))
+        removed = sorted(set(previous) - set(merged))
+        written = models_snapshot.write("codex", list(merged.values()))
+        with self._lock:
+            self._catalog = _Catalog(
+                models=merged,
+                refreshed_at=datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                cached_at_ms=int(models_snapshot.read_meta("codex").get("updated_at_ms") or 0),
+            )
+        detail = []
+        if added:
+            detail.append(f"新增={len(added)}({', '.join(added[:5])})")
+        if removed:
+            detail.append(f"移除={len(removed)}({', '.join(removed[:5])})")
+        logger.info(
+            f"[codex] 模型目录刷新完成 models={len(merged)} errors={errors} "
+            f"落盘={'是' if written else '无变化'} {' '.join(detail) or '无变化'}"
+        )
+        return _refresh_result(added=len(added), removed=len(removed), failed=errors)
 
-    def _load_catalog_from_snapshot(self) -> None:
-        """冷启动兜底：内存里还没有目录时，用上次落盘的快照填充。
+    def load_from_snapshot(self) -> int:
+        """用上次落盘的快照填充内存目录（冷启动的唯一数据源），返回条目数。
 
-        场景：网关刚起、账号凭证尚未生效（或上游不可达）——此时目录为空，管理台的
-        模型列表与 `/v1/models` 都是空的，客户端拿不到可服务的模型名。快照是上次
-        成功拉取的统一核心字段条目（id/name 足够重建列表），拿它兜底比空着强；
-        真正拉到新目录后会被整体覆盖。
-
-        只在"当前为空"时填充，所以不会把陈旧快照盖到已刷新出来的新目录上。
+        手动获取是唯一的常规刷新路径，所以启动时内存目录只能来自缓存——它是
+        **路由依据**（route() 靠它判模型是否存在），空着等于整个网关没有可服务的
+        模型。`refreshed_at` 留空、改用 `cached_at_ms` 报缓存内容时间，不冒充本次
+        新鲜度。只在内存目录为空时填充，不会把旧快照盖到已刷新出来的新目录上。
         """
         with self._lock:
             if self._catalog.models:
-                return
+                return len(self._catalog.models)
         raw = models_snapshot.read().get("codex")
         if not isinstance(raw, list) or not raw:
-            return
+            return 0
         models: dict[str, dict[str, Any]] = {}
         for entry in raw:
             if not isinstance(entry, dict):
@@ -184,23 +234,30 @@ class CodexProvider:
             if model_id:
                 models[model_id] = entry
         if not models:
-            return
+            return 0
+        cached_at_ms = int(models_snapshot.read_meta("codex").get("updated_at_ms") or 0)
         with self._lock:
             if not self._catalog.models:
-                # refreshed_at 留空：这是上次的快照，不是本次刷新结果，不冒充新鲜度
-                self._catalog = _Catalog(models=models, refreshed_at=None)
-        logger.info(f"[codex] 目录冷启动兜底, 用上次快照填充 models={len(models)}")
+                self._catalog = _Catalog(
+                    models=models, refreshed_at=None, cached_at_ms=cached_at_ms
+                )
+        logger.info(
+            f"[codex] 目录从快照恢复 models={len(models)} 缓存更新于={_stamp(cached_at_ms) or '未知'}"
+        )
+        return len(models)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
             models = len(self._catalog.models)
             refreshed_at = self._catalog.refreshed_at
+            cached_at_ms = self._catalog.cached_at_ms
         counts = self._store.count_by_status()
         now_ms = int(time.time() * 1000)
         accounts = self._store.list_accounts()
         return {
             "upstream": CODEX_BASE,
             "refreshed_at": refreshed_at,
+            "cached_at": _stamp(cached_at_ms),
             "models": models,
             "pool": {
                 "accounts": len(accounts),
@@ -221,27 +278,39 @@ class CodexProvider:
 
     def _model_info(self, bare: str, entry: dict[str, Any]) -> ModelInfo:
         name = str(entry.get("name") or bare)
-        # 数值字段（上下文 / 最大输出）先落一份，再让 models.dev 补 manifest 没声明的
-        # ——Codex manifest 整个 schema 就没有输出上限字段。厂商给了值就不动，
-        # 补来的值在 metadata 里标注来源，展示层据此提示「第三方」。
+        # 数值与模态先落一份 manifest 声明值，再让 models.dev 目录**优先**：匹配到就
+        # 按目录来（manifest 的 context_window / input_modalities 与目录给的常不是
+        # 一个数），没匹配到回落 manifest 声明。命中目录的字段在 metadata 里标注
+        # 来源，展示层据此提示出处。
         metadata: dict[str, Any] = {
             "name": name,
             "context_window": entry.get("context_window"),
             "max_output_tokens": entry.get("max_output_tokens"),
             "input_modalities": entry.get("input_modalities"),
+            "output_modalities": entry.get("output_modalities"),
         }
-        filled = models_dev.fill_limits(bare, metadata)
+        filled = models_dev.fill_limits(
+            bare,
+            metadata,
+            prefer=True,
+            list_keys={
+                "input_modalities": "input_modalities",
+                "output_modalities": "output_modalities",
+            },
+        )
         if filled:
             metadata["limits_source"] = {key: "models.dev" for key in filled}
         # 能力块按目录逐条声明，不写死：manifest 里 input_modalities /
         # supported_reasoning_levels / tool_mode 都是逐模型的，写死会让 /v1/models
         # 对每个模型报同一套能力。没声明的键省略，落回档案默认。
+        # 模态读上面解析后的 metadata（目录优先的结果），别退回 entry——否则展示是
+        # 目录值、对外声明却是 manifest 值，两边自相矛盾。
         capabilities = capability_block(
             profiles.CODEX,
             "responses",
             {
-                "input_modalities": entry.get("input_modalities"),
-                "output_modalities": entry.get("output_modalities"),
+                "input_modalities": metadata.get("input_modalities"),
+                "output_modalities": metadata.get("output_modalities"),
                 "supports_reasoning": entry.get("supports_reasoning"),
                 "supports_function_calling": entry.get("supports_tool_call"),
                 "context_window": metadata["context_window"],
@@ -422,6 +491,12 @@ class CodexProvider:
         if not snapshot:
             return
         previous = account.rate_limit or {}
+        # 响应头只有窗口三件套，/usage 才给的字段（积分、重置券、上游自己的 allowed /
+        # limit_reached）在这里接过来：两条数据源写的是同一个 JSON 快照，直接覆盖等于
+        # 一次普通请求就把主动查询的结果抹掉。代价是这些字段的时效跟着上次主动查询走。
+        for key in ("allowed", "limit_reached", "credits", "reset_credits"):
+            if key in previous and key not in snapshot:
+                snapshot[key] = previous[key]
         if all(
             (previous.get(window) or {}).get("used_percent")
             == (snapshot.get(window) or {}).get("used_percent")
@@ -582,6 +657,38 @@ class CodexProvider:
                 refreshed += 1
         return refreshed
 
+    def refresh_quota(self, uid: str | None = None) -> dict[str, int]:
+        """主动拉额度快照落库（额度列的主动数据源，uid 省略 = 全池）。
+
+        与响应头回填互补：响应头只在账号真跑过成功请求后才有数据，刚导入的号
+        只能干等。逐账号 GET /usage，单个失败只告警不中断（其余账号照刷）。
+        """
+        accounts = self._store.list_accounts()
+        if uid:
+            accounts = [a for a in accounts if a.uid == uid]
+        refreshed = failed = 0
+        for account in accounts:
+            if not account.access_token:
+                continue
+            try:
+                snapshot = cx_upstream.fetch_usage(account)
+            except Exception as exc:  # 单号失败不影响其余号
+                failed += 1
+                logger.warning(
+                    f"[codex] uid={account.uid[:8]}… 额度查询失败: {type(exc).__name__}: {exc}"
+                )
+                continue
+            if not snapshot:
+                failed += 1
+                continue
+            fields: dict[str, Any] = {"rate_limit": snapshot}
+            plan = str(snapshot.get("plan_type") or "")
+            if plan and plan != account.plan_type:
+                fields["plan_type"] = plan
+            self._store.update_runtime(account.uid, **fields)
+            refreshed += 1
+        return {"refreshed": refreshed, "failed": failed}
+
     # ── 运维面（管理端点用）──
 
     def account_summaries(self) -> list[dict[str, Any]]:
@@ -694,6 +801,10 @@ class CodexProvider:
         elif action == "refresh":
             if not self._try_refresh(account):
                 raise RuntimeError("token 刷新失败（凭证可能已失效，请重新授权）")
+        elif action == "quota":
+            result = self.refresh_quota(uid)
+            if result["failed"] and not result["refreshed"]:
+                raise RuntimeError("额度查询失败（凭证或上游不可用）")
         else:
             raise ValueError(f"未知动作: {action}")
         updated = self._store.get_account(uid)
@@ -721,12 +832,6 @@ class CodexProvider:
 
     def pool_snapshot(self) -> dict[str, Any]:
         return self._pool.snapshot()
-
-    def _on_account_added(self, uid: str) -> None:
-        try:
-            self.refresh()
-        except Exception as exc:
-            logger.warning(f"[codex] 新账号目录刷新失败: {exc}")
 
 
 class _RawBytes:

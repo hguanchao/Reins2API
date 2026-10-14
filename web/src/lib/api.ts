@@ -110,6 +110,8 @@ export interface OpenCodeOps {
   status: {
     upstream: string;
     refreshed_at: string | null;
+    /** 缓存内容的最后变更时间（本进程没刷过时只有它有值） */
+    cached_at?: string | null;
     models: number;
   };
   models: ModelInfo[];
@@ -138,6 +140,8 @@ export interface RequestRow {
   reasoning_tokens: number;
   cached_tokens: number;
   client_ip: string;
+  /** 出口 IP：上游看到的地址（后端探测缓存回填；空 = 该请求落库时还没探到） */
+  egress_ip: string;
   client_ua: string;
   /** 首字耗时（上游首个非空字节，ms）。0 = 未采到或该请求失败 */
   first_byte_ms: number;
@@ -157,9 +161,17 @@ export interface ProviderRefreshResult {
   status: {
     upstream: string;
     refreshed_at: string | null;
+    /** 缓存内容的最后变更时间（本进程没刷过时只有它有值） */
+    cached_at?: string | null;
     models: number;
   };
   models: number;
+  /** 本次拉取相对上次的变化（手动获取的提示用） */
+  added: number;
+  removed: number;
+  /** 拉取失败的来源数（账号级/域级/来源级）；>0 时 error 说明原因 */
+  failed: number;
+  error: string;
 }
 
 /** 手动重新拉取某 provider 的模型目录（后端 POST /api/{provider}/refresh 通用）。 */
@@ -264,12 +276,26 @@ export interface WorkBuddyOps {
   status: {
     upstream: string;
     refreshed_at: string | null;
+    /** 缓存内容的最后变更时间（本进程没刷过时只有它有值） */
+    cached_at?: string | null;
     models: number;
     realms: Record<string, WorkBuddyRealmStatus>;
     pool: WorkBuddyPoolStatus;
   };
   models: ModelInfo[];
   usage: UsageSummary;
+}
+
+/** 账号行「最近请求」柱状图的一根柱：一次请求的摘要（悬停详情用）。 */
+export interface AccountRecentRequest {
+  created_ms: number;
+  /** HTTP 状态码（非 2xx 记为失败，柱子画红） */
+  http_status: number;
+  duration_ms: number;
+  input_tokens: number;
+  output_tokens: number;
+  /** 失败时的上游/网关错误文案（后端截到 80 字符） */
+  error_message?: string | null;
 }
 
 /** 账号一行（后端脱敏视图；统计由 requests 表按 account_uid 汇总并入）。 */
@@ -303,9 +329,13 @@ export interface WorkBuddyAccount {
   created_ms: number;
   updated_ms: number;
   stats_7d?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
+  /** 全时段累计（口径同 stats_7d，只是不限时间窗） */
+  stats_total?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
   last_used_ms?: number;
-  /** 近 14 天逐日请求数（最旧在前；账号行迷你柱状图） */
+  /** 近 14 天逐日请求数（最旧在前；按天口径） */
   daily_14d?: number[];
+  /** 最近 14 次请求（最旧在前，最后一根最新）——账号行柱状图与悬停详情 */
+  recent_14?: AccountRecentRequest[];
 }
 
 export function fetchWorkBuddyOps(): Promise<WorkBuddyOps> {
@@ -430,6 +460,8 @@ export interface CodexOps {
   status: {
     upstream: string;
     refreshed_at: string | null;
+    /** 缓存内容的最后变更时间（本进程没刷过时只有它有值） */
+    cached_at?: string | null;
     models: number;
     pool: CodexPoolStatus;
   };
@@ -476,14 +508,27 @@ export interface CodexAccount {
   /** 全时段用量（历史用量列；不限于 7 天） */
   stats_total?: { requests: number; failed: number; input_tokens: number; output_tokens: number };
   last_used_ms?: number;
-  /** 近 14 天逐日请求数（最旧在前；账号行迷你柱状图） */
+  /** 近 14 天逐日请求数（最旧在前；按天口径） */
   daily_14d?: number[];
-  /** 上游限流窗口快照（最近一次成功响应头回填；没有则说明还没跑过成功请求） */
+  /** 最近 14 次请求（最旧在前，最后一根最新）——账号行柱状图与悬停详情 */
+  recent_14?: AccountRecentRequest[];
+  /**
+   * 上游限流窗口快照。窗口数据由每次成功响应头回填；下面几个只有主动查 `/usage`
+   * 才有的字段（响应头不带）会一直沿用到下次主动查询。
+   */
   rate_limit?: {
     primary?: RateLimitWindow;
     secondary?: RateLimitWindow;
     plan_type?: string;
     at_ms?: number;
+    /** 上游自己的判定：是否还允许请求（比 used_percent 更权威） */
+    allowed?: boolean;
+    /** 上游自己的判定：本窗口是否已判定限额用尽 */
+    limit_reached?: boolean;
+    /** 积分（只有带积分的档位才有值；free 档上游返回全空） */
+    credits?: { has_credits?: boolean; unlimited?: boolean; balance?: number };
+    /** 可用的限流重置券张数（0 张上游不返回该字段） */
+    reset_credits?: number;
   };
 }
 
@@ -506,14 +551,22 @@ export function deleteCodexAccount(uid: string): Promise<{ deleted: string }> {
   });
 }
 
-/** 账号动作：pause / resume / disable / revive / refresh（刷新 token 走上游 RT 兑换）。 */
+/** 账号动作：pause / resume / disable / revive / refresh（刷新 token 走上游 RT 兑换）、
+ * quota（主动查一次上游额度）。 */
 export function codexAccountAction(
   uid: string,
-  action: "pause" | "resume" | "disable" | "revive" | "refresh",
+  action: "pause" | "resume" | "disable" | "revive" | "refresh" | "quota",
 ): Promise<CodexAccount> {
   return request<CodexAccount>(`/api/codex/accounts/${encodeURIComponent(uid)}/action`, {
     method: "POST",
     body: JSON.stringify({ action }),
+  });
+}
+
+/** 全池额度补刷（逐号查上游 /usage）。 */
+export function codexRefreshQuotas(): Promise<{ refreshed: number; failed: number }> {
+  return request<{ refreshed: number; failed: number }>("/api/codex/quotas/refresh", {
+    method: "POST",
   });
 }
 

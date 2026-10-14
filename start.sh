@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Reins2API 一键启动(开发/本机):
 #   ① 检测并自动安装前后端运行环境(uv 缺失用 pip 装,Node 缺失给出安装指引)
-#      → 同步后端依赖 → web/dist 缺失时用 npm 构建前端
+#      → 同步后端依赖 → 前端产物缺失或源码更新时用 npm 构建前端
 #   ② 按端口结束旧实例
 #   ③ 后台启动服务(nohup,日志落 server/logs/)
 #   ④ 轮询健康检查,输出启动成功日志
-# 用法: ./start.sh [端口] [--rebuild]   # --rebuild 强制重建前端;再次运行 = 重启
+# 用法: ./start.sh [端口] [--rebuild]   # 源码新于产物会自动重建,--rebuild 强制重建;再次运行 = 重启
 # 输出风格:圆点步骤(模板 A)——绿●完成 红✗失败;子进程原始输出缩进弱色。
 # 颜色仅在 TTY 上启用(重定向/CI 自动退化为纯文本)。
 set -euo pipefail
@@ -98,7 +98,28 @@ step "后端依赖" "uv sync 完成"
 
 # ── 前端 ─────────────────────────────────────────────────────────
 
-if [ "$REBUILD" = 1 ] || [ ! -f web/dist/index.html ]; then
+# 构建输入(web 源码/配置)是否新于 web/dist/index.html。dist 未纳入 git,
+# 只判"产物是否存在"会让 pull 后的前端一直停在旧产物上,故按 mtime 补一次新鲜度判断。
+web_sources_newer() {
+  local dist=web/dist/index.html newest
+  [ -f "$dist" ] || return 0
+  newest="$(find web/src web/public web/index.html web/package.json web/package-lock.json \
+    web/vite.config.ts web/tsconfig.json web/tsconfig.app.json web/tsconfig.node.json \
+    -type f -newer "$dist" -print -quit 2>/dev/null || true)"
+  [ -n "$newest" ]
+}
+
+BUILD_REASON=""
+if [ "$REBUILD" = 1 ]; then
+  BUILD_REASON="强制重建"
+elif [ ! -f web/dist/index.html ]; then
+  BUILD_REASON="产物缺失"
+elif web_sources_newer; then
+  BUILD_REASON="源码有更新"
+fi
+
+if [ -n "$BUILD_REASON" ]; then
+  printf "  %b│ 重建前端(%s)…%b\n" "$C_DIM" "$BUILD_REASON" "$C_RESET"
   command -v node >/dev/null 2>&1 || die "缺少 Node.js (>=18)" "请安装: https://nodejs.org/"
   command -v npm  >/dev/null 2>&1 || die "缺少 npm"
   NODE_VERSION="$(node --version)"

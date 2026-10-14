@@ -43,6 +43,7 @@ from gateway.stream import (
     transcode_stream,
 )
 from gateway.types import PROTOCOL_ANTHROPIC, PROTOCOL_CHAT, PROTOCOL_RESPONSES, Usage
+from net import egress
 
 # 对齐 zen2api express.json 的 32mb 上限
 MAX_BODY = 32 * 1024 * 1024
@@ -112,6 +113,11 @@ def _serve(handler: BaseHTTPRequestHandler, external: str) -> None:
         # 落库失败绝不阻塞转发（store 内部吞异常）。
         if record.id:
             provider = resolved["provider"]
+            # 出口 IP（上游看到的地址）：只读探测缓存，联网那步在后台线程里，
+            # 缓存冷时本行为空——列表里显示「—」，探到后的请求开始有值。
+            record.egress_ip = egress.cached_ip(
+                provider.upstream_url if provider is not None else registry.default.upstream_url
+            )
             name = provider.name if provider is not None else registry.default.name
             store(name).log_request(record)
 

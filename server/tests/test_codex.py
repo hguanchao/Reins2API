@@ -487,6 +487,111 @@ def test_parse_rate_limits_from_headers():
     assert dirty is None
 
 
+def test_parse_usage_payload_keeps_concrete_fields():
+    """/usage 才有的字段（上游判定 + 积分 + 重置券）进快照；free 档的空壳不进。
+
+    形状取自 2026-10-14 实测的 /usage 原始响应（free 档：credits 全 null/false、
+    reset_credits 0、单个 30d 窗口）。"""
+    from providers.codex import upstream
+
+    rich = upstream.parse_usage_payload(
+        {
+            "plan_type": "plus",
+            "rate_limit": {
+                "allowed": True,
+                "limit_reached": False,
+                "primary_window": {
+                    "used_percent": 37,
+                    "limit_window_seconds": 18000,
+                    "reset_after_seconds": 120,
+                },
+                "secondary_window": None,
+            },
+            "credits": {"has_credits": True, "unlimited": False, "balance": "12.5"},
+            "rate_limit_reset_credits": {"available_count": 2, "applicable_available_count": 1},
+        },
+        now_ms=1_000_000,
+    )
+    assert rich is not None
+    assert rich["allowed"] is True and rich["limit_reached"] is False
+    assert rich["primary"]["window_minutes"] == 300.0
+    assert "secondary" not in rich  # 上游 secondary_window 为 null → 快照里没有这条
+    assert rich["credits"] == {"has_credits": True, "unlimited": False, "balance": 12.5}
+    assert rich["reset_credits"] == 2
+    assert rich["plan_type"] == "plus"
+
+    free = upstream.parse_usage_payload(
+        {
+            "plan_type": "free",
+            "rate_limit": {
+                "allowed": False,
+                "limit_reached": True,
+                "primary_window": {
+                    "used_percent": 100,
+                    "limit_window_seconds": 2592000,
+                    "reset_after_seconds": 109141,
+                    "reset_at": 1792074587,
+                },
+                "secondary_window": None,
+            },
+            "credits": {
+                "has_credits": False,
+                "unlimited": False,
+                "balance": None,
+                "approx_local_messages": None,
+                "approx_cloud_messages": None,
+            },
+            "rate_limit_reset_credits": {"available_count": 0, "applicable_available_count": 0},
+        },
+        now_ms=1_000_000,
+    )
+    # 空壳不落库：前端就不会多长出一段空文案
+    assert "credits" not in free and "reset_credits" not in free
+    assert free["limit_reached"] is True and free["allowed"] is False
+    assert free["primary"]["reset_at_ms"] == 1792074587 * 1000
+    # 没有额度段（错误形状）→ None，调用方保留旧快照
+    assert upstream.parse_usage_payload({"rate_limit": None}, now_ms=0) is None
+
+
+def test_usage_only_fields_survive_header_backfill():
+    """响应头回填不能抹掉 /usage 才有的字段（allowed / 积分 / 重置券）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1", label="me@x.y", email="me@x.y")
+            provider = CodexProvider(store=store)
+            # 先来一次主动查询（/usage）：带上响应头没有的那几个字段
+            store.update_runtime(
+                "acc-1",
+                rate_limit={
+                    "primary": {"used_percent": 37.0, "window_minutes": 300.0},
+                    "allowed": True,
+                    "limit_reached": False,
+                    "credits": {"has_credits": True, "balance": 12.5},
+                    "reset_credits": 2,
+                    "at_ms": 1_000_000,
+                },
+            )
+            account = store.get_account("acc-1")
+            # 再来一次普通响应（只有响应头）：窗口变了，触发回填
+            provider._note_rate_limit(
+                account,
+                {
+                    "x-codex-primary-used-percent": "44",
+                    "x-codex-primary-window-minutes": "300",
+                    "x-codex-secondary-used-percent": "8",
+                    "x-codex-secondary-window-minutes": "10080",
+                },
+            )
+            got = store.get_account("acc-1").rate_limit
+            assert got["primary"]["used_percent"] == 44.0
+            assert got["allowed"] is True and got["limit_reached"] is False
+            assert got["credits"] == {"has_credits": True, "balance": 12.5}
+            assert got["reset_credits"] == 2
+        finally:
+            store.close()
+
+
 def test_store_rate_limit_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
         store = CodexStore(Path(tmp) / "codex.db")

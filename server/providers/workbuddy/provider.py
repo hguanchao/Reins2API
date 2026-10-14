@@ -59,6 +59,15 @@ from providers.workbuddy.store import (
 )
 
 _BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _stamp(ms: int) -> str | None:
+    """epoch ms → 北京时间字符串（status 展示用）。"""
+    if not ms:
+        return None
+    return datetime.fromtimestamp(ms / 1000, _BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
 # token 到期前主动刷新窗口(对齐 wb2api keepalive 语义)
 _REFRESH_AHEAD_MS = 10 * 60 * 1000
 # 不罚号类别(classify.RETRYABLE 之外且非 CLIENT 透传类的请求级错误)
@@ -114,10 +123,20 @@ class _RawBytes:
 
 
 def _snapshot_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """上游 /v3/config 条目 → models.json 统一核心字段（见 models_snapshot.core_entry）。"""
+    """上游 /v3/config 条目 → models.json 统一核心字段（见 models_snapshot.core_entry）。
+
+    倍率/活动/credits 这些上游侧字段进 `extras`：冷启动不再打上游，内存目录只能
+    由快照重建，缺了它们重启后 _model_info 的对应列就空着（见 _entry_from_snapshot）。
+    """
     reasoning = entry.get("reasoning") if isinstance(entry.get("reasoning"), dict) else {}
     efforts = reasoning.get("supportedEfforts")
     default_effort = str(reasoning.get("defaultEffort") or reasoning.get("effort") or "")
+    extras = {
+        key: entry.get(key)
+        for key in ("credits", "tags", "vendor", "promo_label", "promo_credits",
+                    "promo_factor", "promo_note")
+        if entry.get(key) is not None
+    }
     return models_snapshot.core_entry(
         id=str(entry.get("id") or "").strip() or None,
         name=entry.get("name"),
@@ -131,7 +150,42 @@ def _snapshot_entry(entry: dict[str, Any]) -> dict[str, Any]:
             [str(e) for e in efforts] if isinstance(efforts, list) and efforts else None
         ),
         default_effort=default_effort or None,
+        protocol="chat",
+        extras=extras or None,
     )
+
+
+def _entry_from_snapshot(entry: dict[str, Any]) -> dict[str, Any]:
+    """快照统一字段条目 → 内存目录条目（_model_info 读的那套上游侧键名）。
+
+    冷启动的逆向投影：把统一字段翻回 `maxInputTokens` / `descriptionZh` /
+    `reasoning.supportedEfforts` 等原始键名，并把 extras 原样贴回。语义上等价于
+    一次真实刷新的产出（等价性由 tests 的「缓存重建」用例兜住）。
+    """
+    extras = entry.get("extras") if isinstance(entry.get("extras"), dict) else {}
+    out: dict[str, Any] = {
+        "id": entry.get("id"),
+        "name": entry.get("name"),
+        "descriptionZh": entry.get("description"),
+        "maxInputTokens": entry.get("context_window"),
+        "maxOutputTokens": entry.get("max_output_tokens"),
+        "supportsImages": entry.get("supports_images"),
+        "supportsReasoning": entry.get("supports_reasoning"),
+        "supportsToolCall": entry.get("supports_tool_call"),
+    }
+    efforts = entry.get("reasoning_efforts")
+    default_effort = entry.get("default_effort")
+    if efforts or default_effort:
+        out["reasoning"] = {"supportedEfforts": efforts, "defaultEffort": default_effort}
+    out.update(extras)
+    return {key: value for key, value in out.items() if value is not None}
+
+
+def _refresh_result(
+    *, added: int = 0, removed: int = 0, failed: int = 0, error: str = ""
+) -> dict[str, Any]:
+    """手动刷新的回报形状（三家同形状，api 层按同一组键拼响应与界面提示）。"""
+    return {"added": added, "removed": removed, "failed": failed, "error": error}
 
 
 class WorkBuddyProvider:
@@ -144,21 +198,34 @@ class WorkBuddyProvider:
         self._lock = threading.Lock()
         # 目录按 realm 分册:CN/global 是两套独立上游,模型表各自成册(见 upstream chat_base)。
         self._catalogs: dict[str, _Catalog] = {"cn": _Catalog(), "global": _Catalog()}
+        # 快照内容的最后变更时间(models.json 的 meta.updated_at_ms);本进程从快照
+        # 冷启动时它是唯一的时间线索,与各册的 refreshed_at(本进程刷新时间)分开。
+        self._cached_at_ms = 0
         from providers.workbuddy.login import LoginManager
 
+        # 登录完成只顺带拉积分（见 _on_account_added）：不再自动拉模型目录
+        # （目录只在手动「获取模型」时刷新，见 refresh 的 docstring）。
         self._login_manager = LoginManager(self._store, on_account_added=self._on_account_added)
 
     # ── 目录 ──
 
-    def refresh(self) -> None:
-        """拉每个 realm 的模型目录(各需一个该域可用账号的 Bearer);失败保留旧册。"""
+    def refresh(self) -> dict[str, Any]:
+        """拉每个 realm 的模型目录(各需一个该域可用账号的 Bearer);失败保留旧册。
+
+        返回 {added, removed, failed, error}（手动刷新是常规路径下唯一的触发点，
+        失败要能回报给界面，不能只写日志；形状与另两家一致）。
+        """
         # 快照按 realm 别名分键(cn/glb);某域本轮没拉到就保留上一次的好数据。
         current = models_snapshot.read().get("workbuddy")
         snapshot_by_alias: dict[str, Any] = {
             "cn": list((current or {}).get("cn") or []) if isinstance(current, dict) else [],
             "glb": list((current or {}).get("glb") or []) if isinstance(current, dict) else [],
         }
+        with self._lock:
+            previous = {realm: set(cat.models) for realm, cat in self._catalogs.items()}
         seen_realm = False
+        added = removed = failed = 0
+        errors: list[str] = []
         for realm in ("cn", "global"):
             account = self._any_active_account(realm)
             if account is None:
@@ -167,9 +234,21 @@ class WorkBuddyProvider:
             try:
                 entries = wb_upstream.fetch_models(account)
             except Exception as exc:
+                failed += 1
+                errors.append(f"{realm}: {type(exc).__name__}")
                 logger.warning(
                     f"[workbuddy] realm={realm} 模型目录刷新失败(保留旧目录): "
                     f"{type(exc).__name__}: {exc}"
+                )
+                continue
+            # 空结果护栏：该域本来有目录而上游这次一条都没给（凭证异常/上游抽风），
+            # 保留旧册——空目录会让该域的模型全部不可路由。
+            if not entries and previous.get(realm):
+                failed += 1
+                errors.append(f"{realm}: 上游返回空目录")
+                logger.warning(
+                    f"[workbuddy] realm={realm} 上游返回空目录, 保留旧目录 "
+                    f"models={len(previous[realm])}"
                 )
                 continue
             # 统一核心字段条目(快照用;上游原样条目只进内存目录)
@@ -190,15 +269,89 @@ class WorkBuddyProvider:
                     default = str(reasoning.get("defaultEffort") or reasoning.get("effort") or "")
                     if default:
                         default_efforts[model_id] = default
+            now = set(models)
+            realm_added = sorted(now - previous.get(realm, set()))
+            realm_removed = sorted(previous.get(realm, set()) - now)
+            added += len(realm_added)
+            removed += len(realm_removed)
             with self._lock:
                 self._catalogs[realm] = _Catalog(
                     models=models, efforts=efforts, default_efforts=default_efforts,
                     refreshed_at=datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 )
-            logger.info(f"[workbuddy] realm={realm} 模型目录刷新完成 models={len(models)}")
+            detail = []
+            if realm_added:
+                detail.append(f"新增={len(realm_added)}({', '.join(realm_added[:5])})")
+            if realm_removed:
+                detail.append(f"移除={len(realm_removed)}({', '.join(realm_removed[:5])})")
+            logger.info(
+                f"[workbuddy] realm={realm} 模型目录刷新完成 models={len(models)} "
+                f"{' '.join(detail) or '无变化'}"
+            )
         if not seen_realm:
+            failed += 1
+            errors.append("无可用账号")
             logger.info("[workbuddy] 无可用账号, 跳过模型目录刷新")
-        models_snapshot.write("workbuddy", snapshot_by_alias)
+        written = models_snapshot.write("workbuddy", snapshot_by_alias)
+        self._load_cached_at()
+        if written:
+            logger.info("[workbuddy] 快照已更新(旧文件轮转为 models.json.bak)")
+        return _refresh_result(added=added, removed=removed, failed=failed, error="; ".join(errors))
+
+    def load_from_snapshot(self) -> int:
+        """用上次落盘的快照填充内存目录（冷启动的唯一数据源），返回条目数。
+
+        手动获取是唯一的常规刷新路径，启动时内存目录只能来自缓存——它是路由依据
+        （route() 靠它判模型是否存在），空着等于该域模型全部不可服务。`refreshed_at`
+        留空、改用 cached_at 报缓存内容时间，不冒充本次新鲜度。只在内存目录为空时
+        填充，不会把旧快照盖到已刷新出来的新目录上。
+        """
+        raw = models_snapshot.read().get("workbuddy")
+        if not isinstance(raw, dict):
+            return 0
+        total = 0
+        with self._lock:
+            empty = all(not cat.models for cat in self._catalogs.values())
+        if not empty:
+            return 0
+        restored: dict[str, _Catalog] = {"cn": _Catalog(), "global": _Catalog()}
+        for realm in ("cn", "global"):
+            entries = raw.get(_REALM_ALIAS[realm])
+            if not isinstance(entries, list):
+                continue
+            models: dict[str, dict[str, Any]] = {}
+            efforts: dict[str, list[str]] = {}
+            default_efforts: dict[str, str] = {}
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                model_id = str(item.get("id") or "").strip()
+                if not model_id:
+                    continue
+                models[model_id] = _entry_from_snapshot(item)
+                supported = item.get("reasoning_efforts")
+                if isinstance(supported, list) and supported:
+                    efforts[model_id] = [str(e) for e in supported]
+                default = item.get("default_effort")
+                if isinstance(default, str) and default:
+                    default_efforts[model_id] = default
+            restored[realm] = _Catalog(
+                models=models, efforts=efforts, default_efforts=default_efforts,
+                refreshed_at=None,
+            )
+            total += len(models)
+        if not total:
+            return 0
+        with self._lock:
+            if all(not cat.models for cat in self._catalogs.values()):
+                self._catalogs = restored
+        self._load_cached_at()
+        logger.info(f"[workbuddy] 目录从快照恢复 models={total}")
+        return total
+
+    def _load_cached_at(self) -> None:
+        """把快照的内容变更时间读进内存（status 展示用）。"""
+        self._cached_at_ms = int(models_snapshot.read_meta("workbuddy").get("updated_at_ms") or 0)
 
     def _any_active_account(self, realm: str | None = None) -> Account | None:
         for account in self._store.list_accounts():
@@ -231,6 +384,7 @@ class WorkBuddyProvider:
         return {
             "upstream": WB_UPSTREAM_BASE,
             "refreshed_at": per_realm["cn"]["refreshed_at"],
+            "cached_at": _stamp(self._cached_at_ms),
             "models": per_realm["cn"]["models"] + per_realm["global"]["models"],
             "realms": per_realm,
             "pool": {
@@ -817,11 +971,11 @@ class WorkBuddyProvider:
         return account
 
     def _on_account_added(self, uid: str) -> None:
-        """OAuth 登录完成入库（新 token 时刻）：拉目录 + 后台顺带拉积分。"""
-        try:
-            self.refresh()
-        finally:
-            self._refresh_credits_async(uid)
+        """OAuth 登录完成入库（新 token 时刻）：后台顺带拉积分给账号列填数。
+
+        不拉模型目录：目录只在手动「获取模型」时刷新（见 refresh 的 docstring）。
+        """
+        self._refresh_credits_async(uid)
 
     def account_busy(self, uid: str) -> bool:
         return self._pool.in_flight_count(uid) > 0

@@ -121,7 +121,7 @@ class LoginManager:
 
     def __init__(self, store: CodexStore, on_account_added=None, callback_port: int | None = None):
         self._store = store
-        self._on_account_added = on_account_added  # 回调：新号入库后（provider.refresh）
+        self._on_account_added = on_account_added  # 可选回调：新号入库后
         self._port = _CALLBACK_PORT if callback_port is None else callback_port
         self._lock = threading.Lock()
         self._sessions: dict[str, _Session] = {}
@@ -238,7 +238,7 @@ class LoginManager:
             try:
                 self._on_account_added(uid)
             except Exception as exc:
-                logger.warning(f"[codex] 新账号目录刷新失败(不影响登录): {exc}")
+                logger.warning(f"[codex] 新账号入库后置处理失败(不影响登录): {exc}")
         return result
 
     # ── 本机回调监听（HTTP handler 与测试共用）──

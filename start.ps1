@@ -1,10 +1,10 @@
 ﻿# Reins2API 一键启动(PowerShell):
 #   ① 检测并自动安装前后端运行环境(uv 缺失用 pip 装,Node 缺失用 winget 装)
-#      → 同步后端依赖 → web/dist 缺失时用 npm 构建前端
+#      → 同步后端依赖 → 前端产物缺失或源码更新时用 npm 构建前端
 #   ② 按端口结束旧实例
 #   ③ 后台启动服务(窗口可关,日志落 server/logs/)
 #   ④ 轮询健康检查,输出启动成功日志,窗口保持打开滚动本次启动后的实时日志
-# 用法: .\start.ps1 [-Port 8787] [-Rebuild]   # -Rebuild 强制重建前端;再次运行 = 重启
+# 用法: .\start.ps1 [-Port 8787] [-Rebuild]   # 源码新于产物会自动重建,-Rebuild 强制重建;再次运行 = 重启
 # 输出风格:圆点步骤(模板 A)——绿●完成 黄●进行中 红✗失败;子进程原始输出缩进弱色。
 param(
   [int]$Port = 8787,
@@ -142,8 +142,28 @@ Write-Step "后端依赖" "uv sync 完成"
 
 # ── 前端 ─────────────────────────────────────────────────────────
 
-$needBuild = $Rebuild -or -not (Test-Path "web/dist/index.html")
-if ($needBuild) {
+# 构建输入(web 源码/配置)是否新于 web/dist/index.html。dist 未纳入 git,
+# 只判"产物是否存在"会让 pull 后的前端一直停在旧产物上,故按 mtime 补一次新鲜度判断。
+function Test-WebSourcesNewer([string]$DistIndex) {
+  $distTime = (Get-Item -LiteralPath $DistIndex).LastWriteTimeUtc
+  $inputs = @(Get-ChildItem -LiteralPath "web\src", "web\public" -Recurse -File -ErrorAction SilentlyContinue)
+  $inputs += @(Get-Item -LiteralPath @(
+    "web\index.html", "web\package.json", "web\package-lock.json", "web\vite.config.ts",
+    "web\tsconfig.json", "web\tsconfig.app.json", "web\tsconfig.node.json"
+  ) -ErrorAction SilentlyContinue)
+  foreach ($f in $inputs) {
+    if ($f.LastWriteTimeUtc -gt $distTime) { return $true }
+  }
+  return $false
+}
+
+$buildReason = ""
+if ($Rebuild) { $buildReason = "强制重建" }
+elseif (-not (Test-Path "web/dist/index.html")) { $buildReason = "产物缺失" }
+elseif (Test-WebSourcesNewer "web/dist/index.html") { $buildReason = "源码有更新" }
+
+if ($buildReason) {
+  Write-Dim "重建前端($buildReason)…"
   Add-FromKnownDirs "node.exe" @(
     "$env:ProgramFiles\nodejs",
     "${env:ProgramFiles(x86)}\nodejs",

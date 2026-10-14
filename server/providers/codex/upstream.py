@@ -115,6 +115,125 @@ def parse_rate_limits(headers: dict[str, str]) -> dict[str, Any] | None:
     return out
 
 
+_USAGE_PATH = "/usage"
+
+
+def _window_from_payload(raw: Any, now_ms: int) -> dict[str, Any] | None:
+    """usage 响应里的一个窗口 → 与响应头同形状的一条（键名与单位都对齐）。"""
+    if not isinstance(raw, dict):
+        return None
+    used = _float(raw.get("used_percent"))
+    seconds = _float(raw.get("limit_window_seconds"))
+    reset_at = _float(raw.get("reset_at"))
+    reset_after = _float(raw.get("reset_after_seconds"))
+    if used is None and seconds is None and reset_at is None and reset_after is None:
+        return None
+    entry: dict[str, Any] = {
+        "used_percent": used,
+        "window_minutes": seconds / 60 if seconds is not None else None,
+        "reset_after_seconds": reset_after,
+    }
+    if reset_at is not None:
+        entry["reset_at_ms"] = int(reset_at * 1000)
+    elif reset_after is not None:
+        entry["reset_at_ms"] = now_ms + int(reset_after * 1000)
+    return entry
+
+
+def _credits_from_payload(raw: Any) -> dict[str, Any] | None:
+    """积分段 → 只留能展示的（free 档全是 false/null，返回 None 不往快照里塞空壳）。
+
+    余额是"具体额度"：限流窗口只有百分比，这条是唯一能给出绝对数字的地方，
+    但只有带积分的档位（Plus/Pro 之类）上游才给值。
+    """
+    if not isinstance(raw, dict):
+        return None
+    balance = _float(raw.get("balance"))
+    unlimited = raw.get("unlimited")
+    if balance is None and unlimited is not True:
+        return None
+    out: dict[str, Any] = {}
+    if isinstance(raw.get("has_credits"), bool):
+        out["has_credits"] = raw["has_credits"]
+    if isinstance(unlimited, bool):
+        out["unlimited"] = unlimited
+    if balance is not None:
+        out["balance"] = balance
+    return out
+
+
+def _reset_credits_from_payload(raw: Any) -> int | None:
+    """可用的限流重置券张数：0 张等于没有，不展示。"""
+    if not isinstance(raw, dict):
+        return None
+    count = _float(raw.get("available_count"))
+    return int(count) if count is not None and count > 0 else None
+
+
+def parse_usage_payload(payload: dict[str, Any], now_ms: int) -> dict[str, Any] | None:
+    """/usage 响应 → 快照：限流窗口与响应头同形状，外加只有这个接口才给的字段。
+
+    `allowed` / `limit_reached` 是上游自己的判定，必须原样存下来——响应头里没有这
+    两个字段，"used_percent >= 100 就是已用尽"是我们自己猜的，实测有账号 100% 但
+    allowed=true。返回 None = 上游没给额度段。
+    """
+    limits = payload.get("rate_limit")
+    if not isinstance(limits, dict):
+        return None
+    out: dict[str, Any] = {}
+    for name, key in (("primary", "primary_window"), ("secondary", "secondary_window")):
+        window = _window_from_payload(limits.get(key), now_ms)
+        if window is not None:
+            out[name] = window
+    if not out:
+        return None
+    for key in ("allowed", "limit_reached"):
+        if isinstance(limits.get(key), bool):
+            out[key] = limits[key]
+    credits = _credits_from_payload(payload.get("credits"))
+    if credits is not None:
+        out["credits"] = credits
+    reset_credits = _reset_credits_from_payload(payload.get("rate_limit_reset_credits"))
+    if reset_credits is not None:
+        out["reset_credits"] = reset_credits
+    plan = str(payload.get("plan_type") or "").strip()
+    if plan:
+        out["plan_type"] = plan
+    out["at_ms"] = now_ms
+    return out
+
+
+def fetch_usage(account: Account) -> dict[str, Any] | None:
+    """GET /usage → 与响应头回填同一形状的额度快照（额度列的主动数据源）。
+
+    响应头回填只在账号真跑过成功请求后才有数据，刚导入的号只能干等；这条
+    （Codex CLI /status 用的同一接口）随时可查。返回 None = 上游没给额度段。
+    """
+    url = f"{CODEX_BASE}{_USAGE_PATH}"
+    headers = {
+        "Authorization": f"Bearer {account.access_token}",
+        "Accept": "application/json",
+        "User-Agent": CODEX_USER_AGENT,
+        "Originator": CODEX_ORIGINATOR,
+        "Version": CODEX_CLI_VERSION,
+    }
+    if account.account_id:
+        headers["Chatgpt-Account-Id"] = account.account_id
+    response = crequests.get(
+        url,
+        headers=headers,
+        timeout=(float(CODEX_TIMEOUT_CONNECT), float(CODEX_TIMEOUT_TTFB - CODEX_TIMEOUT_CONNECT)),
+        proxies=proxies_for(url),
+        impersonate="chrome",
+    )
+    if response.status_code != 200:
+        raise ValueError(f"codex /usage HTTP {response.status_code}: {response.text[:160]}")
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("codex /usage 响应形状异常")
+    return parse_usage_payload(payload, int(time.time() * 1000))
+
+
 def fetch_models(account: Account) -> list[dict[str, Any]]:
     """GET {base}/models?client_version=X → 归一后的模型条目列表。
 

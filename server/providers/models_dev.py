@@ -1,4 +1,4 @@
-"""models.dev 兜底目录：补厂商 manifest 没声明的上下文窗口与最大输出。
+"""models.dev 兜底目录：补厂商 manifest 没声明的上下文窗口、最大输出与输入/输出模态。
 
 移植 workbuddy2api-panel 的 internal/upstream/modelsdev.go（拉取 / 索引 / 采值规则），
 字段策略照它的 context_catalog.go——**输出上限未知就省略，绝不编造**。
@@ -9,9 +9,13 @@
     > 本地缓存 server/data/modelsdev.json
     > models.dev 按需拉取（异步、不阻塞请求；失败静默，展示层保持「—」）
 
+「上游优先」是默认口径（fill_limits 只填空值）；调用方也可以传 `prefer=True` 把
+目录当权威（codex 页就是这样：manifest 与目录给的上下文常不是一个数，取目录值）。
+
 多 provider 采值：同一裸 id 在 models.dev 里常被多家收录且互相分歧，取值优先级
-官方 vendor 源 > 票数众数 > provider 名字典序。最后一级是确定性 tie-break——同一份
-文档两次拉取必须落同一个值，否则管理台的数字会自己抖动。
+官方 vendor 源 > 票数众数 > provider 名字典序。**分歧判定含模态**——limit 相同但
+modalities 不同的条目算两个候选，不会把两家的模态投票混在一起。最后一级是确定性
+tie-break——同一份文档两次拉取必须落同一个值，否则管理台的数字会自己抖动。
 
 与参考实现的一处刻意偏差：**不采用「上下文未知 → 1M 兜底」**。那条兜底服务于客户端
 按 context_length 提前截断的场景（高估优于低估）；网关对外报的是事实，未知就留空。
@@ -51,8 +55,8 @@ VENDOR_SOURCES = frozenset({
 })
 
 _lock = threading.Lock()
-_index: dict[str, dict[str, int]] | None = None   # 裸 id → 数值上限（None = 尚未拉到）
-_cache: dict[str, dict[str, int]] = {}            # 本地缓存（第 3 级）
+_index: dict[str, dict[str, Any]] | None = None   # 裸 id → 上限与模态（None = 尚未拉到）
+_cache: dict[str, dict[str, Any]] = {}            # 本地缓存（第 3 级）
 _asked: set[str] = set()                          # 本进程问过的裸 id（缓存只写这些）
 _cache_loaded = False
 _last_fetch = 0.0
@@ -68,14 +72,21 @@ def fill_limits(
     *,
     context_key: str = "context_window",
     output_key: str = "max_output_tokens",
+    list_keys: dict[str, str] | None = None,
+    prefer: bool = False,
 ) -> list[str]:
-    """就地补齐 values 里缺失的上下文 / 最大输出，返回实际补齐的键名。
+    """就地写 values 里的上下文 / 最大输出 / 模态列表，返回实际写入的键名。
 
-    厂商值优先：只填空值（None / 0 / 非数字），绝不覆盖已有数字。输出上限为 0 或
-    缺省都算「未知」——查得到才写，查不到保持原样（展示层显示「—」）。
+    prefer=False（默认）：**只填空值**（None / 0 / 非数字 / 空列表），厂商给了值就不动。
+    prefer=True：**目录匹配到就以它为准**（覆盖厂商值），没匹配到就保留厂商值——
+    调用方据此把「按目录来」当策略（如 codex 页的上下文与输入模态，manifest 与目录
+    给的不是一个数，取目录值）。两条路都只认查得到的值：输出上限为 0 或缺省算
+    「未知」，模态为空列表算「未知」，查不到/空值保持原样（展示层显示「—」）。
 
     键名可指定：三家 provider 的元数据字段名不同（codex/workbuddy 用统一字段名，
     opencode 沿用上游 models.dev 的 camelCase），翻译留在调用层，本模块只认语义。
+    `list_keys` 是「索引字段 → values 键名」的映射，用于列表型字段（模态）；
+    不传就只动两个数值字段。
     """
     limits = lookup(model_id)
     if not limits:
@@ -83,16 +94,25 @@ def fill_limits(
     filled: list[str] = []
     context = limits.get("context_window") or 0
     output = limits.get("max_output_tokens") or 0
-    if context > 0 and not _as_count(values.get(context_key)):
+    if context > 0 and (prefer or not _as_count(values.get(context_key))):
         values[context_key] = context
         filled.append(context_key)
-    if output > 0 and not _as_count(values.get(output_key)):
+    if output > 0 and (prefer or not _as_count(values.get(output_key))):
         values[output_key] = output
         filled.append(output_key)
+    for source_key, target_key in (list_keys or {}).items():
+        items = limits.get(source_key)
+        if not isinstance(items, list) or not items:
+            continue
+        current = values.get(target_key)
+        if not prefer and isinstance(current, list) and current:
+            continue
+        values[target_key] = list(items)
+        filled.append(target_key)
     return filled
 
 
-def lookup(model_id: str) -> dict[str, int] | None:
+def lookup(model_id: str) -> dict[str, Any] | None:
     """裸 id → 数值上限（内存索引优先，回落本地缓存），未收录返回 None。
 
     只读内存，顺带触发一次后台拉取（若尚未拉过且在节流窗口外）；绝不发同步网络请求。
@@ -162,7 +182,7 @@ def _fetch() -> None:
             _fetching = False
 
 
-def _build_index(doc: Any) -> dict[str, dict[str, int]]:
+def _build_index(doc: Any) -> dict[str, dict[str, Any]]:
     """models.dev 文档 → 裸 id 索引（采值规则见模块 docstring）。"""
     if not isinstance(doc, dict):
         return {}
@@ -188,12 +208,21 @@ def _build_index(doc: Any) -> dict[str, dict[str, int]]:
                 output = 0
             elif output < 0 or output > VALUE_MAX:
                 continue
+            modalities = model.get("modalities")
+            modalities = modalities if isinstance(modalities, dict) else {}
+            inputs = _str_list(modalities.get("input"))
+            outputs = _str_list(modalities.get("output"))
+            # 分歧判定带上模态：limit 相同、模态不同的条目算两个候选，
+            # 免得把两家的模态投到一条上
             slot = candidates.setdefault(_bare(full_id), {})
-            entry = slot.get((context, output))
+            key = (context, output, tuple(inputs), tuple(outputs))
+            entry = slot.get(key)
             if entry is None:
-                slot[(context, output)] = {
+                slot[key] = {
                     "context_window": context,
                     "max_output_tokens": output,
+                    "input_modalities": inputs,
+                    "output_modalities": outputs,
                     "vendor": provider in VENDOR_SOURCES,
                     "votes": 1,
                     "provider": provider,
@@ -204,16 +233,21 @@ def _build_index(doc: Any) -> dict[str, dict[str, int]]:
             # 候选的 provider 身份取已见最小名（确定性 tie-break 用）
             if provider < entry["provider"]:
                 entry["provider"] = provider
-    out: dict[str, dict[str, int]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for model_id, slot in candidates.items():
         best: dict[str, Any] | None = None
         for entry in slot.values():
             if best is None or _better(entry, best):
                 best = entry
-        out[model_id] = {
+        picked: dict[str, Any] = {
             "context_window": int(best["context_window"]),
             "max_output_tokens": int(best["max_output_tokens"]),
         }
+        # 模态只在这家有值时落键（没收录的模型保持"两个数字"的老形状）
+        for field in ("input_modalities", "output_modalities"):
+            if best.get(field):
+                picked[field] = list(best[field])
+        out[model_id] = picked
     return out
 
 
@@ -249,8 +283,14 @@ def _load_cache_locked() -> None:
             continue
         context = _as_count(entry.get("context_window")) or 0
         output = _as_count(entry.get("max_output_tokens")) or 0
-        if context:
-            _cache[_bare(model_id)] = {"context_window": context, "max_output_tokens": output}
+        if not context:
+            continue
+        cached: dict[str, Any] = {"context_window": context, "max_output_tokens": output}
+        for field in ("input_modalities", "output_modalities"):
+            items = _str_list(entry.get(field))
+            if items:
+                cached[field] = items
+        _cache[_bare(model_id)] = cached
 
 
 def _write_cache_locked() -> None:
@@ -309,3 +349,18 @@ def _as_count(value: Any) -> int | None:
         if text.isdigit():
             return int(text)
     return None
+
+
+def _str_list(value: Any) -> list[str]:
+    """模态列表归一：转字符串、去空白、小写、保序去重；非列表或全空 → 空列表。
+
+    上游同一件事写法不一（`"Image"` / `" image "`），归一后候选判定才能稳定比对。
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = str(item or "").strip().lower()
+        if text and text not in out:
+            out.append(text)
+    return out

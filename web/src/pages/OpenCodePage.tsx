@@ -11,6 +11,7 @@ import {
   Database,
   Gauge,
   Inbox,
+  RefreshCw,
   Timer,
   Zap,
 } from "lucide-react";
@@ -45,8 +46,8 @@ import {
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
-import { fmtLimit, fmtSeconds, fmtTokens, protocolTone } from "@/lib/format";
-import { cn } from "@/lib/utils";
+import { catalogTimeLabel, fmtLimit, fmtSeconds, modelRefreshOutcome, protocolTone } from "@/lib/format";
+import { cn, fmtCompact } from "@/lib/utils";
 
 /** 自动刷新间隔 */
 const AUTO_REFRESH_MS = 10_000;
@@ -242,13 +243,15 @@ export function OpenCodePage() {
     setPageSize(next);
   }, []);
 
-  /** 手动重新拉取上游模型目录，完成后静默刷新页面数据 */
+  /** 手动重新拉取上游模型目录（唯一的常规刷新路径），完成后静默刷新页面数据 */
   const reloadCatalog = useCallback(async () => {
     if (reloading) return;
     setReloading(true);
     try {
       const result = await refreshProviderModels("opencode");
-      toast.success(`模型目录已刷新（${result.models} 个模型）`);
+      const outcome = modelRefreshOutcome(result);
+      if (outcome.ok) toast.success(outcome.text);
+      else toast.error(outcome.text);
       await load(true, true);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "拉取模型目录失败");
@@ -317,10 +320,10 @@ export function OpenCodePage() {
                 Tokens
               </div>
               <div className="metric-v">
-                {fmtTokens((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}
+                {fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}
               </div>
               <div className="metric-sub usage-metric-sub">
-                输入 {fmtTokens(totals?.input_tokens ?? 0)} · 输出 {fmtTokens(totals?.output_tokens ?? 0)}
+                输入 {fmtCompact(totals?.input_tokens ?? 0)} · 输出 {fmtCompact(totals?.output_tokens ?? 0)}
               </div>
             </div>
             <div className="metric">
@@ -344,7 +347,7 @@ export function OpenCodePage() {
                 {cacheRate.toFixed(1)}%
               </div>
               <div className="metric-sub usage-metric-sub">
-                缓存 {fmtTokens(cachedTokens)} · 输入 {fmtTokens(inputTokens)}
+                缓存 {fmtCompact(cachedTokens)} · 输入 {fmtCompact(inputTokens)}
               </div>
             </div>
             <div className="metric">
@@ -363,7 +366,10 @@ export function OpenCodePage() {
                 模型数
               </div>
               <div className="metric-v">{ops?.status.models ?? 0}</div>
-              <div className="metric-sub usage-metric-sub">{ops?.status.upstream ?? ""}</div>
+              {/* 目录只来自缓存或手动获取：给个时间线索，别让"多少天前的目录"无从判断 */}
+              <div className="metric-sub usage-metric-sub" title={ops?.status.upstream ?? ""}>
+                {catalogTimeLabel(ops?.status ?? {}, (ops?.status.models ?? 0) > 0).text}
+              </div>
             </div>
           </div>
 
@@ -373,16 +379,22 @@ export function OpenCodePage() {
               <div className="gw-panel-head">
                 <Boxes className="size-3.5" strokeWidth={1.6} aria-hidden />
                 <h2 className="gw-panel-title">模型列表({ops?.models.length ?? 0})</h2>
+                {/* 目录不再自动刷新：这是唯一的常规获取入口（三页同一枚图标按钮） */}
                 <Button
                   type="button"
-                  variant="outline"
-                  size="sm"
-                  className="ml-auto"
+                  variant="ghost"
+                  size="icon"
+                  className="ml-auto size-6"
                   disabled={reloading}
                   onClick={() => void reloadCatalog()}
+                  title="获取模型（重新拉取上游目录）"
+                  aria-label="获取模型"
                   aria-busy={reloading}
                 >
-                  {reloading ? "获取中…" : "获取模型"}
+                  <RefreshCw
+                    className={cn("size-3.5", reloading && "animate-spin")}
+                    strokeWidth={1.75}
+                  />
                 </Button>
               </div>
               <div className={cn("gw-table-card", !ops?.models.length && "is-empty")}>

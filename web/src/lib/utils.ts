@@ -18,20 +18,31 @@ export function parseCreditFactor(text: string | null | undefined): number | nul
   return Number.isFinite(value) ? value : null;
 }
 
-/** Token 紧凑显示：1.2M / 45.3K / 原值，尾随 .0 去除（与 grok-rego 同式）。 */
+/** 紧凑数值的单位档（大写 K，与 grok-rego 同式）。 */
+const COMPACT_UNITS = ["", "K", "M", "B"] as const;
+
+/**
+ * 紧凑数值：1 / 999 / 1.2K / 45.3K / 12M / 1B；尾随 .0 去掉，null/NaN → "—"。
+ * （全站数字都走这一个：token、请求数、失败数同式，别再造第二份。）
+ *
+ * 先按"四舍五入到一位小数后是否越档"定档位，再格式化——否则 999_950 会算成千档的
+ * 999.95 → toFixed(1) → "1000.0K"。B 是最后一档：再大（百亿 token 级）现实里不会出现，
+ * 真到了也只是显示 1000B，不在这里兜。
+ */
 export function fmtCompact(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";
   const sign = n < 0 ? "-" : "";
   const abs = Math.abs(n);
-  if (abs >= 1_000_000) {
-    const v = abs / 1_000_000;
-    return `${sign}${abs % 1_000_000 === 0 ? String(v) : v.toFixed(1).replace(/\.0$/, "")}M`;
+  let unit = 0;
+  while (
+    unit < COMPACT_UNITS.length - 1 &&
+    Math.round((abs / 1000 ** unit) * 10) / 10 >= 1000
+  ) {
+    unit += 1;
   }
-  if (abs >= 1_000) {
-    const v = abs / 1_000;
-    return `${sign}${abs % 1_000 === 0 ? String(v) : v.toFixed(1).replace(/\.0$/, "")}K`;
-  }
-  return `${sign}${Math.round(abs)}`;
+  const scaled = abs / 1000 ** unit;
+  const text = unit === 0 ? String(Math.round(scaled)) : scaled.toFixed(1).replace(/\.0$/, "");
+  return `${sign}${text}${COMPACT_UNITS[unit]}`;
 }
 
 /** Token 千分位整数（tooltip 明细用）。 */

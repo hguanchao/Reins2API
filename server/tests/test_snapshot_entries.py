@@ -48,7 +48,7 @@ def test_opencode_entry_unified():
         "limit": {"context": 262144, "input": 200000, "output": 32768},
         "cost": {"input": 0, "output": 0},
     }
-    entry = opencode_entry("ling-3.0-flash-fin-free", raw)
+    entry = opencode_entry("ling-3.0-flash-fin-free", raw, "chat", True)
     assert entry == {
         "id": "ling-3.0-flash-fin-free",
         "name": "Ling 3.0 Flash Fin Free",
@@ -61,9 +61,14 @@ def test_opencode_entry_unified():
         "supports_reasoning": True,
         "supports_tool_call": True,
         "reasoning_efforts": ["low", "medium"],   # toggle 不是档位，不进 efforts
+        "protocol": "chat",                       # 路由必需：冷启动靠快照重建索引
+        "free": True,
+        "extras": {"max_input": 200000},          # 详情弹窗要看，但不在统一词表里
     }
     # 上游没声明的字段省略；name 缺失时回落模型 id
-    assert opencode_entry("bare", {"id": "bare"}) == {"id": "bare", "name": "bare"}
+    assert opencode_entry("bare", {"id": "bare"}, "responses", False) == {
+        "id": "bare", "name": "bare", "protocol": "responses", "free": False,
+    }
 
 
 def test_workbuddy_entry_unified():
@@ -93,12 +98,16 @@ def test_workbuddy_entry_unified():
         "supports_tool_call": True,
         "reasoning_efforts": ["low", "medium", "high"],
         "default_effort": "medium",
+        "protocol": "chat",
+        # 倍率/活动这些只有上游有的展示字段进 extras：重启读缓存时靠它把
+        # _model_info 的那几列填回来（见 _entry_from_snapshot）
+        "extras": {"credits": "x0.34 credits", "vendor": "vendor-x"},
     }
     # 上游只声明能力布尔位、没有模态列表，不合成 input_modalities
     assert "input_modalities" not in entry
     # 没声明的能力位省略，不落 False；effort 可作默认档位回落
     assert workbuddy_entry({"id": "x", "name": "X", "reasoning": {"effort": "low"}}) == {
-        "id": "x", "name": "X", "default_effort": "low",
+        "id": "x", "name": "X", "default_effort": "low", "protocol": "chat",
     }
 
 
@@ -130,6 +139,7 @@ def test_codex_entry_unified():
         "supports_tool_call": True,
         "reasoning_efforts": ["low", "high"],
         "default_effort": "high",
+        "protocol": "responses",
     }
     assert "max_output_tokens" not in entry    # manifest 不下发输出上限，省略而非填 0
     assert "output_modalities" not in entry    # manifest 也不下发输出模态
@@ -140,7 +150,7 @@ def test_codex_entry_unified():
 def test_three_providers_share_core_field_names():
     """三家的输出键都在统一词表内——和 models_snapshot.CORE_FIELDS 是唯一口径。"""
     entries = [
-        opencode_entry("m", {"id": "m"}),
+        opencode_entry("m", {"id": "m"}, "chat", False),
         workbuddy_entry({"id": "m"}),
         codex_entry({"id": "m", "display_name": "M"}),
     ]

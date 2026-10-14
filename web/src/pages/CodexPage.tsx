@@ -13,6 +13,7 @@ import {
   Copy,
   Cpu,
   Download,
+  Gauge,
   Inbox,
   Info,
   KeyRound,
@@ -39,20 +40,19 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
 } from "@/components/ui";
 import {
   ApiError,
   cancelCodexLogin,
   codexAccountAction,
+  codexRefreshQuotas,
   deleteCodexAccount,
   exchangeCodexLogin,
   fetchCodexAccounts,
   fetchCodexOps,
   fetchCodexRequests,
   pollCodexLogin,
+  refreshProviderModels,
   startCodexLogin,
   type CodexAccount,
   type CodexLoginStart,
@@ -67,7 +67,7 @@ import {
   CodexExportDialog,
   CodexImportDialog,
 } from "@/components/accounts/CodexTransferDialogs";
-import { fmtLimit, fmtTokens } from "@/lib/format";
+import { catalogTimeLabel, fmtLimit, modelRefreshOutcome } from "@/lib/format";
 import { useSessionCountdown } from "@/lib/countdown";
 import { cn, fmtCompact, fmtInt } from "@/lib/utils";
 
@@ -76,41 +76,11 @@ const AUTO_REFRESH_MS = 10_000;
 /** 最近请求默认每页条数 */
 const DEFAULT_PAGE_SIZE = 20;
 
-/** 模态词 → 中文：上游发的是 `text`/`image` 这类小写标识，展示层翻译；词表外的原样显示。 */
-const MODALITY_NAMES: Record<string, string> = {
-  text: "文本",
-  image: "图像",
-  audio: "音频",
-  video: "视频",
-  pdf: "PDF",
-  file: "文件",
-};
-
-/** 输入模态：逐项中文化后斜杠拼接（上游未声明时为「—」）。 */
+/** 输入模态：上游标识原样斜杠拼接（`text / image`）——这一列是对照上游声明的，
+ *  翻译成中文反而要回头对字段名；未声明时为「—」。 */
 function fmtModalities(v: unknown): string {
   if (!Array.isArray(v) || v.length === 0) return "—";
-  return v.map((item) => MODALITY_NAMES[String(item)] ?? String(item)).join(" / ");
-}
-
-/**
- * 数值单元格：值来自 models.dev 第三方兜底目录时用虚线下划线标出，悬停说明来源。
- * 厂商 manifest 给了值的走纯文本——不能让第三方数字看起来像厂商声明。
- */
-function LimitCell({ value, thirdParty }: { value: unknown; thirdParty?: boolean }) {
-  const text = fmtLimit(value);
-  if (!thirdParty) return <>{text}</>;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="decoration-muted-foreground/60 cursor-help underline decoration-dotted underline-offset-2">
-          {text}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-xs">
-        Codex manifest 未声明该字段，数值取自 models.dev 第三方目录
-      </TooltipContent>
-    </Tooltip>
-  );
+  return v.map((item) => String(item)).join(" / ");
 }
 
 export function CodexPage() {
@@ -121,6 +91,10 @@ export function CodexPage() {
   /** 导入 / 导出对话框（null = 都关着） */
   const [transfer, setTransfer] = useState<"import" | "export" | null>(null);
   const [busyUid, setBusyUid] = useState<string | null>(null);
+  /** 全池额度补刷在途（面板头按钮的 loading） */
+  const [quotaBusy, setQuotaBusy] = useState(false);
+  /** 手动获取模型在途（模型面板头按钮的 loading） */
+  const [catalogBusy, setCatalogBusy] = useState(false);
   /** 最近请求分页（服务端 limit/offset，total 由接口返回） */
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [page, setPage] = useState(1);
@@ -183,7 +157,7 @@ export function CodexPage() {
 
   const runAccountAction = async (
     account: CodexAccount,
-    action: "pause" | "resume" | "disable" | "revive" | "refresh",
+    action: "pause" | "resume" | "disable" | "revive" | "refresh" | "quota",
   ) => {
     setBusyUid(account.uid);
     try {
@@ -191,6 +165,7 @@ export function CodexPage() {
       const labels: Record<string, string> = {
         pause: "已暂停", resume: "已恢复", disable: "已禁用",
         revive: "已复活（清除冷却/熔断）", refresh: "token 已刷新",
+        quota: "额度已刷新",
       };
       toast.success(labels[action] ?? "操作成功");
       await load(true);
@@ -198,6 +173,41 @@ export function CodexPage() {
       toast.error(error instanceof ApiError ? error.message : String(error));
     } finally {
       setBusyUid(null);
+    }
+  };
+
+  /** 全池额度补刷：一次调用逐号查上游（导入后也会自动刷一遍）。 */
+  const refreshAllQuotas = async () => {
+    setQuotaBusy(true);
+    try {
+      const { refreshed, failed } = await codexRefreshQuotas();
+      if (failed > 0) {
+        toast.warning(`额度已刷新 ${refreshed} 个，${failed} 个失败（凭证或上游不可用）`);
+      } else {
+        toast.success(`额度已刷新（${refreshed} 个账号）`);
+      }
+      await load(true);
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : String(error));
+    } finally {
+      setQuotaBusy(false);
+    }
+  };
+
+  /** 手动获取模型目录：唯一的常规刷新路径（启动只读缓存，不再自动打上游）。 */
+  const reloadCatalog = async () => {
+    if (catalogBusy) return;
+    setCatalogBusy(true);
+    try {
+      const result = await refreshProviderModels("codex");
+      const outcome = modelRefreshOutcome(result);
+      if (outcome.ok) toast.success(outcome.text);
+      else toast.error(outcome.text);
+      await load(true);
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "获取模型目录失败");
+    } finally {
+      setCatalogBusy(false);
     }
   };
 
@@ -281,13 +291,9 @@ export function CodexPage() {
               </div>
               <div className="metric-v">{ops?.status.models ?? 0}</div>
               <div className="metric-sub usage-metric-sub">
-                {/* 有模型但没有刷新时间 = 目录来自上次落盘的快照（冷启动兜底），
-                    不能写成"尚未拉取目录"——那和上面的数字自相矛盾 */}
-                {ops?.status.refreshed_at
-                  ? `刷新于 ${ops.status.refreshed_at}`
-                  : (ops?.status.models ?? 0) > 0
-                    ? "目录来自上次快照"
-                    : "尚未拉取目录"}
+                {/* 目录现在只来自缓存或手动获取：本进程刷过给"刷新于"，只有缓存给
+                    "目录更新于 …（缓存）"，都没有才是"尚未拉取目录" */}
+                {catalogTimeLabel(ops?.status ?? {}, (ops?.status.models ?? 0) > 0).text}
               </div>
             </div>
             <div className="metric">
@@ -300,10 +306,10 @@ export function CodexPage() {
             <div className="metric">
               <div className="metric-k">24h tokens</div>
               <div className="metric-v">
-                {fmtTokens((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}
+                {fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}
               </div>
               <div className="metric-sub usage-metric-sub">
-                入 {fmtTokens(totals?.input_tokens ?? 0)} · 出 {fmtTokens(totals?.output_tokens ?? 0)}
+                入 {fmtCompact(totals?.input_tokens ?? 0)} · 出 {fmtCompact(totals?.output_tokens ?? 0)}
               </div>
             </div>
           </div>
@@ -315,6 +321,15 @@ export function CodexPage() {
                 <CircleUserRound className="size-3.5" strokeWidth={1.6} aria-hidden />
                 <h2 className="gw-panel-title">账号池({accounts.length})</h2>
                 <div className="gw-head-actions">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={quotaBusy || accounts.length === 0}
+                    onClick={() => void refreshAllQuotas()}
+                  >
+                    <Gauge className="size-3.5" strokeWidth={1.75} />
+                    {quotaBusy ? "刷新额度…" : "刷新额度"}
+                  </Button>
                   <Button size="sm" variant="outline" onClick={() => setTransfer("import")}>
                     <Upload className="size-3.5" strokeWidth={1.75} /> 导入
                   </Button>
@@ -341,6 +356,23 @@ export function CodexPage() {
               <div className="gw-panel-head">
                 <Boxes className="size-3.5" strokeWidth={1.6} aria-hidden />
                 <h2 className="gw-panel-title">模型列表({ops?.models.length ?? 0})</h2>
+                {/* 目录不再自动刷新：这是唯一的常规获取入口（三页同一枚图标按钮） */}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="ml-auto size-6"
+                  disabled={catalogBusy}
+                  onClick={() => void reloadCatalog()}
+                  title="获取模型（重新拉取上游目录）"
+                  aria-label="获取模型"
+                  aria-busy={catalogBusy}
+                >
+                  <RefreshCw
+                    className={cn("size-3.5", catalogBusy && "animate-spin")}
+                    strokeWidth={1.75}
+                  />
+                </Button>
               </div>
               <div className={cn("gw-table-card", !ops?.models.length && "is-empty")}>
                 <div className="gw-table-scroll">
@@ -357,11 +389,6 @@ export function CodexPage() {
                     <TableBody>
                       {ops?.models.length ? (
                         ops.models.map((model) => {
-                          // 数值字段的来源标注（键 = 被兜底补上的字段名）
-                          const source = (model.metadata.limits_source ?? {}) as Record<
-                            string,
-                            string
-                          >;
                           return (
                             <TableRow key={model.id}>
                               <TableCell>
@@ -373,17 +400,13 @@ export function CodexPage() {
                               <TableCell>
                                 <Badge variant="warning">{model.protocol}</Badge>
                               </TableCell>
+                              {/* 数值与模态都按 models.dev（匹配到用目录、没匹配回落 manifest），
+                                  不再标注来源——这家页面的口径已统一，标了也没有对照意义 */}
                               <TableCell className="text-xs">
-                                <LimitCell
-                                  value={model.metadata.context_window}
-                                  thirdParty={Boolean(source.context_window)}
-                                />
+                                {fmtLimit(model.metadata.context_window)}
                               </TableCell>
                               <TableCell className="text-xs">
-                                <LimitCell
-                                  value={model.metadata.max_output_tokens}
-                                  thirdParty={Boolean(source.max_output_tokens)}
-                                />
+                                {fmtLimit(model.metadata.max_output_tokens)}
                               </TableCell>
                               <TableCell className="text-xs">
                                 {fmtModalities(model.metadata.input_modalities)}
@@ -442,11 +465,9 @@ export function CodexPage() {
           <CodexImportDialog
             open={transfer === "import"}
             onOpenChange={(next) => setTransfer(next ? "import" : null)}
+            // 导入后服务端只补凭证与额度，不拉模型目录（目录走「获取模型」手动刷），
+            // 所以这里刷一拍账号就够了，不用再等目录。
             onImported={async () => {
-              await load(true);
-              // 模型目录由服务端在导入后异步补刷（要逐号打上游），立刻取拿到的还是
-              // 旧目录；隔一拍再取一次，模型列表不用干等下一个 10s 轮询周期。
-              await new Promise((resolve) => setTimeout(resolve, 2500));
               await load(true);
             }}
           />

@@ -6,7 +6,7 @@
 - **协议桥**:OpenAI Chat / OpenAI Responses / Anthropic Messages 三协议两两互转(9 个方向一条转换路径),同协议字节级透传、未知字段原样保留
 - **流转码**:同协议 SSE 透传;跨协议 parser → BridgeStreamEvent → emitter 转码;客户端要 JSON 而上游被强制流式时自动折叠
 - **免费档自动塑形**:上游对免费档强制"流式 + agent 工具集",网关补齐后把强制流折叠回客户端要的形态,客户端完全无感
-- **分库遥测**:每个上游一个 SQLite 文件(`server/data/opencode.db`、`server/data/workbuddy.db`、`server/data/codex.db`),用量与请求日志同源;另有 `server/data/models.json` 保存各上游模型目录快照——三家**统一核心字段**(`id`/`name`/`description`/`context_window`/`max_output_tokens`/`input_modalities`/`output_modalities`/`supports_images`/`supports_reasoning`/`supports_tool_call`/`reasoning_efforts`/`default_effort`,上游没声明的字段省略),形状 `{"opencode":[],"workbuddy":{"cn":[],"glb":[]},"codex":[]}`,每次刷新覆盖对应键,供排查/对照
+- **分库遥测**:每个上游一个 SQLite 文件(`server/data/opencode.db`、`server/data/workbuddy.db`、`server/data/codex.db`),用量与请求日志同源;另有 `server/data/models.json` 保存各上游模型目录快照——三家**统一核心字段**(`id`/`name`/`description`/`context_window`/`max_output_tokens`/`input_modalities`/`output_modalities`/`supports_images`/`supports_reasoning`/`supports_tool_call`/`reasoning_efforts`/`default_effort`/`protocol`/`free`/`extras`,上游没声明的字段省略),形状 `{"opencode":[],"workbuddy":{"cn":[],"glb":[]},"codex":[],"meta":{"<provider>":{"updated_at_ms":…}}}`,每次刷新覆盖对应键,供排查/对照。**模型目录只在页面点「获取模型」时刷新**(`POST /api/{provider}/refresh`),启动只读这份快照(缓存为空才兜底拉一次);内容有变才写盘,写前把现文件轮转成 `models.json.bak`
 - **WorkBuddy 号池**:多账号加权选号、冷却/熔断、会话粘性、token 自动刷新、手动签到、OAuth 设备码登录、DSML 工具调用标记还原(见 `docs/workbuddy-provider-design.md`)
 - **Codex 号池**:ChatGPT 账号 OAuth(PKCE 授权码)接入、多账号加权选号、冷却/熔断、会话粘性、refresh_token 轮换与自动刷新、模型目录按账号下发(见 `docs/codex-provider-design.md`)
 - **管理台**:OpenCode 状态页、WorkBuddy 号池页、系统配置页
@@ -19,7 +19,7 @@
 ./start.sh                       # bash
 .\start.ps1                      # PowerShell(CMD 双击 start.bat)
 ./start.sh 9000                  # 指定端口
-./start.sh --rebuild             # 强制重建前端
+./start.sh --rebuild             # 强制重建前端(默认:产物缺失或 web 源码更新时才构建)
 # 再次运行 = 重启(自动结束旧实例);停止 = 结束端口上的进程;日志在 server/logs/
 # 启动后窗口保持打开并滚动实时日志,直接关闭窗口不影响后台服务
 # 或前台手动运行

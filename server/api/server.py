@@ -187,18 +187,29 @@ def _handle_provider_api(
     provider = registry.get(name)
     action = parts[3]
     if method == "POST" and action == "refresh":
-        # 手动重新拉取模型目录（同后台周期刷新；失败保留旧目录）
+        # 手动重新拉取模型目录（唯一的常规刷新路径；失败保留旧目录）。
+        # 先补快过期的凭证：手动拉取要 Bearer，AT 过期的话这一下必然白跑。
+        expiring = getattr(provider, "refresh_expiring", None)
+        if expiring is not None:
+            try:
+                expiring()
+            except Exception as exc:
+                logger.warning(f"[目录] provider={name} 刷新前补凭证失败: {type(exc).__name__}: {exc}")
         try:
-            provider.refresh()
+            summary = provider.refresh() or {}
         except Exception as exc:
             logger.exception("[目录] 手动刷新失败 provider=" + name)
             send_json(handler, 500, {"ok": False, "error": f"刷新失败: {type(exc).__name__}: {exc}"})
             return True
-        send_json(
-            handler,
-            200,
-            {"ok": True, "data": {"status": provider.status(), "models": len(provider.list_models())}},
-        )
+        data = {
+            "status": provider.status(),
+            "models": len(provider.list_models()),
+            "added": int(summary.get("added") or 0),
+            "removed": int(summary.get("removed") or 0),
+            "failed": int(summary.get("failed") or 0),
+            "error": str(summary.get("error") or ""),
+        }
+        send_json(handler, 200, {"ok": True, "data": data})
         return True
     if method == "GET" and action == "ops":
         now = int(time.time() * 1000)
@@ -263,6 +274,8 @@ def _handle_workbuddy_api(
             item["stats_total"] = extra.get("total")
             item["last_used_ms"] = extra.get("last_used_ms", 0)
             item["daily_14d"] = extra.get("daily") or [0] * _SERIES_DAYS
+            # 最近 14 次请求（最旧在前）——账号行那排柱子与它的悬停详情
+            item["recent_14"] = extra.get("recent") or []
         send_json(handler, 200, {"ok": True, "data": summaries})
         return True
 
@@ -275,11 +288,6 @@ def _handle_workbuddy_api(
         except ValueError as exc:
             send_json(handler, 400, {"ok": False, "error": str(exc)})
             return True
-        # 导入后立即拉一次目录（新账号可能解锁新模型）；失败不影响导入结果。
-        try:
-            provider.refresh()
-        except Exception:
-            pass
         send_json(handler, 200, {"ok": True, "data": account.public_dict()})
         return True
 
@@ -378,17 +386,20 @@ def _handle_workbuddy_api(
 
 _STATS_WINDOW_DAYS = 7    # 「历史用量」列的口径：近 7 天
 _SERIES_DAYS = 14         # 账号行迷你柱状图的桶数（按天，最旧 → 最新）
+_RECENT_REQUESTS = 14     # 请求结果条：每号保留最近多少次请求的结果
 
 
 def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
     """按账号聚合 requests 遥测（统计单一代数事实源，docs §7.2）。
 
     按 provider 参数化（号池 provider 共用：workbuddy / codex）——遥测在各 provider
-    自己的库里，所以必须传对名字。返回 {uid: {total, stats, last_used_ms, daily}}：
+    自己的库里，所以必须传对名字。返回 {uid: {total, stats, last_used_ms, daily, recent}}：
       - total：**全时段**请求/失败/token（历史用量列）
       - stats：近 7 天同口径
       - last_used_ms：最近一次服务的时刻（最近请求列）
-      - daily：近 14 天逐日请求数（迷你柱状图；最旧在前）
+      - daily：近 14 天逐日请求数（按天口径；最旧在前）
+      - recent：**最近 14 次请求**（最旧在前，最后一根最新），每次带时间/状态码/耗时/
+        token 与错误文案（截 80 字符）——账号行那排柱子悬停时看的就是这些
     """
     provider_store = store(provider_name)
     entries: dict[str, dict[str, Any]] = {}
@@ -398,6 +409,7 @@ def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
             "total": {k: total[k] for k in ("requests", "failed", "input_tokens", "output_tokens")},
             "last_used_ms": total["last_used_ms"],
             "daily": [0] * _SERIES_DAYS,
+            "recent": [],
             "stats": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
         }
 
@@ -411,17 +423,31 @@ def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
             "total": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
             "last_used_ms": 0,
             "daily": [0] * _SERIES_DAYS,
+            "recent": [],
             "stats": {"requests": 0, "failed": 0, "input_tokens": 0, "output_tokens": 0},
         })
         created = int(row.get("created_ms") or 0)
+        status = int(row.get("http_status") or 0)
+        ok = 200 <= status < 300
         # 日桶：index 0 = 最旧（第 14 天前），最后一格 = 今天。越界（未来时间戳）落到今天。
         age_days = min(max(now - created, 0) // day_ms, _SERIES_DAYS - 1)
         entry["daily"][_SERIES_DAYS - 1 - age_days] += 1
+        # 最近请求条：行按 created_ms 升序回来，滚动保留最后 14 条即"最近 14 次请求"
+        recent = entry["recent"]
+        recent.append({
+            "created_ms": created,
+            "http_status": status,
+            "duration_ms": int(row.get("duration_ms") or 0),
+            "input_tokens": int(row.get("input_tokens") or 0),
+            "output_tokens": int(row.get("output_tokens") or 0),
+            "error_message": str(row.get("error_message") or "")[:80],
+        })
+        if len(recent) > _RECENT_REQUESTS:
+            del recent[0]
         if created >= now - _STATS_WINDOW_DAYS * day_ms:
             bucket = entry["stats"]
             bucket["requests"] += 1
-            status = int(row.get("http_status") or 0)
-            if not 200 <= status < 300:
+            if not ok:
                 bucket["failed"] += 1
             bucket["input_tokens"] += int(row.get("input_tokens") or 0)
             bucket["output_tokens"] += int(row.get("output_tokens") or 0)
@@ -429,20 +455,24 @@ def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
     return entries
 
 
-def _refresh_catalog_after_import(provider: Any) -> None:
-    """导入账号后的目录补刷（后台线程）：先补快过期的凭证，再拉目录。
+def _refresh_after_import(provider: Any) -> None:
+    """导入账号后的补刷（后台线程）：补快过期的凭证 + 额度。
 
-    导入的号 AT 常是旧的（CPA 导出里 expired 早就过了），凭证不先补，目录拉不动；
-    两步都只告警不抛出——真失败了留给周期刷新兜底，不能反过来影响导入结果。
+    导入的号 AT 常是旧的（CPA 导出里 expired 早就过了），凭证不先补，额度查询走不动；
+    两步都只告警不抛出——真失败了留给后台巡检/手动刷兜底，不能反过来影响导入结果。
+    额度这一步是给「刚导入还没有成功请求」的号填数的：响应头回填要等下一次成功
+    请求，全新导入的号不该在额度列空着。**不再补拉模型目录**：目录只在手动
+    「获取模型」时刷新（导入的新号可见集合可能不同，但目录不再自动打上游）。
     """
     try:
         provider.refresh_expiring()
     except Exception as exc:
-        logger.warning(f"[目录] provider={provider.name} 导入后凭证补刷失败: {type(exc).__name__}: {exc}")
-    try:
-        provider.refresh()
-    except Exception as exc:
-        logger.warning(f"[目录] provider={provider.name} 导入后目录刷新失败: {type(exc).__name__}: {exc}")
+        logger.warning(f"[额度] provider={provider.name} 导入后凭证补刷失败: {type(exc).__name__}: {exc}")
+    if hasattr(provider, "refresh_quota"):
+        try:
+            provider.refresh_quota()
+        except Exception as exc:
+            logger.warning(f"[额度] provider={provider.name} 导入后额度刷新失败: {type(exc).__name__}: {exc}")
 
 
 def _handle_codex_api(
@@ -470,6 +500,8 @@ def _handle_codex_api(
             item["stats_total"] = extra.get("total")
             item["last_used_ms"] = extra.get("last_used_ms", 0)
             item["daily_14d"] = extra.get("daily") or [0] * _SERIES_DAYS
+            # 最近 14 次请求（最旧在前）——账号行那排柱子与它的悬停详情
+            item["recent_14"] = extra.get("recent") or []
         send_json(handler, 200, {"ok": True, "data": summaries})
         return True
 
@@ -483,10 +515,6 @@ def _handle_codex_api(
         except ValueError as exc:
             send_json(handler, 400, {"ok": False, "error": str(exc)})
             return True
-        try:
-            provider.refresh()
-        except Exception:
-            pass
         send_json(handler, 200, {"ok": True, "data": account.public_dict()})
         return True
 
@@ -520,12 +548,22 @@ def _handle_codex_api(
             send_json(handler, 502, {"ok": False, "error": f"导入失败: {type(exc).__name__}: {exc}"})
             return True
         if summary["imported"] + summary["updated"] > 0:
-            # 新号入库立刻补一次目录：否则模型列表要等下一次周期刷新（最长 5 分钟）
-            # 才有数据。刷新逐号打上游、N 个号 N 次请求，挂后台线程，不占导入响应。
+            # 新号入库后补凭证与额度（见 _refresh_after_import）；逐号打上游，
+            # 挂后台线程不占导入响应。模型目录不在这里刷——那是手动「获取模型」的事。
             threading.Thread(
-                target=_refresh_catalog_after_import, args=(provider,), daemon=True
+                target=_refresh_after_import, args=(provider,), daemon=True
             ).start()
         send_json(handler, 200, {"ok": True, "data": summary})
+        return True
+
+    if method == "POST" and action == "quotas" and len(parts) == 5 and parts[4] == "refresh":
+        # 全池额度补刷（主动查上游 /usage；导入后也会自动刷一遍）
+        try:
+            data = provider.refresh_quota()
+        except Exception as exc:
+            send_json(handler, 502, {"ok": False, "error": f"额度刷新失败: {type(exc).__name__}: {exc}"})
+            return True
+        send_json(handler, 200, {"ok": True, "data": data})
         return True
 
     if method == "DELETE" and action == "accounts" and len(parts) == 5:
