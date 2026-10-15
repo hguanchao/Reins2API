@@ -15,6 +15,7 @@ import json
 import random
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -28,6 +29,7 @@ from core.settings import (
     CODEX_BREAKER_BASE_S,
     CODEX_BREAKER_MAX_S,
     CODEX_BREAKER_THRESHOLD,
+    CODEX_CLAIM_TIMEOUT_S,
     CODEX_COOLDOWN_AUTH,
     CODEX_COOLDOWN_NOT_FOUND,
     CODEX_COOLDOWN_SOFT_BASE,
@@ -35,6 +37,7 @@ from core.settings import (
     CODEX_COOLDOWN_WAF,
     CODEX_REFRESH_AHEAD_S,
     CODEX_ROTATE_ATTEMPTS,
+    CODEX_SIWC_CLIENT_ID,
 )
 from gateway.base import (
     ModelInfo,
@@ -49,17 +52,46 @@ from providers.capabilities import capability_block
 from providers.codex import classify, oauth, quota, shape
 from providers.codex import upstream as cx_upstream
 from providers.codex.pool import Pool
-from providers.codex.store import STATUS_ACTIVE, Account, CodexStore, default_store
+from providers.codex.store import AUTH_MODE_SIWC, STATUS_ACTIVE, Account, CodexStore, default_store
 from providers.common import BEIJING_TZ, RawBytes, refresh_result, stamp
 from providers.identity import derive_request_ids
 
 # 请求路径等刷新锁的上限（秒）：另一个刷新在途时最多等这么久，超时按失败处理
 _REFRESH_LOCK_WAIT_S = 30.0
+# 导入时「校验+认领」的并发上限：认证端点是短 RPC，跨账号并发安全（同账号仍走
+# _refresh_lock 串行），封顶是为了别在导入时对上游甩出几十条并发的换票请求。
+_CLAIM_WORKERS = 8
 # 不罚号类别（请求级错误：换号无用，直接透传）
 _NO_PENALTY_KINDS = frozenset({classify.CLIENT})
 # 额度用尽用的冷却类别。区别于 soft（429 退避）/ auth / waf：它表达的是"到窗口重置
 # 时刻之前都没额度"，时长可以长达几十天，且只有"额度恢复"或"新窗口"才该解除它。
 QUOTA_COOLDOWN_KIND = "quota"
+
+
+def access_token_usable(account: Account, now_ms: int) -> bool:
+    """AT 还能用：有值，且（过期时间未知 = 按可用看待，或尚未到期）。"""
+    if not account.access_token:
+        return False
+    return account.token_expires_ms <= 0 or account.token_expires_ms > now_ms
+
+
+def claim_failure_is_terminal(exc: BaseException) -> bool:
+    """认领失败是不是"这张票已经死了"，而不是"这次没打通"。
+
+    只有 token 端点明确拒绝（4xx：invalid_refresh_token / invalid_grant …）与本地
+    就判得出缺参（SIWC 缺 client_id）算终局；网络抖动、5xx、响应畸形都留给请求路径
+    与后台巡检重试——不能因为一次没打通就把可能还好的号判死。
+    """
+    return isinstance(exc, (oauth.TokenRejected, ValueError))
+
+
+def claim_failure_text(exc: BaseException) -> str:
+    """认领失败的摘要文案（进导入摘要的 errors/warnings）。"""
+    if isinstance(exc, oauth.TokenRejected):
+        return f"refresh_token 已被上游拒绝（{exc.code or exc.status_code}）"
+    if isinstance(exc, ValueError):
+        return str(exc)
+    return f"refresh_token 校验未完成（{type(exc).__name__}: {str(exc)[:80]}）"
 
 
 @dataclass
@@ -385,11 +417,7 @@ class CodexProvider:
                 if body_dict.get("prompt_cache_key") != session_id:
                     body_dict["prompt_cache_key"] = session_id
                     body_dirty = True
-                attempt_body = (
-                    json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
-                    if body_dirty
-                    else body
-                )
+                attempt_body = self._attempt_body(account, body_dict, body, body_dirty)
                 try:
                     response = cx_upstream.responses_request(account, attempt_body, session_id)
                 except crequests.RequestsError as exc:
@@ -458,6 +486,25 @@ class CodexProvider:
         raise UpstreamUnavailable("codex: rotation budget exhausted")
 
     # ── 记账与罚号 ──
+
+    @staticmethod
+    def _attempt_body(
+        account: Account, body_dict: dict[str, Any], raw: bytes, dirty: bool
+    ) -> bytes:
+        """本次尝试的出站请求体。
+
+        SIWC 账号过的是 API 侧那套规则（删掉空 instructions 与几个采样参数，见
+        shape.trim_siwc_body），与外层后端要求的**正相反**。所以对 SIWC 尝试复制一
+        份单独裁：一个请求可能在两类账号之间轮换，共用同一份 dict 会让上一家的裁剪
+        污染下一家——chatgpt.com 少了 instructions 会直接 400。
+        """
+        if account.is_siwc:
+            trimmed = dict(body_dict)
+            shape.trim_siwc_body(trimmed)
+            return json.dumps(trimmed, ensure_ascii=False).encode("utf-8")
+        if dirty:
+            return json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+        return raw
 
     def _bump_used_seq(self, account: Account) -> None:
         self._store.update_runtime(account.uid, used_seq=self._store.next_used_seq())
@@ -684,11 +731,35 @@ class CodexProvider:
         旧 token 打上游（那大概率 401）。等待有上限，超时按失败处理。
         """
         now_ms = int(time.time() * 1000)
-        if not account.token_expiring(now_ms, CODEX_REFRESH_AHEAD_S * 1000):
+        if not account.token_expiring(now_ms, account.refresh_ahead_ms(CODEX_REFRESH_AHEAD_S)):
             return
         if not account.refresh_token:
             return
         self._try_refresh(account, quiet=True, wait=True)
+
+    @staticmethod
+    def _siwc_client_id(account: Account) -> str:
+        """SIWC 刷新要的 client_id：文件里带的那个；缺了退回默认值并告警。
+
+        刷新请求里的 client_id 必须是授权时实际签发的那个（CPA 也是这个要求）。
+        退回默认值只是"总比不试强"——真不匹配时上游会明确拒绝，日志里能看清。
+        """
+        if account.oauth_client_id:
+            return account.oauth_client_id
+        logger.warning(
+            f"[codex] uid={account.uid[:8]}… siwc 凭证没带 client_id, "
+            f"按默认值 {CODEX_SIWC_CLIENT_ID} 尝试刷新"
+        )
+        return CODEX_SIWC_CLIENT_ID
+
+    def _refresh_tokens(self, account: Account, refresh_token: str,
+                        timeout_s: float | None = None) -> oauth.TokenData:
+        """按凭证形态选刷新路径：两套端点与受众不通用（见 oauth 模块说明）。"""
+        if account.is_siwc:
+            return oauth.refresh_siwc(
+                refresh_token, self._siwc_client_id(account), timeout_s=timeout_s
+            )
+        return oauth.refresh(refresh_token, timeout_s=timeout_s)
 
     def _try_refresh(self, account: Account, quiet: bool = False, *, wait: bool = True) -> bool:
         """用 RT 换新 AT 并落库。按账号串行化：并发调用只有一个真的去打上游。
@@ -712,7 +783,7 @@ class CodexProvider:
             if not refresh_token:
                 return False
             try:
-                tokens = oauth.refresh(refresh_token)
+                tokens = self._refresh_tokens(account, refresh_token)
             except Exception as exc:
                 level = logger.info if quiet else logger.warning
                 level(
@@ -747,7 +818,6 @@ class CodexProvider:
         好让冷却结束时手里是张新票。熔断中的号照刷（凭证本身没问题，留着待用）。
         """
         now_ms = int(time.time() * 1000)
-        ahead_ms = CODEX_REFRESH_AHEAD_S * 1000
         refreshed = 0
         for account in self._store.list_accounts():
             if account.status != STATUS_ACTIVE or not account.refresh_token:
@@ -760,7 +830,7 @@ class CodexProvider:
                 and account.cooldown_kind not in ("soft", QUOTA_COOLDOWN_KIND)
             ):
                 continue
-            if not account.token_expiring(now_ms, ahead_ms):
+            if not account.token_expiring(now_ms, account.refresh_ahead_ms(CODEX_REFRESH_AHEAD_S)):
                 continue
             if self._try_refresh(account, quiet=True, wait=False):
                 refreshed += 1
@@ -771,13 +841,17 @@ class CodexProvider:
 
         与响应头回填互补：响应头只在账号真跑过成功请求后才有数据，刚导入的号
         只能干等。逐账号 GET /usage，单个失败只告警不中断（其余账号照刷）。
+
+        SIWC 账号跳过：/usage 挂在 ChatGPT 后端域下，那套票在那里不认，而
+        api.openai.com/v1 没有对应接口（见 upstream.fetch_usage）——它们的额度列
+        只能空着，不当作失败计数。
         """
         accounts = self._store.list_accounts()
         if uid:
             accounts = [a for a in accounts if a.uid == uid]
         refreshed = failed = 0
         for account in accounts:
-            if not account.access_token:
+            if account.is_siwc or not account.access_token:
                 continue
             try:
                 snapshot = cx_upstream.fetch_usage(account)
@@ -833,29 +907,95 @@ class CodexProvider:
 
         return transfer.export(self._store.list_accounts(), fmt)
 
-    def import_accounts(self, text: str) -> dict[str, Any]:
+    def import_accounts(self, text: str, *, claim: bool = True) -> dict[str, Any]:
         """从 CPA / codex2api 形状的 JSON 导入账号。
 
         宽容解析（单对象 / 数组 / 带 accounts 的封装），逐条校验；坏条目只记进
         errors 不中断整批。落库走 upsert（INSERT OR REPLACE）——与手动导入同口径：
         重新导入即覆盖凭证并清掉旧的冷却/熔断（人工恢复语义）。
+
+        `claim=True`（默认）在落库前对每条的 refresh_token 做一次**校验+认领**：用它
+        换一次新票。这一步同时解决两件事：
+          - 把"这份 RT 已经被上游作废"当场变成导入摘要里的告警。不然要等 AT 到期
+            才会以 401 暴露（Codex 的 AT 有 10 天寿命，导入后能照常请求，看起来没事）；
+          - 两个系统共用同一账号时把所有权拿到本系统——Codex 的 RT 单次使用且每次
+            刷新轮换，谁先刷谁持有，另一份立刻作废。
+        它同时会与源系统抢票，所以留了 `claim=False` 的口子：只想留个副本、源系统
+        继续跑时用它。
+
+        认领失败但 AT 还没过期的号照常入库（还能用到到期），只在 `unverified` 与
+        warnings 里标注；连 AT 都没有/已过期的才跳过——那种号导进来只是占位。
         """
         from providers.codex import transfer
 
         entries = transfer.parse_entries(text)  # 形状不对时抛 ValueError
-        imported = updated = 0
         errors: list[str] = []
+        warnings: list[str] = []
+        parsed: list[tuple[int, Account]] = []
         seen: set[str] = set()
         for index, entry in enumerate(entries, start=1):
             try:
-                account = transfer.to_account(entry)
+                account, notes = transfer.to_account(entry)
             except ValueError as exc:
                 errors.append(f"第 {index} 条：{exc}")
                 continue
+            for note in notes:
+                warnings.append(f"第 {index} 条：{note}")
             if account.uid in seen:
                 errors.append(f"第 {index} 条：同批次内 {account.uid} 重复，已跳过")
                 continue
             seen.add(account.uid)
+            parsed.append((index, account))
+
+        claims = self._claim_accounts(parsed) if claim else {}
+        now_ms = int(time.time() * 1000)
+        imported = updated = claimed = unverified = 0
+        written: set[str] = set()
+        for index, account in parsed:
+            result = claims.get(index)
+            if isinstance(result, oauth.TokenData):
+                self._apply_claimed(account, result, index, warnings)
+                claimed += 1
+            elif result is not None:
+                terminal = claim_failure_is_terminal(result)
+                reason = claim_failure_text(result)
+                stored = self._store.get_account(account.uid)
+                if (
+                    terminal
+                    and stored is not None
+                    and stored.refresh_token
+                    and stored.refresh_token != account.refresh_token
+                    and access_token_usable(stored, now_ms)
+                ):
+                    # 文件里的票已经死了，库里这份还是活的（多半是我们自己轮换出来的）：
+                    # 别用死票盖掉活票——重导一份旧导出不该把能用的号弄坏。
+                    warnings.append(
+                        f"第 {index} 条：{reason}；库里已有可用凭证，保留库里的（未按文件覆盖）"
+                    )
+                    self._keep_stored_credentials(account, stored)
+                elif terminal and not access_token_usable(account, now_ms):
+                    errors.append(f"第 {index} 条：{reason}，access_token 也不可用，"
+                                  f"已跳过（需在本系统重新授权登录）")
+                    continue
+                elif not terminal and not access_token_usable(account, now_ms):
+                    errors.append(f"第 {index} 条：{reason}，access_token 也不可用，已跳过")
+                    continue
+                else:
+                    unverified += 1
+                    warnings.append(
+                        f"第 {index} 条：{reason}；仅 access_token 可用"
+                        f"（至 {stamp(account.token_expires_ms) or '未知时刻'}），"
+                        f"到期后需重新授权"
+                    )
+            elif claim and not access_token_usable(account, now_ms):
+                errors.append(f"第 {index} 条：既无 refresh_token 也没有未过期的 "
+                              f"access_token，已跳过")
+                continue
+            if account.uid in written:
+                # 认领后归属可能变（凭据属于另一个账号），落库前再查一次批内重复
+                errors.append(f"第 {index} 条：归属为 {account.uid}，与本批另一条重复，已跳过")
+                continue
+            written.add(account.uid)
             existed = self._store.get_account(account.uid) is not None
             self._store.upsert_account(account)
             if existed:
@@ -864,40 +1004,154 @@ class CodexProvider:
                 imported += 1
         logger.info(
             f"[codex] 账号导入完成 total={len(entries)} imported={imported} "
-            f"updated={updated} skipped={len(errors)}"
+            f"updated={updated} skipped={len(errors)} claimed={claimed} "
+            f"unverified={unverified}"
         )
         return {
             "total": len(entries),
             "imported": imported,
             "updated": updated,
             "skipped": len(errors),
+            "claimed": claimed,
+            "unverified": unverified,
             "errors": errors[:20],
+            "warnings": warnings[:20],
         }
+
+    def _claim_accounts(self, parsed: list[tuple[int, Account]]) -> dict[int, Any]:
+        """并行认领导入条目：序号 → TokenData（成功）或异常（失败）。
+
+        并发只跨账号；同账号仍走 _refresh_lock（与请求路径、后台巡检同一把锁），
+        所以不会把同一个 RT 并行双花。没有 RT 的条目（只给 AT 的导入）不参与，
+        也就不会出现在结果里——调用方按"无 RT 可校验"处理。
+        """
+        targets = [(index, account) for index, account in parsed if account.refresh_token]
+        if not targets:
+            return {}
+        results: dict[int, Any] = {}
+        workers = min(_CLAIM_WORKERS, len(targets))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="codex-claim") as pool:
+            futures = {
+                pool.submit(self._claim_one, account): index for index, account in targets
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    results[index] = future.result()
+                except Exception as exc:  # 兜底：_claim_one 内部已全捕获
+                    results[index] = exc
+        return results
+
+    def _claim_one(self, account: Account) -> Any:
+        """单条认领：拿账号锁 → 用 RT 换新票。失败返回异常对象（不抛给线程池）。"""
+        lock = self._refresh_lock(account.uid)
+        if not lock.acquire(timeout=_REFRESH_LOCK_WAIT_S):
+            return TimeoutError("等待同账号刷新锁超时")
+        try:
+            tokens = self._refresh_tokens(account, account.refresh_token, CODEX_CLAIM_TIMEOUT_S)
+            logger.info(f"[codex] uid={account.uid[:8]}… 导入认领成功（RT 已换新）")
+            return tokens
+        except Exception as exc:
+            logger.warning(
+                f"[codex] uid={account.uid[:8]}… 导入认领失败: {type(exc).__name__}: {exc}"
+            )
+            return exc
+        finally:
+            lock.release()
+
+    @staticmethod
+    def _keep_stored_credentials(account: Account, stored: Account) -> None:
+        """把这条导入记录的凭据字段换回库里的那份（其余字段仍按文件走）。"""
+        account.access_token = stored.access_token
+        account.refresh_token = stored.refresh_token
+        account.id_token = stored.id_token
+        account.token_expires_ms = stored.token_expires_ms
+        account.auth_mode = stored.auth_mode
+        account.oauth_client_id = stored.oauth_client_id
+        account.oauth_device_id = stored.oauth_device_id
+
+    @staticmethod
+    def _apply_claimed(
+        account: Account, tokens: oauth.TokenData, index: int, warnings: list[str]
+    ) -> None:
+        """把认领回来的新票写进这条账号。
+
+        身份以新 id_token 为准（SIWC 的刷新响应常常不带 id_token，那就保留文件里的
+        值）；万一凭据属于另一个账号，按凭据归属入库并在摘要里说清——uid 是号池主键，
+        挂错了比丢掉一条更糟。
+        """
+        info = oauth.parse_id_token(tokens.id_token)
+        account.access_token = tokens.access_token
+        if tokens.refresh_token:
+            account.refresh_token = tokens.refresh_token
+        if tokens.id_token:
+            account.id_token = tokens.id_token
+        account.token_expires_ms = tokens.expires_ms()
+        if info.email and info.email != account.email:
+            if account.email:
+                warnings.append(f"第 {index} 条：凭据里的邮箱是 {info.email}（文件里是 "
+                                f"{account.email}），已按凭据为准")
+            # 文件没给身份时 label 是派生的（= uid / 旧邮箱）；人工起过名的不动
+            if not account.label or account.label in (account.uid, account.email):
+                account.label = info.email
+            account.email = info.email
+        if info.plan_type:
+            account.plan_type = info.plan_type
+        if info.account_id:
+            account.account_id = info.account_id
+        new_uid = oauth.account_uid(info)
+        if new_uid and new_uid != account.uid:
+            warnings.append(f"第 {index} 条：refresh_token 属于账号 {new_uid}"
+                            f"（文件里是 {account.uid}），已按凭据归属入库")
+            account.uid = new_uid
 
     def account_busy(self, uid: str) -> bool:
         return self._pool.in_flight_count(uid) > 0
 
     def manual_add_account(self, payload: dict[str, Any]) -> Account:
         """手动导入凭证：优先 refresh_token（会立即刷新换取 AT 并解析账号信息）；
-        只有 access_token 时需显式给 account_id。"""
+        只有 access_token 时需显式给 account_id。
+
+        带 `auth_mode: "siwc"`（或 `use_siwc: true`）时按 SIWC 那套走：刷新端点与
+        resource 参数都不同，client_id 取 payload 里的（缺了退回默认值）。
+        """
+        from providers.codex import transfer
+
         refresh_token = str(payload.get("refresh_token") or "").strip()
         access_token = str(payload.get("access_token") or "").strip()
+        siwc = str(payload.get("auth_mode") or "").strip() == AUTH_MODE_SIWC or transfer.truthy(
+            payload.get("use_siwc")
+        )
+        client_id = str(payload.get("client_id") or "").strip()
         if refresh_token:
             try:
-                tokens = oauth.refresh(refresh_token)
+                if siwc:
+                    tokens = oauth.refresh_siwc(refresh_token, client_id or CODEX_SIWC_CLIENT_ID)
+                else:
+                    tokens = oauth.refresh(refresh_token)
             except Exception as exc:
                 raise ValueError(f"refresh_token 校验失败: {exc}") from exc
             info = oauth.parse_id_token(tokens.id_token)
-            account = Account(
-                uid=oauth.account_uid(info) or str(payload.get("uid") or "").strip(),
+            # id_token 缺失时（SIWC 的刷新响应常常没有）回退到 payload 里的身份字段
+            identity = oauth.AccountInfo(
+                email=info.email or str(payload.get("email") or "").strip(),
                 account_id=info.account_id or str(payload.get("account_id") or "").strip(),
-                label=str(payload.get("label") or info.email or ""),
-                email=info.email,
-                plan_type=info.plan_type,
+                plan_type=info.plan_type or str(payload.get("plan_type") or "").strip(),
+                name=info.name,
+            )
+            account = Account(
+                uid=oauth.account_uid(identity) or str(payload.get("uid") or "").strip(),
+                account_id=identity.account_id,
+                label=str(payload.get("label") or identity.email or ""),
+                email=identity.email,
+                plan_type=identity.plan_type,
                 access_token=tokens.access_token,
                 refresh_token=tokens.refresh_token or refresh_token,
                 id_token=tokens.id_token,
                 token_expires_ms=tokens.expires_ms(),
+                auth_mode=AUTH_MODE_SIWC if siwc else "",
+                oauth_client_id=client_id if siwc else "",
+                oauth_device_id=str(payload.get("device_id") or "").strip() if siwc else "",
             )
         elif access_token:
             account_id = str(payload.get("account_id") or "").strip()

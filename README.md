@@ -64,7 +64,7 @@ curl http://127.0.0.1:8787/v1/messages \
 | `POST /api/workbuddy/checkin/run-all` | 一键全签(串行 + 账号间错峰;跳过 global/企业号) |
 | `POST /api/workbuddy/login/start`、`GET .../login/poll` | OAuth 设备码登录(浏览器授权 → 自动入池) |
 | `GET/POST/DELETE /api/codex/accounts[/{uid}]` | 账号列表 / 手动导入(粘贴 refresh_token 或 access_token+account_id) / 删除 |
-| `POST /api/codex/accounts/import` | 批量导入(CPA / codex2api 形状的 JSON:单对象 / 数组 / `{"accounts":[…]}`) |
+| `POST /api/codex/accounts/import` | 批量导入(CPA / codex2api 形状的 JSON:单对象 / 数组 / `{"accounts":[…]}`;默认逐条「校验+认领」refresh_token,可传 `claim:false` 关闭) |
 | `GET /api/codex/accounts/export?format=cpa\|codex2api` | 导出账号为对应形状的 JSON |
 | `POST /api/codex/accounts/{uid}/action` | pause / resume / disable / revive / refresh |
 | `POST /api/codex/login/start` | 发起 OAuth(PKCE):返回授权 URL 与 session_id |
@@ -77,6 +77,8 @@ Web 管理台:构建前端后访问 `http://127.0.0.1:8787/`(SPA;根路径会 re
 - **OpenCode**:凭证体系固定为**单一 `public` 匿名凭证**:只服务免费档模型(路由层拦截非免费模型,上游对它们一律回 "Missing API key")。
 - **WorkBuddy**:多账号号池,凭证存 `server/data/workbuddy.db` 的 accounts 表(明文,与 wb2api 同款取舍);通过管理台「添加账号」走 OAuth 设备码登录,或手动粘贴 token;token 过期前 10 分钟自动刷新。**签到只手动触发**(管理台「立即签到」/「一键全签」,没有定时调度):上游只对 CN 个人号开放,global 域与企业号在发请求前跳过;领取结果落 accounts 表(本地台账),接口本身幂等,重复调用只会返回"已签"。参数(冷却/熔断/超时/签到等)写死在 `server/core/settings.py` 的 `WB_*` 常量。
 - **Codex**:多账号号池,凭证存 `server/data/codex.db` 的 accounts 表(明文)。通过管理台/API 走 **OAuth PKCE 授权码**登录(浏览器授权 → 把回调 URL 粘贴回 `/api/codex/login/exchange` 自动入池),或手动粘贴 `refresh_token`(会立即刷新换取 AT 并解析账号)。`refresh_token` 会**轮换**(上游可能换发新 RT,没换发时保留旧值);token 刷新有两条路——**请求前按需**(距过期不足 10 分钟)与**后台巡检**(每 2 分钟醒来,只刷同样快过期的号;不做全量刷,免得每个号的 RT 周期性轮换),两条路按账号串行化以防 RT 双花;凭证失效(401)先刷新同号重试,连续失败达阈值则禁用待人工重新授权。**额度**(5h/7d 限流窗口)由每次成功响应的 `x-codex-{primary,secondary}-*` 头回填。参数(冷却/熔断/超时/池等)写死在 `server/core/settings.py` 的 `CODEX_*` 常量。
+  - **两套凭证形态**并存:外层(Codex CLI 客户端 PKCE 授权,走 `chatgpt.com/backend-api/codex`)与 **SIWC**(Sign in with ChatGPT,CPA auth 文件里的 `use_siwc` 分区,走 `api.openai.com/v1`)。SIWC 的授权、刷新端点与受众都不同(`/api/accounts/oauth/token` + `resource`),导入时按分区取凭据(拿外层那份去刷只会得到 `invalid_refresh_token`),刷新、头族、请求体规则与模型目录都按账号形态分叉;SIWC 账号没有 `/usage` 接口,额度列留空。
+  - **CPA / codex2api 迁移**:Codex 的 RT 单次使用且每次刷新轮换,导出的 auth 文件只是某一刻的快照——源系统(如 CPA)只要再用一次就把快照作废,而 AT 有 10 天寿命,导入后能照常请求、到期才以 401 暴露。所以导入默认对每条 RT 做一次**校验+认领**(换一张新票,同时把所有权拿到本系统,摘要里给出 `claimed`/`unverified`/告警);源系统还要继续跑时传 `claim:false` 只做副本。要长期两个系统并用同一个号是做不到的——一张票只能有一个持有者。
 - **管理 API 与推理端点都无鉴权**,安全姿态是默认只监听 `127.0.0.1`。对外暴露前请自己加反代鉴权(WorkBuddy 与 Codex 号池都有真实凭证,务必先加)。
 - 运行时可持久化配置只有代理三档(`server/config.json`);其余值写死在 `server/core/settings.py` 与各 provider。
 

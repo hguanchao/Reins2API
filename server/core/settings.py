@@ -107,6 +107,22 @@ CODEX_SCOPES = "openid profile email offline_access"
 CODEX_REFRESH_SCOPES = "openid profile email"
 CODEX_LOGIN_TTL_S = 600        # 登录会话（state/verifier）有效期，与弹窗倒计时同源
 
+# Sign in with ChatGPT（CPA auth 文件里的 use_siwc 分区）。这套凭证不是 Codex CLI
+# 客户端签发的，授权、兑换与刷新都在另一套端点上，且签发时绑定 resource（受众），
+# 所以刷新必须带 resource、服务域也跟着换到 api.openai.com/v1——三者缺一，票就是废的。
+# 事实依据：CLIProxyAPI internal/auth/codex/siwc_auth.go（SIWCTokenURL / SIWCResource /
+# SIWCDynamicClientID）与 codex_executor_auth.go 的 defaultOpenAISIWCBaseURL。
+CODEX_SIWC_TOKEN_URL = "https://auth.openai.com/api/accounts/oauth/token"
+CODEX_SIWC_RESOURCE = "https://api.openai.com/v1"   # 刷新表单的 resource 参数
+CODEX_SIWC_BASE = "https://api.openai.com/v1"       # 推理与模型域（与 resource 同值）
+# 文件没带 client_id 时的兜底（CPA 自带登录流程的默认值）；带了的用文件里的，
+# 因为那是授权时实际签发的 client（CPA 也只认它）。
+CODEX_SIWC_CLIENT_ID = "dynamic_agent_client"
+CODEX_SIWC_AGENT_NAME = "Reins2API"   # 出站 UA 前缀（CPA 同位置放它自己的标识）
+# SIWC 的 AT 是短票，提前量照 CPA（CodexSIWCRefreshLead = 5min）取，比外层的 10min 小，
+# 免得票本身不到 10min 时每个请求都刷一次（每次刷新都会轮换 RT）。
+CODEX_SIWC_REFRESH_AHEAD_S = 300
+
 # 出站身份（对齐 Codex CLI 指纹的最小可信集；取值见 docs/codex-provider-design.md §3.2）
 # 该版本同时是模型目录的门控参数：/models?client_version=X 只下发
 # minimal_client_version ≤ X 的模型，0.153.3 会漏掉需要 0.155.0 的 gpt-6-luna。
@@ -143,6 +159,9 @@ CODEX_BREAKER_THRESHOLD = 3    # 连续失败次数
 CODEX_BREAKER_BASE_S = 1800    # base ×2^n
 CODEX_BREAKER_MAX_S = 21600    # 封顶 6h
 CODEX_REFRESH_AHEAD_S = 600    # token 到期前主动刷新窗口（请求路径与后台巡检同一门槛）
+# 导入时「校验+认领」refresh_token 的单次调用上限（秒）。这是导入响应里的同步等待，
+# 不能按常规 TTFB（120s）等——批量导入时一个卡住的号会把整批拖住。
+CODEX_CLAIM_TIMEOUT_S = 20
 
 # 权重
 CODEX_IDLE_BOOST_PER_HOUR = 0.5

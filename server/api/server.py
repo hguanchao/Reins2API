@@ -473,11 +473,13 @@ def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
 def _refresh_after_import(provider: Any) -> None:
     """导入账号后的补刷（后台线程）：补快过期的凭证 + 额度。
 
-    导入的号 AT 常是旧的（CPA 导出里 expired 早就过了），凭证不先补，额度查询走不动；
-    两步都只告警不抛出——真失败了留给后台巡检/手动刷兜底，不能反过来影响导入结果。
-    额度这一步是给「刚导入还没有成功请求」的号填数的：响应头回填要等下一次成功
-    请求，全新导入的号不该在额度列空着。**不再补拉模型目录**：目录只在手动
-    「获取模型」时刷新（导入的新号可见集合可能不同，但目录不再自动打上游）。
+    导入的号 AT 常是旧的（CPA 导出里 expired 早就过了），凭证不先补，额度查询走不动
+    ——带 RT 的条目在导入时已由「校验+认领」换过票（见 provider.import_accounts），
+    这里兜的是 claim 关掉、以及只给 AT 的条目。两步都只告警不抛出——真失败了留给
+    后台巡检/手动刷兜底，不能反过来影响导入结果。额度这一步是给「刚导入还没有成功
+    请求」的号填数的：响应头回填要等下一次成功请求，全新导入的号不该在额度列空着。
+    **不再补拉模型目录**：目录只在手动「获取模型」时刷新（导入的新号可见集合可能
+    不同，但目录不再自动打上游）。
     """
     try:
         provider.refresh_expiring()
@@ -554,8 +556,11 @@ def _handle_codex_api(
         if not isinstance(text, str) or not text.strip():
             send_json(handler, 400, {"ok": False, "error": "缺少 json 字段（粘贴的 JSON 文本）"})
             return True
+        # claim（默认开）逐条用 refresh_token 换一次新票：既当场验证凭证是否还有效，
+        # 也把所有权拿到本系统（会与源系统抢票，所以留了显式关闭的口子，见 provider）
+        claim = payload.get("claim", True)
         try:
-            summary = provider.import_accounts(text)
+            summary = provider.import_accounts(text, claim=bool(claim))
         except ValueError as exc:
             send_json(handler, 400, {"ok": False, "error": str(exc)})
             return True

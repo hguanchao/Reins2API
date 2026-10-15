@@ -25,6 +25,16 @@ _STRIP_FIELDS = (
     "type",  # Responses WS 事件信封字段；HTTP 端点会回 "Unsupported parameter: type"
 )
 
+# SIWC（api.openai.com/v1）额外不接受的字段。依据 CLIProxyAPI 的
+# stripCodexSIWCUnsupportedFields：该域会把这几个参数直接判错，而 chatgpt.com
+# 后端照收——两套规则互不相容，所以只能按账号分叉（见 provider.send）。
+_SIWC_STRIP_FIELDS = (
+    "prompt_cache_options",
+    "max_output_tokens",
+    "max_completion_tokens",
+    "temperature",
+)
+
 
 def shape_codex_body(body: dict[str, Any], session_id: str) -> bool:
     """就地归一，返回是否发生改动。"""
@@ -44,5 +54,26 @@ def shape_codex_body(body: dict[str, Any], session_id: str) -> bool:
         changed = True
     if body.get("stream") is not True:
         body["stream"] = True
+        changed = True
+    return changed
+
+
+def trim_siwc_body(body: dict[str, Any]) -> bool:
+    """SIWC 账号（api.openai.com/v1）在通用归一之外还要做的取舍，返回是否改动。
+
+    与 chatgpt.com 后端正好相反的一条：那边要求 `instructions` **必须存在**（空串也
+    行，shape_codex_body 会补），这边空的 `instructions` 要删掉。其余是几个该域
+    不接受的采样/长度参数（依据 CLIProxyAPI 的 stripCodexSIWCUnsupportedFields）。
+
+    只在选中 SIWC 账号的那次尝试上、对一份副本调用——两套规则不能互相污染：
+    给外层重试留下被删掉的 `instructions`，chatgpt.com 会直接 400。
+    """
+    changed = False
+    for key in _SIWC_STRIP_FIELDS:
+        if key in body:
+            body.pop(key, None)
+            changed = True
+    if not str(body.get("instructions") or "").strip() and "instructions" in body:
+        body.pop("instructions", None)
         changed = True
     return changed

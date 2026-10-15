@@ -692,13 +692,28 @@ export interface CodexImportSummary {
   imported: number;
   updated: number;
   skipped: number;
+  /** 导入时用 refresh_token 换票成功的条数（所有权已归本系统） */
+  claimed: number;
+  /** 换票失败的条数：仍入库，但只剩 access_token 可用，到期需重新授权 */
+  unverified: number;
   errors: string[];
+  /** 软告警：分区回退、凭据与文件不符、只剩 access_token 可用之类 */
+  warnings: string[];
 }
 
-/** 从 CPA / codex2api 形状的 JSON 导入账号（宽容解析：单对象 / 数组 / {"accounts":[]}）。 */
-export function importCodexAccounts(json: string): Promise<CodexImportSummary> {
+/**
+ * 从 CPA / codex2api 形状的 JSON 导入账号（宽容解析：单对象 / 数组 / {"accounts":[]}）。
+ *
+ * claim=true（默认）对每条 refresh_token 做一次「校验+认领」：用它换一次新票。
+ * 好处是当场暴露已被上游作废的 RT、并把所有权拿到本系统；代价是与源系统抢票
+ * （Codex 的 RT 单次使用+轮换，谁先刷谁持有），源系统还要继续跑时传 false。
+ */
+export function importCodexAccounts(
+  json: string,
+  claim = true,
+): Promise<CodexImportSummary> {
   return request<CodexImportSummary>("/api/codex/accounts/import", {
     method: "POST",
-    body: JSON.stringify({ json }),
+    body: JSON.stringify({ json, claim }),
   });
 }
