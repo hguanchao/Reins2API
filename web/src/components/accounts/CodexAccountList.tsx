@@ -24,7 +24,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui";
 import type { CodexAccount } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn, fmtCompact } from "@/lib/utils";
 
 import { ActivityCell } from "./ActivityCell";
 import { UsageStatsCell } from "./UsageStatsCell";
@@ -111,7 +111,13 @@ function expiresIn(ms: number): string {
  * 不再有 head 行：那一行只有一个数字，白白把这一格撑成三行，明细并进 foot 一行说完。
  * 两条窗口各画一根条会让这一列变成全行最重的部分，所以副窗口只给数字。
  */
-function QuotaCell({ rateLimit }: { rateLimit?: CodexAccount["rate_limit"] }) {
+function QuotaCell({
+  rateLimit,
+  estimate,
+}: {
+  rateLimit?: CodexAccount["rate_limit"];
+  estimate?: CodexAccount["quota_estimate"];
+}) {
   const primary = rateLimit?.primary;
   const secondary = rateLimit?.secondary;
   if (!primary && !secondary) {
@@ -135,7 +141,7 @@ function QuotaCell({ rateLimit }: { rateLimit?: CodexAccount["rate_limit"] }) {
   // 实测有账号 used_percent=100 但 allowed=true —— 光看百分比会误报已用尽。
   const exhausted = rateLimit?.limit_reached === true || rateLimit?.allowed === false || used >= 100;
   // 条子画的是**剩余**水位，所以分档也按剩余量走：剩 ≤30% 转琥珀、≤10% 转红；
-  // 剩 0%（用尽）时填充被抽空，改由底轨染一层浅红表示"用尽"而不是"没数据"。
+  // 剩 0%（用尽）时填充被抽空，改为由底轨承担"用尽"的表达（见 accounts.css）。
   const tone = remaining <= 0 ? "is-out" : remaining <= 10 ? "is-bad" : remaining <= 30 ? "is-warn" : "";
   const credits = rateLimit?.credits;
   // 副窗口只在**长度大于 0** 时才说。上游在没有第二窗口时会发一组全 0 的占位
@@ -145,12 +151,25 @@ function QuotaCell({ rateLimit }: { rateLimit?: CodexAccount["rate_limit"] }) {
     secondary && secondary.used_percent != null && (secondary.window_minutes ?? 0) > 0
       ? `${windowLabel(secondary.window_minutes)} 剩余 ${Math.max(0, 100 - secondary.used_percent).toFixed(0)}%`
       : "";
+  // 容量估算：上游只给整数百分比、不给绝对上限，"这个号大概能吃多少 token"是拿本
+  // 网关服务的 token 除以同期百分比变化反推出来的（后端 quota.py）。有数字时它**替代**
+  // 百分比那句：百分比只是过程量，容量才是能用来判断的数；估值与百分比二选一，
+  // 不并列（并列会出现两个都在说"还剩多少"的字段）。没数字时才退回百分比。
+  const hasCapacity = estimate != null && !estimate.pending && estimate.capacity != null;
   const detail = [
     primary
-      ? `${windowLabel(primary.window_minutes)} ${exhausted ? "已用尽" : `剩余 ${remaining.toFixed(0)}%`}`
+      ? hasCapacity
+        ? `估算容量 ≈ ${fmtCompact(estimate!.capacity)}${
+            estimate!.remaining_tokens != null
+              ? ` · 可用 ≈ ${fmtCompact(estimate!.remaining_tokens)}`
+              : ""
+          }`
+        : `${windowLabel(primary.window_minutes)} ${exhausted ? "已用尽" : `剩余 ${remaining.toFixed(0)}%`}`
       : "",
     resetIn(primary?.reset_at_ms),
     secondaryText,
+    // 还没有容量数字时明说在攒样本，别让这一列看着像少了个字段
+    estimate?.pending ? "容量估算 观察中" : "",
     // 具体额度：只有带积分的档位上游才给（free 档这些字段全是空的，不会显示）
     credits?.unlimited ? "额度不限" : credits?.balance != null ? `余额 ${credits.balance}` : "",
     rateLimit?.reset_credits ? `重置券 ×${rateLimit.reset_credits}` : "",
@@ -330,7 +349,7 @@ export function CodexAccountList({
 
                     {/* 额度（上游响应头回填）*/}
                     <TableCell>
-                      <QuotaCell rateLimit={account.rate_limit} />
+                      <QuotaCell rateLimit={account.rate_limit} estimate={account.quota_estimate} />
                     </TableCell>
 
                     {/* 操作 */}
@@ -338,7 +357,7 @@ export function CodexAccountList({
                       <div className="acct-actions">
                         <div className="acct-btns">
                           <IconAction
-                            label="刷新 token"
+                            label="刷新 Token"
                             icon={<RefreshCw className="size-3.5" strokeWidth={1.9} />}
                             disabled={busy || !account.has_refresh_token}
                             onClick={() => onAction(account, "refresh")}

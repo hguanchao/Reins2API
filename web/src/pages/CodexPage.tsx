@@ -166,7 +166,7 @@ export function CodexPage() {
       await codexAccountAction(account.uid, action);
       const labels: Record<string, string> = {
         pause: "已暂停", resume: "已恢复", disable: "已禁用",
-        revive: "已复活（清除冷却/熔断）", refresh: "token 已刷新",
+        revive: "已复活（清除冷却/熔断）", refresh: "Token 已刷新",
         quota: "额度已刷新",
       };
       toast.success(labels[action] ?? "操作成功");
@@ -314,7 +314,7 @@ export function CodexPage() {
             <div className="metric">
               <div className="metric-k">
                 <Activity className="metric-ico" strokeWidth={1.6} />
-                24h tokens
+                24h Tokens
               </div>
               <div className="metric-v">
                 {fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}

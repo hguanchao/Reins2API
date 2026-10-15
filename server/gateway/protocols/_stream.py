@@ -152,7 +152,10 @@ class StreamEmitterBase:
 
     def _on_error(self, event: BridgeStreamEvent) -> None:
         self.done = True
-        self._emit_error(
+        # 方法名是 _error_frames（基类是抽象声明，三个协议各自实现）：写成 _emit_error 会
+        # 让**整条错误路径**变成 AttributeError——上游流中断时客户端拿不到错误帧，流就
+        # 断在半句话上，看着像"模型自己结束了"。
+        self._error_frames(
             event.error if event.error is not None else "upstream stream failed",
             event.error_type if event.error_type is not None else "upstream_error",
         )

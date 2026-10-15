@@ -723,7 +723,7 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        /* 不做 uppercase：本项目列头中英混排（「7d 请求」「24h tokens」），
+        /* 不做 uppercase：本项目列头中英混排（「7d 请求」「24h Tokens」），
            强制大写会渲染成「7D 请求」这种半截大写的怪样子 */
         "text-fg-subtle h-9 bg-[var(--table-header)] px-3.5 text-left align-middle text-[11.5px] font-semibold whitespace-nowrap",
         "[&:has([role=checkbox])]:w-10 [&:has([role=checkbox])]:pr-0 [&:has([role=checkbox])]:pl-3",

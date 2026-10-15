@@ -553,6 +553,35 @@ export interface CodexAccount {
     credits?: { has_credits?: boolean; unlimited?: boolean; balance?: number };
     /** 可用的限流重置券张数（0 张上游不返回该字段） */
     reset_credits?: number;
+    /** 当前生效的限制档位（free 档实测为 premium） */
+    active_limit?: string;
+    /** 主窗口额度里被第二窗口吃掉的比例（free 档恒 0，故通常缺省） */
+    over_secondary_percent?: number;
+    /** 容量估算的窗口基线（累积 token + 当时的百分比），窗口换新时重立 */
+    window?: {
+      reset_at_ms?: number | null;
+      used_percent?: number | null;
+      tokens?: number;
+      at_ms?: number;
+    };
+  };
+  /**
+   * 额度容量估算：上游只给整数百分比、不给绝对上限，所以容量只能靠"本网关服务的
+   * token ÷ 同期百分比变化"反推（口径与精度说明见后端 providers/codex/quota.py）。
+   * 样本不够时只给 pending，界面显示「观察中」而不是拿一个瞎猜的数糊上去。
+   */
+  quota_estimate?: {
+    remaining: number | null;
+    window_minutes: number | null;
+    reset_at_ms: number | null;
+    /** true = 还在攒样本（无基线，或跨度/服务量不足），此时没有容量数字 */
+    pending: boolean;
+    served?: number;
+    span_percent?: number;
+    capacity?: number;
+    capacity_low?: number;
+    capacity_high?: number;
+    remaining_tokens?: number;
   };
 }
 

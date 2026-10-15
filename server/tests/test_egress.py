@@ -4,8 +4,11 @@
 
 为什么单独立文件：`cached_ip` 被放在每条请求的落库路径上，几条底线必须钉住——
 ① 它绝不能联网：缓存冷时也得立刻返回空串，不能让转发去等 echo 服务；
-② 冷缓存 + 并发请求只许甩出**一个**后台探测（单飞），否则每条请求一个线程去打 echo；
-③ 改代理（`invalidate`）之前发出、之后才回来的探测不能写回缓存，否则旧出口 IP 会
+② 缓存过期只触发后台刷新，**返回值照给**（陈旧值也是对的：出口 IP 只随代理配置变，
+   而代理一变就 invalidate）——曾按"过期返回空串"实现，结果每条间隔超过 TTL 的请求
+   都记成空，请求列表的出口 IP 列几乎全是「—」；
+③ 冷缓存 + 并发请求只许甩出**一个**后台探测（单飞），否则每条请求一个线程去打 echo；
+④ 改代理（`invalidate`）之前发出、之后才回来的探测不能写回缓存，否则旧出口 IP 会
    顶着"新配置"的答案一直错到 TTL 到期。
 
 测试不联网：只把 egress 命名空间里的 `crequests` 换成假 curl（不 patch `probe`
@@ -36,26 +39,30 @@ class _FakeResponse:
 
 
 class _FakeCurl:
-    """假 curl：记下调用、卡在闸门上、返回一个固定 IP。"""
+    """假 curl：记下调用、卡在闸门上、返回一个固定 IP（可用 text 换一个出口）。"""
 
-    def __init__(self, gate: threading.Event, calls: list[tuple[str, dict | None]]):
+    def __init__(
+        self, gate: threading.Event, calls: list[tuple[str, dict | None]], text: str = _IP
+    ):
         self._gate = gate
         self.calls = calls
+        self._text = text
 
     def get(self, url: str, **kwargs: object) -> _FakeResponse:
         self.calls.append((url, kwargs.get("proxies")))  # type: ignore[arg-type]
         self._gate.wait(2)
-        return _FakeResponse(_IP)
+        return _FakeResponse(self._text)
 
 
-def _drain(timeout: float = 2.0) -> None:
+def _drain(timeout: float = 2.0) -> bool:
     """等上一用例留下的后台探测收尾：否则它会在下一用例中途写缓存，制造假通过。"""
     deadline = time.time() + timeout
     while time.time() < deadline:
         with egress._lock:
             if not egress._inflight:
-                return
+                return True
         time.sleep(0.01)
+    return False
 
 
 def _reset(gate: threading.Event) -> list[tuple[str, dict | None]]:
@@ -95,6 +102,78 @@ def test_warm_probe_fills_next_rows() -> None:
     assert egress.cached_ip(_UPSTREAM) == ""
     gate.set()
     assert _wait_for(lambda: egress.cached_ip(_UPSTREAM) == _IP), "探测完成后应有值"
+
+
+def test_stale_cache_serves_value_and_refreshes_in_background() -> None:
+    """缓存过期：**照常返回已知 IP**（陈旧值仍是对的），只顺手甩个后台刷新。
+
+    这是请求列表出口 IP 不再为空的根因用例：旧实现"过期返回空串"让每条间隔超过
+    TTL 的请求都记空。"""
+    gate = threading.Event()
+    gate.set()
+    calls = _reset(gate)
+    assert _wait_for(lambda: egress.cached_ip(_UPSTREAM) == _IP)
+    assert _drain()  # 先让初次探测与任何后续刷新收尾，计数才可预期
+    calls.clear()
+
+    # 把缓存时间戳拨到 TTL 之前，模拟"距上次探测已过去一分多钟"
+    with egress._lock:
+        result, _ = egress._cache[_UPSTREAM]
+        egress._cache[_UPSTREAM] = (result, time.time() - egress.CACHE_TTL - 31)
+
+    held = threading.Event()  # 新探测卡在闸门上：证明返回不依赖它
+    egress.crequests = _FakeCurl(held, calls)  # type: ignore[assignment]
+
+    started = time.time()
+    assert egress.cached_ip(_UPSTREAM) == _IP, "过期缓存也必须返回已知 IP"
+    assert time.time() - started < 0.5, "不能阻塞在刷新探测上"
+    assert _wait_for(lambda: len(calls) == 1), "过期应触发一次后台刷新"
+    _drain()
+    held.set()
+
+
+def test_probe_logs_only_when_conclusion_changes() -> None:
+    """探测按期复查，但**结论不变不记日志**。
+
+    缓存过期会甩后台探测，而"每条间隔超过 TTL 的请求都甩一次"意味着日志会被
+    「出口 IP 探测成功」刷满（实测就是这样刷屏的）。同一结论只留第一次；换了出口、
+    换了代理、或从失败恢复，才应该再落一行——那正是要留痕的时刻。
+    """
+    from loguru import logger as loguru_logger
+
+    gate = threading.Event()
+    gate.set()
+    _reset(gate)
+
+    lines: list[str] = []
+    sink_id = loguru_logger.add(
+        lambda message: lines.append(message),
+        level="INFO",
+        filter=lambda record: record["message"].startswith("[出口]"),
+    )
+    try:
+        egress.probe(_UPSTREAM, force=True)
+        first_round = [line for line in lines if "探测成功" in line]
+        assert len(first_round) == 1, f"首次探测应留一行，实际 {len(first_round)}"
+
+        egress.probe(_UPSTREAM, force=True)  # 同一出口、同一代理
+        same = [line for line in lines if "探测成功" in line]
+        assert len(same) == 1, f"结论没变不该再记，实际 {len(same)} 行: {same}"
+
+        # 换出口（模拟代理换节点）：结论变了，必须留痕
+        egress.crequests = _FakeCurl(gate, [], text="198.51.100.7")  # type: ignore[assignment]
+        egress.probe(_UPSTREAM, force=True)
+        changed = [line for line in lines if "探测成功" in line]
+        assert len(changed) == 2, f"换出口应留一行，实际 {len(changed)} 行: {changed}"
+        assert "198.51.100.7" in changed[-1]
+
+        # 换代理也必须重新留痕（哪怕 IP 相同）：invalidate 清掉结论指纹
+        egress.invalidate()
+        egress.probe(_UPSTREAM, force=True)
+        after_invalidate = [line for line in lines if "探测成功" in line]
+        assert len(after_invalidate) == 3, f"换代理后应重新留痕，实际 {len(after_invalidate)} 行"
+    finally:
+        loguru_logger.remove(sink_id)
 
 
 def test_cold_cache_probes_once_under_concurrency() -> None:

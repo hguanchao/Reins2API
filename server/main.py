@@ -116,6 +116,12 @@ def main() -> None:
     for name in registry.names:
         _warm_catalog(registry.get(name))
 
+    # 出口 IP 预热：第一次探测要 1-3 秒，不预热的话冷启动头几条请求的列表行记为
+    # 「—」（落库只读缓存、绝不联网）。后台线程，失败只告警不阻塞启动。
+    from net import egress
+
+    egress.warm(registry.default.upstream_url)
+
     logger.info(f"[启动] 已注册 provider: {' '.join(registry.names)}")
 
     from api.server import serve

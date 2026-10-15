@@ -37,20 +37,24 @@ export function fmtStampFull(ms: number): string {
   return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-/** 距今多久：7 天以内走「x天 / x小时 / x分钟 / x秒」，满 7 天回落到绝对时间。
- *  不足 1 秒（含时钟漂移导致的"未来时间"）统一显示「刚刚」，不写"0秒"。 */
+/** 距今多久：7 天以内走「x天前 / x小时前 / x分钟前 / x秒前」，满 7 天回落到绝对时间。
+ *
+ *  一律带"前"：裸的「2天」「5分钟」在中文里不是一句能读出来的时间表达——只有把列头
+ *  「最近请求」当主语才勉强猜得出意思。多这一个字换来句子完整，而外层宽度正是按这段
+ *  文字反解柱数的（见 .acct-spark 注释），所以取"2天前"而不是更长的"2 天前"。
+ *  不足 1 秒（含时钟漂移导致的"未来时间"）统一显示「刚刚」，不写"0秒前"。 */
 export function fmtStamp(ms: number): string {
   if (!ms) return "—";
   const diff = Date.now() - ms;
   if (diff < 1000) return "刚刚";
   const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `${sec}秒`;
+  if (sec < 60) return `${sec}秒前`;
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}分钟`;
+  if (min < 60) return `${min}分钟前`;
   const hour = Math.floor(min / 60);
-  if (hour < 24) return `${hour}小时`;
+  if (hour < 24) return `${hour}小时前`;
   const day = Math.floor(hour / 24);
-  if (day < 7) return `${day}天`;
+  if (day < 7) return `${day}天前`;
   return fmtStampFull(ms);
 }
 

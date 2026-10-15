@@ -277,7 +277,7 @@ export function OpenCodePage() {
       <div className="gw-page-head">
         <div>
           <h1 className="gw-page-title">OpenCode 控制台</h1>
-          <p className="gw-page-sub">上游 opencode zen · 免费档模型代理与流量遥测</p>
+          <p className="gw-page-sub">上游 OpenCode Zen · 免费档模型代理与流量遥测</p>
         </div>
       </div>
 

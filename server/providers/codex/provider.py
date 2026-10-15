@@ -46,7 +46,7 @@ from gateway.base import (
 )
 from providers import models_dev, models_snapshot, profiles
 from providers.capabilities import capability_block
-from providers.codex import classify, oauth, shape
+from providers.codex import classify, oauth, quota, shape
 from providers.codex import upstream as cx_upstream
 from providers.codex.pool import Pool
 from providers.codex.store import STATUS_ACTIVE, Account, CodexStore, default_store
@@ -468,7 +468,7 @@ class CodexProvider:
         )
 
     def _note_rate_limit(self, account: Account, headers: dict[str, str]) -> None:
-        """把上游响应头里的限流窗口快照落库（额度列的数据源）。
+        """把上游响应头里的限流窗口快照落库（额度列与容量估算的数据源）。
 
         只在 used_percent 真的动了才写——每个响应都写等于把遥测的写放大一倍。
         顺带把 x-codex-plan-type 同步到 plan_type（订阅档位以服务端为准）。
@@ -480,7 +480,8 @@ class CodexProvider:
         # 响应头只有窗口三件套，/usage 才给的字段（积分、重置券、上游自己的 allowed /
         # limit_reached）在这里接过来：两条数据源写的是同一个 JSON 快照，直接覆盖等于
         # 一次普通请求就把主动查询的结果抹掉。代价是这些字段的时效跟着上次主动查询走。
-        for key in ("allowed", "limit_reached", "credits", "reset_credits"):
+        # window 是容量估算的窗口基线（见 quota.py），同理不能丢。
+        for key in ("allowed", "limit_reached", "credits", "reset_credits", "window"):
             if key in previous and key not in snapshot:
                 snapshot[key] = previous[key]
         usage_unchanged = all(
@@ -492,14 +493,52 @@ class CodexProvider:
         # plan_type 永远不同步（响应头是档位的权威来源）。
         plan = str(snapshot.get("plan_type") or "")
         plan_changed = bool(plan) and plan != account.plan_type
-        if usage_unchanged and not plan_changed:
-            return
         fields: dict[str, Any] = {}
         if not usage_unchanged:
+            self._mark_window(account.uid, snapshot, previous)
             fields["rate_limit"] = snapshot
         if plan_changed:
             fields["plan_type"] = plan
+        if not fields:
+            return
         self._store.update_runtime(account.uid, **fields)
+
+    def _mark_window(self, uid: str, snapshot: dict[str, Any], previous: dict[str, Any]) -> None:
+        """换了窗口就在快照里重立容量估算的基线（累积 token + 当时的百分比）。
+
+        上游只给整数百分比，绝对容量只能靠"本地服务的 token ÷ 同期百分比变化"反推
+        （见 quota.py），所以基线必须是**窗口内**最早观测到的那个点。窗口的判定看
+        reset_at_ms：每个窗口的重置时刻都不同，它变了就是进了新窗口（百分比被清零，
+        旧基线直接失效）。基线记的是**累积** token 数，与估算函数读同一口径做差，
+        所以不需要知道窗口起点精确在哪。
+        """
+        primary = snapshot.get("primary")
+        if not isinstance(primary, dict):
+            return
+        reset_at = primary.get("reset_at_ms")
+        old = previous.get("window")
+        if isinstance(old, dict) and old.get("reset_at_ms") == reset_at:
+            return
+        snapshot["window"] = {
+            "reset_at_ms": reset_at,
+            "used_percent": primary.get("used_percent"),
+            "tokens": quota.sent_tokens(self._account_totals().get(uid)),
+            "at_ms": int(time.time() * 1000),
+        }
+
+    @staticmethod
+    def _account_totals() -> dict[str, dict[str, Any]]:
+        """requests 库的账号维度聚合（容量估算的 token 来源）。
+
+        放 provider 里取是为了让前端与估算读同一份数据：codex 的 requests 表由
+        gateway 的 ProviderStore 持有（db.store("codex")），与账号库是两个连接。
+        """
+        from db import store as db_store
+
+        try:
+            return db_store("codex").account_totals()
+        except KeyError:  # 库还没初始化（离线测试/工具脚本）
+            return {}
 
     def _penalize(self, account: Account, classified: classify.Classified, text: str) -> None:
         now_ms = int(time.time() * 1000)
@@ -675,6 +714,9 @@ class CodexProvider:
             if not snapshot:
                 failed += 1
                 continue
+            # 主动查询是唯一能"提前"建立容量估算基线的时机：响应头回填只在账号真跑过
+            # 请求后才有数据，而基线必须立在窗口内尽可能早的位置，越早越准。
+            self._mark_window(account.uid, snapshot, account.rate_limit or {})
             fields: dict[str, Any] = {"rate_limit": snapshot}
             plan = str(snapshot.get("plan_type") or "")
             if plan and plan != account.plan_type:
@@ -686,7 +728,20 @@ class CodexProvider:
     # ── 运维面（管理端点用）──
 
     def account_summaries(self) -> list[dict[str, Any]]:
-        return [a.public_dict() for a in self._store.list_accounts()]
+        """账号行 + 额度容量估算。
+
+        估算按需算（纯函数、无副作用）：容量的输入是"窗口基线的累积 token"与"当前
+        累积 token"（见 quota.py），两者都从 requests 库现取——比把推算结果写回
+        快照更省心，也不会出现"存下来的估算与实际用量脱节"。整表聚合一次，别在循环
+        里逐账号查库。
+        """
+        totals = self._account_totals()
+        summaries = []
+        for account in self._store.list_accounts():
+            item = account.public_dict()
+            item["quota_estimate"] = quota.estimate(account.rate_limit, totals.get(account.uid))
+            summaries.append(item)
+        return summaries
 
     def export_accounts(self, fmt: str) -> Any:
         """导出账号（cpa / codex2api 形状，见 providers/codex/transfer.py）。"""

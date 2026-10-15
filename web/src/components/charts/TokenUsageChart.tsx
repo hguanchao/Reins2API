@@ -448,11 +448,11 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
       <div className="gw-chart-legend shrink-0">
         <span className="gw-legend-item">
           <span className="gw-legend-swatch" style={{ background: C_INPUT }} aria-hidden />
-          输入 token
+          输入 Token
         </span>
         <span className="gw-legend-item">
           <span className="gw-legend-swatch" style={{ background: C_OUTPUT }} aria-hidden />
-          输出 token
+          输出 Token
         </span>
         <span className="gw-legend-item">
           <span className="gw-legend-line" style={{ background: C_REQ }} aria-hidden />

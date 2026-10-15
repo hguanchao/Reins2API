@@ -92,11 +92,14 @@ def parse_rate_limits(headers: dict[str, str]) -> dict[str, Any] | None:
     lowered = {str(k).lower(): v for k, v in headers.items()}
     now_ms = int(time.time() * 1000)
     out: dict[str, Any] = {}
+    # reset-at 是上游自己给的绝对时刻（epoch 秒），比 reset-after-seconds 少一层本地
+    # 时钟漂移，所以两个都给时优先它。它是判断"是否换了窗口"的唯一依据（见 quota.py）。
     for name, prefix in _RATE_LIMIT_WINDOWS:
         used = _float(lowered.get(prefix + "used-percent"))
         window = _float(lowered.get(prefix + "window-minutes"))
         reset = _float(lowered.get(prefix + "reset-after-seconds"))
-        if used is None and window is None and reset is None:
+        reset_at = _float(lowered.get(prefix + "reset-at"))
+        if used is None and window is None and reset is None and reset_at is None:
             continue
         # 窗口长度就是窗口的定义。上游在没有第二窗口时会发一组全 0 的 secondary 头
         # （used-percent/window-minutes 都是 0），那是占位而不是真窗口；收下它会让
@@ -108,7 +111,9 @@ def parse_rate_limits(headers: dict[str, str]) -> dict[str, Any] | None:
             "window_minutes": window,
             "reset_after_seconds": reset,
         }
-        if reset is not None:
+        if reset_at is not None:
+            entry["reset_at_ms"] = int(reset_at * 1000)
+        elif reset is not None:
             entry["reset_at_ms"] = now_ms + int(reset * 1000)
         out[name] = entry
     if not out:
@@ -116,6 +121,16 @@ def parse_rate_limits(headers: dict[str, str]) -> dict[str, Any] | None:
     plan = str(lowered.get("x-codex-plan-type") or "").strip()
     if plan:
         out["plan_type"] = plan
+    # 当前生效的限制档位（free 档实测为 premium）。额度模型一旦分档，这个字段决定了
+    # 百分比背后到底是哪一套上限，值得跟着快照存下来。
+    active = str(lowered.get("x-codex-active-limit") or "").strip()
+    if active:
+        out["active_limit"] = active
+    # 主窗口额度里被第二窗口吃掉的比例（实测 free 档恒 0）。"主窗口已用尽"与
+    # "主窗口被第二窗口挤掉"是两种不同的耗尽原因，分开存以后才解释得清。
+    over = _float(lowered.get("x-codex-primary-over-secondary-limit-percent"))
+    if over is not None and over > 0:
+        out["over_secondary_percent"] = over
     out["at_ms"] = now_ms
     return out
 

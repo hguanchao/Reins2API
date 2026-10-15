@@ -18,12 +18,17 @@ from providers.common import BEIJING_TZ, refresh_result, stamp
 from providers.identity import derive_request_ids
 from providers.opencode.discovery import discover
 from providers.opencode.routing import ModelIndex, ModelRecord, Router
-from providers.opencode.upstream import UPSTREAM, send_upstream, shape_free_request_body
+from providers.opencode.upstream import (
+    INFERENCE_BASE,
+    ZEN_BASE,
+    send_upstream,
+    shape_free_request_body,
+)
 
 
 class OpenCodeProvider:
     name = "opencode"
-    upstream_url = UPSTREAM
+    upstream_url = INFERENCE_BASE
 
     def __init__(self) -> None:
         self._index = ModelIndex()
@@ -50,7 +55,7 @@ class OpenCodeProvider:
             # 界面看到的、/v1/models 声明的都是前者，两套数字混用会出现
             # "新增 112、共 10 个"这种自相矛盾的提示。
             previous = {entry["id"] for entry in self._router.list()}
-        records, available, errors, snapshot_models = discover(UPSTREAM, PUBLIC_KEY)
+        records, available, errors, snapshot_models = discover(ZEN_BASE, PUBLIC_KEY)
         # 一条记录都没拿到 = 能力目录整源失败（文档大、超时或形状变了），不是"上游
         # 删光了模型"：不覆盖旧索引，且不当成刷新成功——否则日志会写"刷新完成
         # protocols=0"掩盖真故障，界面也拿不到失败回报。
@@ -101,7 +106,9 @@ class OpenCodeProvider:
             + f" {' '.join(detail) or '无变化'}"
         )
         return refresh_result(
-            added=len(added), removed=len(removed), failed=len(errors),
+            added=len(added),
+            removed=len(removed),
+            failed=len(errors),
             error="; ".join(errors),
         )
 
@@ -151,7 +158,7 @@ class OpenCodeProvider:
     def status(self) -> dict[str, Any]:
         with self._lock:
             return {
-                "upstream": UPSTREAM,
+                "upstream": INFERENCE_BASE,
                 "refreshed_at": self._refreshed_at,
                 "cached_at": stamp(self._cached_at_ms),
                 "models": len(self._router.list()),

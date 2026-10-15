@@ -374,7 +374,7 @@ export function WorkBuddyPage() {
       await workBuddyAccountAction(account.uid, action);
       const labels: Record<string, string> = {
         pause: "已暂停", resume: "已恢复", disable: "已禁用",
-        revive: "已复活（清除冷却/熔断）", refresh: "token 与积分已刷新",
+        revive: "已复活（清除冷却/熔断）", refresh: "Token 与积分已刷新",
       };
       toast.success(labels[action] ?? "操作成功");
       await load(true);
@@ -513,7 +513,7 @@ export function WorkBuddyPage() {
         <div className="metric">
           <div className="metric-k">
             <Activity className="metric-ico" strokeWidth={1.6} />
-            24h tokens
+            24h Tokens
           </div>
           <div className="metric-v">{fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}</div>
           <div className="metric-sub usage-metric-sub">
@@ -548,16 +548,19 @@ export function WorkBuddyPage() {
               号池还小时不会出现滚动条，涨到几十个号时才不至于把页面拉得过长。 */}
           <div className="gw-table-card">
             <div className="gw-table-scroll">
-              <Table>
+              {/* 列宽在 accounts.css 的 .wb-acct-table 里显式分配（table-layout: fixed），
+                  与 Codex 账号表同一套做法：列宽不再由"最长的那条内容"决定——uid 那行与
+                  历史用量的 2×2 四格会各自把列撑到跟自己一样宽，横向比例就散了 */}
+              <Table className="wb-acct-table">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>账号</TableHead>
-                    <TableHead>可用性</TableHead>
-                    <TableHead>积分</TableHead>
-                    <TableHead>签到</TableHead>
-                    <TableHead>最近请求</TableHead>
+                    <TableHead className="col-acct">账号</TableHead>
+                    <TableHead className="col-avail">可用性</TableHead>
+                    <TableHead className="col-credits">积分</TableHead>
+                    <TableHead className="col-checkin">签到</TableHead>
+                    <TableHead className="col-recent">最近请求</TableHead>
                     {/* 与 Codex 账号表同一列名（那一列还多带成功率/失败，这边只有 tokens） */}
-                    <TableHead>历史用量</TableHead>
+                    <TableHead className="col-usage">历史用量</TableHead>
                     <TableHead className="table-col-actions">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -681,7 +684,7 @@ export function WorkBuddyPage() {
                                 label="复活（清除冷却/熔断）" icon={<RotateCcw className="size-3.5" strokeWidth={1.9} />}
                                 disabled={busy} onClick={() => runAccountAction(account, "revive")} />
                               <ActionButton
-                                label="刷新 token" icon={<RefreshCw className="size-3.5" strokeWidth={1.9} />}
+                                label="刷新 Token" icon={<RefreshCw className="size-3.5" strokeWidth={1.9} />}
                                 disabled={busy || !account.has_refresh_token}
                                 onClick={() => runAccountAction(account, "refresh")} />
                               <ActionButton

@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.settings import CODEX_CLIENT_ID, CODEX_REDIRECT_URI
 from gateway.base import RequestIDs
 from providers.codex import classify, oauth, shape
+from providers.codex import upstream as cx_upstream
 from providers.codex.pool import Pool
 from providers.codex.provider import CodexProvider, _Catalog
 from providers.codex.store import Account, CodexStore
@@ -590,6 +591,62 @@ def test_usage_only_fields_survive_header_backfill():
             assert got["reset_credits"] == 2
         finally:
             store.close()
+
+
+def test_mark_window_rebaselines_only_on_new_window():
+    """窗口基线是容量估算的分母来源（见 providers/codex/quota.py）。
+
+    判定看 reset_at_ms：每个窗口的重置时刻都不同，它变了就是进了新窗口，必须重立基线
+    （旧的百分比已被清零，拿旧基线算出来的跨度是负的）。同一窗口内重复观测不许覆盖，
+    否则"窗口内最早那个观测点"这个前提就没了，估算会随流量漂移。
+    """
+    reset_a = 1_794_305_321_000
+    reset_b = reset_a + 30 * 86_400_000
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            provider = CodexProvider(store=store)
+            first = {"primary": {"used_percent": 12.0, "window_minutes": 43200, "reset_at_ms": reset_a}}
+            provider._mark_window("acc-1", first, {})
+            assert first["window"]["used_percent"] == 12.0
+            assert first["window"]["reset_at_ms"] == reset_a
+
+            again = {"primary": {"used_percent": 40.0, "window_minutes": 43200, "reset_at_ms": reset_a}}
+            provider._mark_window("acc-1", again, first)
+            assert "window" not in again, "同一窗口内不该重立基线"
+
+            rolled = {"primary": {"used_percent": 3.0, "window_minutes": 43200, "reset_at_ms": reset_b}}
+            provider._mark_window("acc-1", rolled, first)
+            assert rolled["window"]["reset_at_ms"] == reset_b
+            assert rolled["window"]["used_percent"] == 3.0
+        finally:
+            store.close()
+
+
+def test_parse_rate_limits_keeps_active_limit_and_over_secondary():
+    snapshot = cx_upstream.parse_rate_limits(
+        {
+            "x-codex-primary-used-percent": "44",
+            "x-codex-primary-window-minutes": "43200",
+            "x-codex-primary-reset-at": "1794305321",
+            "x-codex-active-limit": "premium",
+            "x-codex-primary-over-secondary-limit-percent": "7",
+        }
+    )
+    assert snapshot is not None
+    assert snapshot["active_limit"] == "premium"
+    assert snapshot["over_secondary_percent"] == 7.0
+    # reset-at 优先于 reset-after-seconds：绝对时刻少一层本地时钟漂移
+    assert snapshot["primary"]["reset_at_ms"] == 1794305321000
+    # free 档恒 0 的占位不落库，免得界面上多一个恒零字段
+    zero = cx_upstream.parse_rate_limits(
+        {
+            "x-codex-primary-used-percent": "10",
+            "x-codex-primary-window-minutes": "43200",
+            "x-codex-primary-over-secondary-limit-percent": "0",
+        }
+    )
+    assert zero is not None and "over_secondary_percent" not in zero
 
 
 def test_store_rate_limit_roundtrip():

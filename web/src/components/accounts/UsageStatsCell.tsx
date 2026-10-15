@@ -66,7 +66,7 @@ export function UsageStatsCell({ total }: { total?: AccountUsageStats }) {
         <div className="acct-legend">
           <LegendCell label="请求" value={fmtInt(requests)} />
           <LegendCell label="Tokens" value={fmtInt(tokens)} />
-          <LegendCell label="缓存 tokens" value={fmtInt(cached)} />
+          <LegendCell label="缓存 Tokens" value={fmtInt(cached)} />
           <LegendCell label="成功率" value={rateText} />
         </div>
       </TooltipContent>
