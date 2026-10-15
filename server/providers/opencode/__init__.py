@@ -1,7 +1,8 @@
 """OpenCode Zen 上游接入（唯一启用的 provider）。
 
 组装路由/发现/上游/身份各模块，实现 gateway.base.Provider 契约。
-凭证体系已按项目决策砍掉：单一 public 凭证、单次尝试、恒匿名档。
+凭证体系已按项目决策砍掉：单一 public 凭证、恒匿名档；发送只在"响应头之前"的传输
+失败上重试一次（见 upstream.send_upstream），其余错误一律交推理层透传。
 """
 
 from __future__ import annotations

@@ -4,21 +4,32 @@
   （anthropic 走 x-api-key）。上游对每个档位都做客户端指纹校验（2026-10-14 起），
   头集合的每一处都是实测出来的必要条件，见 build_upstream_headers。
 - shaping：agent 会话形态塑形——上游把非 agent 会话形态的请求以 403 FreeTierError
-  拒掉，所以缺流式/缺核心工具/核心工具定义不是官方的请求在这里补齐；客户端要 JSON
-  仍由网关折叠流回。
-- send：单凭证（public）单次尝试——无换 key 轮换，上游错误直接返回给推理层透传。
+  拒掉，所以缺流式/缺核心工具/核心工具定义不是官方的请求在这里补齐；同时按官方
+  客户端的协议约定归一字段（chat 的 max tokens 字段名、responses 的路由默认值），
+  客户端要 JSON 仍由网关折叠流回。
+- send：单凭证（public）发送；"响应头之前"的传输失败重试一次，其余错误直接返回给
+  推理层透传——无换 key 轮换。responses 协议的会话级 prompt_cache_key 也在这里补
+  （shape 阶段还不知道会话，见 _with_session_cache_key）。
 """
 
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from curl_cffi import requests as crequests
 
+from core.logger import logger
+from core.settings import (
+    OPENCODE_TIMEOUT_CONNECT,
+    OPENCODE_TIMEOUT_IDLE,
+    OPENCODE_TRANSPORT_ATTEMPTS,
+    OPENCODE_TRANSPORT_BACKOFF_S,
+)
 from gateway.base import RequestIDs, UpstreamResponse
 from gateway.jsonutil import is_object
-from gateway.types import PROTOCOL_ANTHROPIC, PROTOCOL_CHAT, protocol_path
+from gateway.types import PROTOCOL_ANTHROPIC, PROTOCOL_CHAT, PROTOCOL_RESPONSES, protocol_path
 from net.proxy import proxies_for
 from providers import parts, profiles
 from providers.identity import opencode_project_id
@@ -29,16 +40,18 @@ ZEN_BASE = "https://opencode.ai/zen"
 # /zen。发现与模型清单仍在 ZEN_BASE 上（两端点清单一致，实测 85 个模型）。
 INFERENCE_BASE = "https://opencode.ai/inference"
 PUBLIC_KEY = "public"
-# 推理流不设本地超时（含连接/空闲）：上限由上游决定，项目侧不掐长生成。
+# 本地超时只做兜底：静默容忍 ≈ OPENCODE_TIMEOUT_CONNECT + OPENCODE_TIMEOUT_IDLE
+# （换算与实测见 settings.py 该节），长生成由上游决定，不设总时长上限。
 # 声称的版本号本身上游不校验，但 UA 里不带 "opencode/<…>" 会 403——旧形态
 # "opencode/1.18.31 <runtime 描述>" 与官方现形态不同，这里对齐官方。
 USER_AGENT = "opencode/latest/2.0.29/cli"
 
 
 def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str, str]:
-    """按官方 OpenCode 客户端实际发出的头集合构造（对照其 session/llm/request.ts，
-    并在 2026-10-15 对线上端点逐项验证过必要性）。会话身份头的粒度见 identity.py：
-    session 每会话一个；request 只留在本地（响应头与日志），不再出网。
+    """按官方 OpenCode 客户端实际发出的头集合构造（对照 opencode 2.0.29 的
+    core/src/session/model-request.ts:281-292，并在 2026-10-15 对线上端点逐项验证
+    过必要性）。会话身份头的粒度见 identity.py：session 每会话一个；request 只留在
+    本地（响应头与日志），不再出网。
 
     实测的硬性要求，少一处就是 403 FreeTierError：
       * 不能带 x-opencode-request —— 网关自己的关联头，上游明确拒收；
@@ -47,6 +60,10 @@ def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str
       * x-opencode-project 只认形态不认取值，但 `prj_` 前缀会 403，所以用裸 40 位
         小写 hex；
       * UA 里必须带 "opencode/<…>"，空 UA 与浏览器默认 UA 都拒。
+
+    带父会话时官方同时发 x-opencode-parent-session-id 与 x-parent-session-id 两个
+    名字（reference 的 session-runner.test.ts「uses parent cache affinity」），这里
+    跟随官方形态；不带父会话时二者都不出现。
     """
     headers: dict[str, str] = {
         "content-type": "application/json",
@@ -62,13 +79,16 @@ def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str
         "x-opencode-project": opencode_project_id(ids.project),
     }
     if ids.parent_session != "":
+        headers["x-opencode-parent-session-id"] = ids.parent_session
         headers["x-parent-session-id"] = ids.parent_session
     if protocol == PROTOCOL_ANTHROPIC:
         headers["x-api-key"] = key
         headers["anthropic-version"] = "2023-06-01"
-        headers["anthropic-beta"] = (
-            "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
-        )
+        # 官方 anthropic 传输层恒请求 interleaved thinking，其余 beta 按请求内容
+        # 条件追加（compaction / thinking block binding，见官方
+        # anthropic-messages.ts 的 requiredBetaHeaders）。网关不构造那两类请求，
+        # 所以恒为这一项——多带的 beta 官方客户端从不发，属于无谓的形态偏差。
+        headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
     else:
         headers["authorization"] = f"Bearer {key}"
     return headers
@@ -83,6 +103,10 @@ def shape_free_request_body(body: dict[str, Any], protocol: str) -> tuple[dict[s
         changed = True
     if _ensure_usage(shaped, protocol):
         changed = True
+    if protocol == PROTOCOL_CHAT and _rename_max_tokens(shaped):
+        changed = True
+    if protocol == PROTOCOL_RESPONSES and _ensure_responses_defaults(shaped):
+        changed = True
     if protocol == PROTOCOL_CHAT and parts.normalize_chat_message_parts(
         shaped, accepted_parts=profiles.OPENCODE.accepted_parts
     ):
@@ -91,6 +115,45 @@ def shape_free_request_body(body: dict[str, Any], protocol: str) -> tuple[dict[s
     if _ensure_tools(shaped, protocol):
         changed = True
     return shaped, changed
+
+
+def _rename_max_tokens(payload: dict[str, Any]) -> bool:
+    """chat 的 max tokens 字段名对齐官方客户端：`max_completion_tokens`。
+
+    Zen 的 chat 路线在官方客户端里走 openai-compatible，其 detectMaxTokensField 对
+    provider == "opencode" 返回 max_completion_tokens（openai-chat.ts:683-715 的
+    例外表里没有 opencode），即官方客户端从不发 max_tokens。两种字段名上游都认且
+    语义一致（2026-10-15 实测：limit=16 时两者都把输出截到 16、finish=length），
+    这里纯做形态对齐，防上游将来像工具定义那样收紧字段集。
+    """
+    if "max_tokens" not in payload:
+        return False
+    value = payload.pop("max_tokens")
+    payload.setdefault("max_completion_tokens", value)
+    return True
+
+
+def _ensure_responses_defaults(payload: dict[str, Any]) -> bool:
+    """responses 的路由默认值：store=false、include 只回 encrypted reasoning。
+
+    官方 openai-responses 与 openai-compatible-responses 两条 route 的 defaults
+    都是 {store: false, include: ["reasoning.encrypted_content"]}
+    （openai-responses.ts:330、openai-compatible-responses.ts:20），即官方客户端的
+    responses 请求恒带这两个字段：响应不落上游存储、reasoning 以加密块回放。
+    store=false + encrypted reasoning 是一对——不存服务端，多轮 reasoning 就靠
+    encrypted_content 在客户端侧续命（桥已经原样透传它）。客户端显式给值时不动：
+    官方那边同样是显式配置覆盖路由默认。带 previous_response_id 的请求也不动
+    store：那是客户端在走有状态续接，强塞 false 会把续接打断——官方客户端从不用
+    这个字段（它每轮带全量历史），不该拿官方形态去覆盖别人的合法用法。
+    """
+    changed = False
+    if "previous_response_id" not in payload and "store" not in payload:
+        payload["store"] = False
+        changed = True
+    if "include" not in payload:
+        payload["include"] = ["reasoning.encrypted_content"]
+        changed = True
+    return changed
 
 
 def _ensure_usage(payload: dict[str, Any], protocol: str) -> bool:
@@ -138,18 +201,27 @@ def _ensure_tools(payload: dict[str, Any], protocol: str) -> bool:
 
 
 def _needs_genuine_definition(protocol: str, name: str, item: Any) -> bool:
-    """客户端声明的定义是否与官方定义不同（描述与 schema 逐字段比）。"""
+    """客户端声明的定义是否与官方定义不同（描述与 schema 逐字段比）。
+
+    schema 字段名按协议分叉：chat 在 function.parameters 下，anthropic 在
+    input_schema，responses 与 chat 一样用顶层 parameters（官方 open-responses.ts
+    的 Tool 结构）。读错字段名会让每个请求都被判成"需重写"——定义换来换去都是
+    同一份官方定义，功能无害，但幂等性与 shaped 遥测全废。
+    """
     genuine = tools.render_tool(protocol, name)
     if protocol == PROTOCOL_CHAT:
         declared = item.get("function")
         target = genuine["function"]
+        schema_key = "parameters"
     else:
-        declared, target = item, genuine
+        declared = item
+        target = genuine
+        schema_key = "input_schema" if protocol == PROTOCOL_ANTHROPIC else "parameters"
     if not is_object(declared):
         return True
     return str(declared.get("description") or "") != target["description"] or _json_shape(
-        declared.get("parameters") if protocol == PROTOCOL_CHAT else declared.get("input_schema")
-    ) != _json_shape(target.get("parameters") or target.get("input_schema"))
+        declared.get(schema_key)
+    ) != _json_shape(target.get(schema_key))
 
 
 def _json_shape(value: Any) -> str:
@@ -169,6 +241,54 @@ def _tool_name(protocol: str, item: Any) -> str:
     return str(item.get("name") or "")
 
 
+# 可重发的传输失败码——判据还要合上"响应头没到"（见下），单看错误码不够。
+#   6  CURLE_COULDNT_RESOLVE_HOST / 7 CURLE_COULDNT_CONNECT
+#   28 CURLE_OPERATION_TIMEDOUT / 35 CURLE_SSL_CONNECT_ERROR
+#   52 CURLE_GOT_NOTHING / 56 CURLE_RECV_ERROR / 92 CURLE_HTTP2_STREAM
+_TRANSPORT_CODES = frozenset({6, 7, 28, 35, 52, 56, 92})
+
+
+def _is_retryable_transport(exc: Exception) -> bool:
+    """传输失败是否发生在响应头之前（重发安全的判据）。
+
+    证据是异常自带的部分响应：curl_cffi 无论成败都会把已解析的响应挂在
+    `exc.response` 上，**status_code == 0 就表示一个字节的响应头都没解析出来**——
+    请求要么没送出去（握手被掐），要么上游还没开始回。此时重发安全。
+    响应头一旦到过（status_code 有了），哪怕流还没吐第一个 chunk，也不重发：上游
+    多半已经开始处理，重发等于让它二次执行。实测对照：连接被掐 = 56 + status 0；
+    头先到再被掐 = 56 + status 200；体读到一半断 = 18 + status 200。
+    """
+    if getattr(exc, "code", None) not in _TRANSPORT_CODES:
+        return False
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) == 0
+
+
+def _with_session_cache_key(protocol: str, body: bytes, session: str) -> bytes:
+    """responses 协议补会话级 prompt_cache_key（shape 阶段拿不到会话，放在发送前）。
+
+    官方客户端把 prompt_cache_key 当请求的一部分签发：值 = 会话亲和
+    （session/model-request.ts:295，亲和 = 父会话 ?? 分叉源 ?? 本会话），且
+    responses 路线的 body 构建没有能力开关、恒发（open-responses.ts:798）；chat
+    路线则因 Zen 没有 supportsPromptCacheKey 能力位而从不发——所以只在 responses
+    上补。实测影响（2026-10-15，muse-spark-1.2-contributor-free，同前缀两连发）：
+    带会话键时 prompt 缓存命中 1777 tokens，不带时只有 113。
+    客户端自带键时不动它——与出站 session 头不同值也无妨，按会话隔离本来就是它
+    的语义。
+    """
+    if protocol != PROTOCOL_RESPONSES:
+        return body
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return body
+    if not isinstance(payload, dict) or payload.get("prompt_cache_key"):
+        return body
+    payload["prompt_cache_key"] = session
+    # 入参已经过一次出站序列化（孤立代理项已清理），这次重编码不会引入新问题。
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
 def send_upstream(
     protocol: str,
     body: bytes,
@@ -176,19 +296,45 @@ def send_upstream(
     *,
     stream: bool,
 ) -> UpstreamResponse:
-    """单凭证单次尝试。非 2xx 不在这里处理——推理层负责透传；网络异常抛
-    curl_cffi 的 RequestsError。"""
+    """单凭证发送；响应头之前的传输失败重试一次。非 2xx 不在这里处理——推理层负责
+    透传；重试预算也用尽后原样抛 curl_cffi 的 RequestsError。
+
+    重试的必要性来自出口线路：同一台代理打 opencode.ai，新连接会间歇性在握手期被
+    掐断（curl 35，实测 8 次里 3 次，另有 0/12、1/8 的两轮），单凭证没有换号可换，
+    不重试就是客户端可见的 502（今天 24 条请求里 3 条倒在这上面）。重发最多多耗一次
+    上游额度，不会造成客户端可见的重复副作用（推理请求无写侧效应）；流一旦开始就
+    不在此列——那时错误由推理层按协议报给客户端。
+    """
     url = f"{INFERENCE_BASE.rstrip('/')}{protocol_path(protocol)}"
-    response = crequests.post(
-        url,
-        headers=build_upstream_headers(protocol, PUBLIC_KEY, ids),
-        data=body,
-        stream=stream,
-        proxies=proxies_for(url),
-        impersonate="chrome",
-    )
-    return UpstreamResponse(
-        status=int(response.status_code),
-        headers=dict(response.headers),
-        raw=response,
-    )
+    headers = build_upstream_headers(protocol, PUBLIC_KEY, ids)
+    body = _with_session_cache_key(protocol, body, ids.session)
+    # 代理决策查一次就够：两次尝试相隔不到 1s，注册表/环境变量不会变（TTL 30s）。
+    proxies = proxies_for(url)
+    for attempt in range(1, OPENCODE_TRANSPORT_ATTEMPTS + 1):
+        try:
+            response = crequests.post(
+                url,
+                headers=headers,
+                data=body,
+                stream=stream,
+                # 不传 = curl_cffi 自带默认 30/30（连接 30s + 静默 30s 掐流），
+                # 会把免费档的正常长首字/推理静默当成故障。
+                timeout=(float(OPENCODE_TIMEOUT_CONNECT), float(OPENCODE_TIMEOUT_IDLE)),
+                proxies=proxies,
+                impersonate="chrome",
+            )
+        except crequests.RequestsError as exc:
+            if attempt >= OPENCODE_TRANSPORT_ATTEMPTS or not _is_retryable_transport(exc):
+                raise
+            logger.warning(
+                f"[opencode] 响应头之前的传输失败，立即重试"
+                f"（{attempt}/{OPENCODE_TRANSPORT_ATTEMPTS - 1}）: {exc}"
+            )
+            time.sleep(OPENCODE_TRANSPORT_BACKOFF_S)
+            continue
+        return UpstreamResponse(
+            status=int(response.status_code),
+            headers=dict(response.headers),
+            raw=response,
+        )
+    raise AssertionError("unreachable: 发送循环必然 return 或 raise")

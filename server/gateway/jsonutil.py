@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 from typing import Any
 
@@ -125,3 +126,48 @@ def first_non_empty(*values: str | None) -> str:
         if value:
             return value
     return ""
+
+
+# ── 出站序列化 ──────────────────────────────────────────────────
+
+
+def well_formed(text: str) -> str:
+    """孤立代理项 → U+FFFD（与 JS String.prototype.toWellFormed 同义）。
+
+    客户端能用 `\\ud800` 这类 JSON 转义把孤立代理项送进来：json.loads 照单全收，
+    但 `json.dumps(..., ensure_ascii=False).encode("utf-8")` 会直接抛
+    UnicodeEncodeError——出站序列化的唯一崩溃点。官方 OpenCode 客户端在编译请求时
+    统一做 toWellFormed，这里对齐同一语义：成对代理项合并成真实字符，孤立项换
+    U+FFFD。正常字符串走 encode 快路径原样返回。
+    """
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+
+
+def sanitize_surrogates(value: Any) -> Any:
+    """递归清理 dict / list / str 里的孤立代理项（键也清），返回新结构。"""
+    if isinstance(value, str):
+        return well_formed(value)
+    if isinstance(value, list):
+        return [sanitize_surrogates(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            well_formed(key) if isinstance(key, str) else key: sanitize_surrogates(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def encode_json_body(value: Any) -> bytes:
+    """出站请求体序列化：UTF-8、非 ASCII 原样。
+
+    先按正常路径序列化（绝大多数请求一次成功，不做全量递归清理）；只有编码器真的
+    撞上孤立代理项时才做一遍 toWellFormed 再重试。
+    """
+    try:
+        return json.dumps(value, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(sanitize_surrogates(value), ensure_ascii=False).encode("utf-8")

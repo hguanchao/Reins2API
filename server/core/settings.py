@@ -26,6 +26,20 @@ LOG_DIR = BASE_DIR / "logs"                    # 日志（按日滚动，保留 
 DATA_DIR = BASE_DIR / "data"                   # 分库遥测：data/<provider>.db
 WEB_DIST_DIR = PROJECT_DIR / "web" / "dist"    # 前端构建产物（Vite 默认输出，SPA 托管）
 
+# ── OpenCode provider（单一 public 匿名凭证；免费档恒流式 + agent 工具集）──
+# 超时（秒）。curl_cffi 打流式请求时把 tuple 翻译成 CONNECTTIMEOUT=connect 与
+# LOW_SPEED（<1 B/s）上限 = connect+idle：静默到这个量级即掐流，不设总时长上限
+# （实测掐流点比其和还略晚，1.2~1.7 倍，所以这里是下限而非精确值）。
+# 这两个值**必须显式传**——不传时 curl_cffi 用它自带的默认 30/30，等于给免费档的
+# 长首字（实测 26k→48k 上下文的首字 2.4s~33.5s）和推理期静默设了条 30s 死线。
+OPENCODE_TIMEOUT_CONNECT = 15
+OPENCODE_TIMEOUT_IDLE = 300
+
+# 发送重试：单凭证没有换 key 这一路，但"响应头之前"的传输失败（出口线路会间歇性
+# 掐 TLS 握手，实测约 3/8 的新连接）重发是安全的——请求多半根本没送到上游。
+OPENCODE_TRANSPORT_ATTEMPTS = 2        # 发送次数上限（= 1 次重试）
+OPENCODE_TRANSPORT_BACKOFF_S = 0.4     # 重试前等待
+
 # ── WorkBuddy provider（写死参数，取舍依据见 docs/workbuddy-provider-design.md §9.2）──
 WB_ENABLED = True
 WB_UPSTREAM_BASE = "https://copilot.tencent.com"   # chat/refresh/models 域（CN）

@@ -19,7 +19,8 @@ x-opencode-request 每条用户消息（即每个请求）一个。**但 x-openc
 
 2026-10-14 起上游按**编码**校验 session：只有官方 descending() 编出来的形态放行，
 形态对但编码不是官方的会被 403 FreeTierError。所以非官方的 session 统一走
-canonical_session_id 重编码——确定性哈希，同一信号恒得同一个值。
+canonical_session_id 重编码——确定性哈希，同一信号恒得同一个值。父会话与 session
+同规则（都是 ses_ 形态、都过同一条校验），所以走同一个闸门（_parent_session_for）。
 """
 
 from __future__ import annotations
@@ -217,8 +218,25 @@ def derive_request_ids(headers: dict[str, str], body: dict) -> RequestIDs:
         session=session,
         request=f"msg_{_gen_suffix(False)}",
         project=opencode_project_id("global"),
-        parent_session=first_string(
-            header_value(headers, "x-parent-session-id"),
-            string_at(body, "metadata", "parent_session_id"),
+        parent_session=_parent_session_for(
+            first_string(
+                # 官方客户端带父会话时两个头都发（model-request.ts:283-290），
+                # 先到先得，任一个都是同一取值。
+                header_value(headers, "x-opencode-parent-session-id"),
+                header_value(headers, "x-parent-session-id"),
+                string_at(body, "metadata", "parent_session_id"),
+            )
         ),
     )
+
+
+def _parent_session_for(signal: str) -> str:
+    """父会话信号 -> 官方形态 ses_：官方编码原样透传，其余重编码。
+
+    父会话与 session 走同一条上游编码校验——客户端给的私有形态直接转发会被 403；
+    重编码保持确定性（哈希），同一父信号恒得同一个值，子会话的 prompt cache 亲和
+    不会因为客户端换一次形态就断掉。
+    """
+    if signal == "":
+        return ""
+    return signal if is_official_session(signal) else canonical_session_id(signal)

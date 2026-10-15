@@ -34,7 +34,7 @@ from gateway.base import (
 )
 from gateway.bridge import convert_response, prepare_request, response_usage
 from gateway.errors import BridgeError, error_payload
-from gateway.jsonutil import string_at
+from gateway.jsonutil import encode_json_body, string_at
 from gateway.stream import (
     StreamSink,
     client_canceled,
@@ -232,7 +232,9 @@ def _serve_inner(
         result = provider.send(
             route,
             route.protocol,
-            json.dumps(upstream_body, ensure_ascii=False).encode("utf-8"),
+            # 出站唯一序列化点：孤立代理项在这里统一 toWellFormed，不能让
+            # .encode("utf-8") 把客户端送来的畸形串崩成 500（见 jsonutil）。
+            encode_json_body(upstream_body),
             ids,
             stream=client_stream,
         )

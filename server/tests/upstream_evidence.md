@@ -48,6 +48,23 @@
 - 走 `responses` 协议的模型（muse-spark）走 `input_file` 送 PDF，与 chat 路线不同，
   协议例外见 `providers/capabilities.py` 的 `_deliverable`。
 
+## opencode 请求形态对照（2026-10-15，对照官方客户端 2.0.29 源码 + 线上探针）
+
+对照源：`E:\Projects\Reins\reference\opencode`（官方仓库，包版本 2.0.29）。
+探针口径：与生产同一条出站路径（`build_upstream_headers` + `shape_free_request_body`）；
+免费档必须是 agent 会话形态（缺 tools 的裸探针会被 403 FreeTierError 挡下，别误读成
+"模型不可用"）。探针出口须走代理，直连同样 403。
+
+| 探针 | 结果 |
+| --- | --- |
+| chat `max_tokens:16` / `max_completion_tokens:16`（big-pickle） | 都 200，都截到 16（finish=length、completion_tokens=16）→ 两种字段名等价；官方客户端只发 `max_completion_tokens`，网关跟随 |
+| responses 路由默认（`store:false` + `include:["reasoning.encrypted_content"]`，muse-spark-1.2-contributor-free） | 200；官方两条 responses route 的 defaults 就是这一对 |
+| responses 带 `prompt_cache_key=会话id`（同上模型，同前缀两连发） | 200；缓存命中 1777 tokens（不带只有 113）→ 会话级缓存键实测有效 |
+| anthropic 免费模型（qwen3.6-plus-free / minimax-m3-free 等） | 400 `Model is unavailable`：目录标 free 但**不在凭证可见清单**里，网关本就该路由拒绝。官方 anthropic beta 集合（恒 `interleaved-thinking-2025-05-14`，其余按 compaction / thinking binding 条件追加）只能在源码层对照，线上无从实测 |
+
+配套改动（同一批）：chat 字段名归一、responses 路由默认值、responses 会话缓存键、
+父会话双头名与编码归一、出站孤立代理项 `toWellFormed`（官方 `utils/sanitize.ts` 同义）。
+
 ## 结构化输出（跨上游的现状）
 
 | 方向 | 结果 |

@@ -1,8 +1,11 @@
-"""opencode 免费档客户端指纹回归测试（对照 opencode2api 2026-10-14 修复）。
+"""opencode 免费档客户端指纹回归测试（对照 opencode2api 2026-10-14 修复 +
+官方客户端 2.0.29 源码逐项对齐）。
 
 上游 2026-10-14 起对每个档位做客户端指纹校验，实测确认过四类 403 FreeTierError：
-旧端点、旧头形态、旧工具名、合成工具定义。这些用例锁住四件事，任何一处回退都会
-在这里变红，而不是等线上请求全被拒。
+旧端点、旧头形态、旧工具名、合成工具定义。这些用例把"像官方客户端"的每一处都
+钉在这里：头集合、session/父会话编码、chat 的 max tokens 字段名、responses 的
+路由默认值、responses 的会话缓存键。任何一处回退都会在这里变红，而不是等线上
+请求全被拒。
 
 运行：cd server && .venv/Scripts/python.exe tests/test_opencode_fingerprint.py
 """
@@ -146,27 +149,47 @@ def test_headers_keep_legacy_gate_requirements():
     # 429 遗留要求：x-opencode-session 与 -id 首值必须一致且都是 descending 编码
     assert identity.is_official_session(headers["x-opencode-session-id"])
     assert headers["authorization"] == "Bearer public"
-    # anthropic 走 x-api-key，且必须带 interleaved thinking beta
+    # anthropic 走 x-api-key，且 beta 集合与官方客户端逐字一致：
+    # 官方恒请求 interleaved thinking，其余 beta 按请求内容条件追加（网关不构造
+    # 那两类请求）；多带的 beta 官方从不发，是形态偏差。
     anthropic = upstream.build_upstream_headers(PROTOCOL_ANTHROPIC, "public", _ids())
     assert anthropic["x-api-key"] == "public" and "authorization" not in anthropic
-    assert "interleaved-thinking" in anthropic["anthropic-beta"]
+    assert anthropic["anthropic-beta"] == "interleaved-thinking-2025-05-14"
 
 
-def test_parent_session_header_only_when_present():
+def test_parent_session_headers_mirror_official_pair():
     base = _ids()
-    assert "x-parent-session-id" not in upstream.build_upstream_headers(
-        PROTOCOL_CHAT, "public", base
-    )
+    bare = upstream.build_upstream_headers(PROTOCOL_CHAT, "public", base)
+    assert "x-parent-session-id" not in bare
+    assert "x-opencode-parent-session-id" not in bare
     parent = RequestIDs(
         session=base.session,
         request=base.request,
         project=base.project,
-        parent_session="ses_parent",
+        parent_session=_OFFICIAL_SESSION,
     )
-    assert (
-        upstream.build_upstream_headers(PROTOCOL_CHAT, "public", parent)["x-parent-session-id"]
-        == "ses_parent"
+    # 官方客户端带父会话时两个头名都发（model-request.ts:283-290）
+    headers = upstream.build_upstream_headers(PROTOCOL_CHAT, "public", parent)
+    assert headers["x-parent-session-id"] == _OFFICIAL_SESSION
+    assert headers["x-opencode-parent-session-id"] == _OFFICIAL_SESSION
+
+
+def test_parent_session_is_reencoded_to_official_form():
+    # 父会话与 session 同一条上游编码校验：私有形态重编码（确定性哈希）
+    foreign = identity.derive_request_ids({"x-parent-session-id": "parent-uuid-1"}, {})
+    assert identity.is_official_session(foreign.parent_session)
+    assert foreign.parent_session == identity.canonical_session_id("parent-uuid-1")
+    # 同一父信号跨请求稳定
+    again = identity.derive_request_ids(
+        {"x-opencode-parent-session-id": "parent-uuid-1"},
+        {"messages": [{"role": "user", "content": "next turn"}]},
     )
+    assert again.parent_session == foreign.parent_session
+    # 官方形态的父会话原样透传（保住官方客户端自身的会话身份）
+    official = identity.derive_request_ids(
+        {"x-opencode-parent-session-id": _OFFICIAL_SESSION}, {}
+    )
+    assert official.parent_session == _OFFICIAL_SESSION
 
 
 # ── upstream：端点 ──
@@ -310,6 +333,93 @@ def test_shape_anthropic_uses_input_schema():
     for tool in shaped["tools"]:
         assert "input_schema" in tool and "function" not in tool
         assert tool["input_schema"] == tools.known_tools()[tool["name"]]["parameters"]
+
+
+def test_shape_renames_chat_max_tokens_to_official_field():
+    """chat 的 max tokens 字段名对齐官方客户端：只有 max_completion_tokens。"""
+    shaped, changed = upstream.shape_free_request_body(
+        {"model": "big-pickle", "max_tokens": 4096, "messages": [{"role": "user", "content": "hi"}]},
+        PROTOCOL_CHAT,
+    )
+    assert changed
+    assert "max_tokens" not in shaped
+    assert shaped["max_completion_tokens"] == 4096
+    # 已经是官方字段名的请求不动（幂等）
+    again, changed_again = upstream.shape_free_request_body(shaped, PROTOCOL_CHAT)
+    assert not changed_again and again["max_completion_tokens"] == 4096
+    # 两个名字都给时以官方字段为准，不产生重复字段
+    both, _ = upstream.shape_free_request_body(
+        {"max_tokens": 1, "max_completion_tokens": 2, "messages": []}, PROTOCOL_CHAT
+    )
+    assert both["max_completion_tokens"] == 2 and "max_tokens" not in both
+    # anthropic 的 max_tokens 本来就是官方字段，不改名
+    anthropic, _ = upstream.shape_free_request_body(
+        {"model": "m", "max_tokens": 4096, "messages": [{"role": "user", "content": "hi"}]},
+        PROTOCOL_ANTHROPIC,
+    )
+    assert anthropic["max_tokens"] == 4096 and "max_completion_tokens" not in anthropic
+
+
+def test_shape_adds_official_responses_defaults():
+    """responses 的路由默认值对齐官方：store=false + include encrypted reasoning。"""
+    payload = {
+        "model": "muse-spark-1.2-contributor-free",
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+    }
+    shaped, changed = upstream.shape_free_request_body(dict(payload), PROTOCOL_RESPONSES)
+    assert changed
+    assert shaped["store"] is False
+    assert shaped["include"] == ["reasoning.encrypted_content"]
+    # 幂等：补齐过的请求再塑形不改动
+    _again, changed_again = upstream.shape_free_request_body(shaped, PROTOCOL_RESPONSES)
+    assert not changed_again
+    # 客户端显式给值时不动（官方同样以显式配置覆盖路由默认）
+    explicit, _ = upstream.shape_free_request_body(
+        {"store": True, "include": ["other"]}, PROTOCOL_RESPONSES
+    )
+    assert explicit["store"] is True and explicit["include"] == ["other"]
+    # 有状态续接（previous_response_id）不塞 store=false——那是客户端的合法用法，
+    # 强塞会把续接打断；include 照补（它不改变存储语义）
+    stateful, _ = upstream.shape_free_request_body(
+        {"previous_response_id": "resp_1", "input": []}, PROTOCOL_RESPONSES
+    )
+    assert "store" not in stateful
+    assert stateful["include"] == ["reasoning.encrypted_content"]
+    # chat 协议不补这两个字段（官方 chat 路线对 Zen 不发 store / include）
+    chat, _ = upstream.shape_free_request_body(
+        {"messages": [{"role": "user", "content": "hi"}]}, PROTOCOL_CHAT
+    )
+    assert "store" not in chat and "include" not in chat
+
+
+def test_responses_send_injects_session_cache_key():
+    """responses 出站补会话级 prompt_cache_key；chat 不补；客户端自带键不覆盖。"""
+    captured: dict[str, bytes] = {}
+    original = upstream.crequests.post
+
+    class _Response:
+        status_code = 200
+        headers: ClassVar[dict[str, str]] = {}
+
+    def stub(url, **kwargs):
+        captured["data"] = kwargs["data"]
+        return _Response()
+
+    upstream.crequests.post = stub
+    try:
+        ids = _ids()
+        body = json.dumps({"model": "muse", "input": []}).encode()
+        upstream.send_upstream(PROTOCOL_RESPONSES, body, ids, stream=True)
+        assert json.loads(captured["data"])["prompt_cache_key"] == ids.session
+        # chat 协议不注入（官方 opencode chat 路线没有 supportsPromptCacheKey）
+        upstream.send_upstream(PROTOCOL_CHAT, body, ids, stream=True)
+        assert "prompt_cache_key" not in json.loads(captured["data"])
+        # 客户端自带的缓存键保持原样
+        own = json.dumps({"prompt_cache_key": "mine"}).encode()
+        upstream.send_upstream(PROTOCOL_RESPONSES, own, ids, stream=True)
+        assert json.loads(captured["data"])["prompt_cache_key"] == "mine"
+    finally:
+        upstream.crequests.post = original
 
 
 def test_provider_class_wires_the_fixed_modules():
