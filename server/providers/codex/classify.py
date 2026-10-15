@@ -27,6 +27,17 @@ CLIENT = "client"            # 其余 4xx（坏参数等）→ 不罚号，透�
 
 RETRYABLE = frozenset({AUTH, RATE_LIMIT, NOT_FOUND, SERVER, WAF})
 
+# 额度用尽的 429 带这条固定文案（"The usage limit has been reached"，库里历史请求与
+# /usage 的 rate_limit_reached_type 都印证过）。它比 used_percent 可靠：百分比是整数，
+# 出现"100% 但仍 allowed=True"这种自相矛盾的读数时，真正说话的是这条错误文案。
+QUOTA_MESSAGE_HINTS = ("usage limit has been reached", "usage limit reached")
+
+
+def quota_exhausted_message(body: str) -> bool:
+    """429 的错误体是否在说"额度用尽"（而不是瞬时速率限制）。"""
+    lowered = (body or "").lower()
+    return any(hint in lowered for hint in QUOTA_MESSAGE_HINTS)
+
 
 @dataclass
 class Classified:

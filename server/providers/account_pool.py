@@ -76,6 +76,16 @@ class AccountPool:
         """软冷却兜底时永不顶班的冷却类别（罚期语义重的）。"""
         return frozenset({"waf"})
 
+    def _soft_fallback_eligible_kinds(self) -> frozenset[str]:
+        """哪些冷却类别允许在"全池都在冷却"时顶班。
+
+        白名单而不是黑名单：兜底意味着**明知会失败也去试**，只有"短暂的、试一下可能就
+        好了"的冷却（429 退避）配得上它。新增一个冷却类别时默认不参与顶班，是更安全的
+        默认——比如额度冷却（quota，等到窗口重置、可能几十天），把它算进来就等于把
+        "全池额度用尽"翻译成"硬选一个必然 429 的号，还要记它一次失败"。
+        """
+        return frozenset({"soft"})
+
     # ── 选号 ──
 
     def pick(
@@ -143,6 +153,7 @@ class AccountPool:
     def _soft_fallback(self, candidates: list[Any], now_ms: int) -> Any | None:
         """全冷却兜底：最早到期的软冷却号（罚期语义重的类别不参与顶班）。"""
         excluded = self._soft_fallback_excluded_kinds()
+        eligible = self._soft_fallback_eligible_kinds()
         fallback: Any | None = None
         for account in candidates:
             if account.status != STATUS_ACTIVE or not account.access_token:
@@ -151,6 +162,8 @@ class AccountPool:
                 continue
             if not account.account_cooldown_active(now_ms):
                 continue  # 完全健康的号在上面已返回；此处只收冷却中的
+            if account.cooldown_kind not in eligible:
+                continue  # 不在白名单里的类别（如额度冷却）不顶班
             if fallback is None or account.cooldown_until_ms < fallback.cooldown_until_ms:
                 fallback = account
         if fallback is not None:

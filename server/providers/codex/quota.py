@@ -49,6 +49,45 @@ def remaining_percent(rate_limit: dict[str, Any] | None) -> float | None:
     return max(0.0, min(100.0, 100.0 - float(used)))
 
 
+def exhausted(rate_limit: dict[str, Any] | None, *, live: bool = False) -> bool:
+    """额度是否确实用尽——只认上游的明确信号。
+
+    这两个信号只有 `/usage` 会给（响应头里没有 allowed / limit_reached），所以
+    `live=False` 时一律 False：响应头回填的快照缺这两个字段，不代表"恢复可用"，
+    把它当成恢复会不断误清刚挂上的冷却。
+
+    `limit_reached=True` 或 `allowed=False` 任一成立即视为用尽；刻意**不**用
+    "used_percent 到 100" 兜底——实测有号 100% 但仍 allowed=True（整数百分比四舍五入的
+    边界），把它也判死会白白闲置一个还能出量的号。
+    """
+    if not live or not isinstance(rate_limit, dict):
+        return False
+    if rate_limit.get("limit_reached") is True:
+        return True
+    return rate_limit.get("allowed") is False
+
+
+def reset_at_ms(rate_limit: dict[str, Any] | None) -> int | None:
+    """当前窗口的重置时刻（epoch ms）：主窗口优先，缺失才退到副窗口。
+
+    把"额度用尽"翻译成"到某个时刻为止都不能用"（冷却）就靠它。主窗口是额度用尽所
+    指的窗口，副窗口只在主窗口没有任何信息时兜底。
+    """
+    if not isinstance(rate_limit, dict):
+        return None
+    for name in ("primary", "secondary"):
+        window = rate_limit.get(name)
+        if not isinstance(window, dict):
+            continue
+        try:
+            parsed = int(window.get("reset_at_ms"))
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
 def estimate(
     rate_limit: dict[str, Any] | None,
     cumulative: dict[str, Any] | None,

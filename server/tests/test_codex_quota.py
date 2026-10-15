@@ -98,6 +98,31 @@ def test_remaining_percent_uses_upstream_percent() -> None:
     assert quota.remaining_percent(None) is None
 
 
+def test_exhausted_only_trusts_explicit_live_signals() -> None:
+    """用尽判定只认 /usage 的明确信号，且只信"这一次"的读数。"""
+    assert quota.exhausted({"limit_reached": True}, live=True) is True
+    assert quota.exhausted({"allowed": False}, live=True) is True
+    assert quota.exhausted({"allowed": True, "limit_reached": False}, live=True) is False
+    # 响应头回填的快照没有这两个字段：缺字段 ≠ 恢复可用，不能拿来清冷却
+    assert quota.exhausted({"primary": {"used_percent": 100.0}}) is False
+    assert quota.exhausted({"allowed": False}) is False, "非 live 读数一律不认"
+    # 100% 但上游仍 allowed：整数百分比的边界，不判死（实测有这种号）
+    assert quota.exhausted({"primary": {"used_percent": 100.0}, "allowed": True}, live=True) is False
+
+
+def test_reset_at_prefers_primary_window() -> None:
+    snapshot = {
+        "primary": {"used_percent": 100.0, "reset_at_ms": 1_800_000_000_000},
+        "secondary": {"used_percent": 10.0, "reset_at_ms": 1_700_000_000_000},
+    }
+    assert quota.reset_at_ms(snapshot) == 1_800_000_000_000
+    # 主窗口缺失才退到副窗口
+    assert quota.reset_at_ms({"secondary": {"reset_at_ms": 17}}) == 17
+    assert quota.reset_at_ms({"primary": {"reset_at_ms": None}}) is None
+    assert quota.reset_at_ms({"primary": {"reset_at_ms": "boom"}}) is None
+    assert quota.reset_at_ms(None) is None
+
+
 _ALL = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 

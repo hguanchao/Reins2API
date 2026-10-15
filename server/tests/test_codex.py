@@ -649,6 +649,139 @@ def test_parse_rate_limits_keeps_active_limit_and_over_secondary():
     assert zero is not None and "over_secondary_percent" not in zero
 
 
+def test_quota_exhausted_locks_account_until_window_reset():
+    """额度用尽 → 按重置时刻挂 quota 冷却；额度恢复 → 解除。
+
+    为什么要有这条：号池只认冷却、不认百分比（`_healthy` 里没有额度判断），所以"用尽"
+    如果不落成冷却，一个 100% 的号会被反复选中、每次撞 429。也不能改成 status=disabled：
+    那要额外回答"谁来恢复、何时恢复"，而冷却天然带到期时刻。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            reset_at = int(time.time() * 1000) + 30 * 86_400_000
+            _seed_account(store, "acc-1")
+            provider = CodexProvider(store=store)
+            exhausted = {
+                "primary": {"used_percent": 100.0, "window_minutes": 43200,
+                            "reset_at_ms": reset_at},
+                "allowed": False,
+                "limit_reached": True,
+            }
+            assert provider._arm_quota_cooldown("acc-1", exhausted) is True
+            cooled = store.get_account("acc-1")
+            assert cooled.cooldown_kind == "quota"
+            assert cooled.cooldown_until_ms == reset_at
+            # 幂等：同一个窗口重复调用不再写库（返回值即"有没有改动"）
+            assert provider._arm_quota_cooldown("acc-1", exhausted) is False
+
+            # 额度恢复：解除冷却
+            provider._clear_quota_cooldown(store.get_account("acc-1"))
+            recovered = store.get_account("acc-1")
+            assert recovered.cooldown_until_ms == 0 and recovered.cooldown_kind == ""
+
+            # 别的冷却类别不该被"额度恢复"顺手清掉
+            store.update_runtime("acc-1", cooldown_until_ms=reset_at, cooldown_kind="auth")
+            provider._clear_quota_cooldown(store.get_account("acc-1"))
+            assert store.get_account("acc-1").cooldown_kind == "auth"
+
+            # 重置时刻已过（快照陈旧）不动手：宁可让它去试一次，也不凭猜测锁号
+            store.update_runtime("acc-1", cooldown_until_ms=0, cooldown_kind="")
+            assert provider._arm_quota_cooldown(
+                "acc-1", {"primary": {"reset_at_ms": int(time.time() * 1000) - 1000}}
+            ) is False
+        finally:
+            store.close()
+
+
+def test_quota_cooldown_not_shortened_by_rate_limit_backoff():
+    """429 的短退避不许覆盖额度冷却：额度用尽等到重置（可能几十天），429 退避最长 2 小时。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            reset_at = int(time.time() * 1000) + 30 * 86_400_000
+            _seed_account(store, "acc-1", cooldown_until_ms=reset_at, cooldown_kind="quota")
+            provider = CodexProvider(store=store)
+            account = store.get_account("acc-1")
+            provider._penalize(account, classify.Classified(kind=classify.RATE_LIMIT), "429")
+            cooled = store.get_account("acc-1")
+            assert cooled.cooldown_kind == "quota", "额度冷却被 429 覆盖了"
+            assert cooled.cooldown_until_ms == reset_at, "冷却被缩短了"
+        finally:
+            store.close()
+
+
+def test_quota_429_locks_until_window_reset():
+    """额度用尽的 429（固定文案）按窗口重置锁定，而不是 2 小时软退避。
+
+    这是"100% 但 allowed=True"那种自相矛盾读数的兜底：百分比是整数、上游偶尔自相矛盾，
+    而错误文案是它真正拒绝的原因，优先信它。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            reset_at = int(time.time() * 1000) + 30 * 86_400_000
+            _seed_account(
+                store, "acc-1",
+                rate_limit={
+                    "primary": {"used_percent": 100.0, "reset_at_ms": reset_at},
+                    "allowed": True,          # 上游自相矛盾：说 allowed，但请求被拒
+                    "limit_reached": False,
+                },
+            )
+            provider = CodexProvider(store=store)
+            account = store.get_account("acc-1")
+            provider._penalize(
+                account, classify.Classified(kind=classify.RATE_LIMIT),
+                '{"error":{"message":"The usage limit has been reached"}}',
+            )
+            cooled = store.get_account("acc-1")
+            assert cooled.cooldown_kind == "quota", f"应锁到窗口重置，实际 {cooled.cooldown_kind}"
+            assert cooled.cooldown_until_ms == reset_at
+        finally:
+            store.close()
+
+
+def test_plain_rate_limit_429_still_uses_short_backoff():
+    """普通限流（没有额度文案）仍走软冷却：别把瞬时 429 也锁几十天。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            reset_at = int(time.time() * 1000) + 30 * 86_400_000
+            _seed_account(
+                store, "acc-1",
+                rate_limit={"primary": {"used_percent": 40.0, "reset_at_ms": reset_at}},
+            )
+            provider = CodexProvider(store=store)
+            provider._penalize(
+                store.get_account("acc-1"), classify.Classified(kind=classify.RATE_LIMIT),
+                '{"error":{"message":"Rate limit exceeded. Please try again later."}}',
+            )
+            cooled = store.get_account("acc-1")
+            assert cooled.cooldown_kind == "soft"
+            assert cooled.cooldown_until_ms < reset_at, "普通限流不该被锁到窗口重置"
+        finally:
+            store.close()
+
+
+def test_pool_skips_quota_locked_account():
+    """锁定后号池不再选它，池里全锁时返回 None（而不是硬选一个去撞 429）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            reset_at = int(time.time() * 1000) + 30 * 86_400_000
+            _seed_account(store, "locked", cooldown_until_ms=reset_at, cooldown_kind="quota")
+            _seed_account(store, "alive")
+            provider = CodexProvider(store=store)
+            picked = {provider._pool.pick("sess-x").uid for _ in range(12)}
+            assert picked == {"alive"}, f"选到了被额度锁住的号: {picked}"
+
+            store.update_runtime("alive", cooldown_until_ms=reset_at, cooldown_kind="quota")
+            assert provider._pool.pick("sess-x") is None, "全池额度用尽时应返回 None"
+        finally:
+            store.close()
+
+
 def test_store_rate_limit_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
         store = CodexStore(Path(tmp) / "codex.db")

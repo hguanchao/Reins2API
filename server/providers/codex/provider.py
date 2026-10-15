@@ -57,6 +57,9 @@ from providers.identity import derive_request_ids
 _REFRESH_LOCK_WAIT_S = 30.0
 # 不罚号类别（请求级错误：换号无用，直接透传）
 _NO_PENALTY_KINDS = frozenset({classify.CLIENT})
+# 额度用尽用的冷却类别。区别于 soft（429 退避）/ auth / waf：它表达的是"到窗口重置
+# 时刻之前都没额度"，时长可以长达几十天，且只有"额度恢复"或"新窗口"才该解除它。
+QUOTA_COOLDOWN_KIND = "quota"
 
 
 @dataclass
@@ -502,6 +505,11 @@ class CodexProvider:
         if not fields:
             return
         self._store.update_runtime(account.uid, **fields)
+        # 额度用尽：这次快照里 allowed / limit_reached 是合并后的值，用尽就按重置时刻锁住，
+        # 别让号池选到它去撞 429（选号池只认冷却，不认百分比）。恢复交给两个入口：
+        # 新窗口（_mark_window 里解除）与主动查 /usage（refresh_quota 里解除）。
+        if quota.exhausted(snapshot, live=True) and "rate_limit" in fields:
+            self._arm_quota_cooldown(account.uid, snapshot)
 
     def _mark_window(self, uid: str, snapshot: dict[str, Any], previous: dict[str, Any]) -> None:
         """换了窗口就在快照里重立容量估算的基线（累积 token + 当时的百分比）。
@@ -525,6 +533,52 @@ class CodexProvider:
             "tokens": quota.sent_tokens(self._account_totals().get(uid)),
             "at_ms": int(time.time() * 1000),
         }
+        # 进了新窗口 = 额度回满，上一轮按重置时刻设的额度冷却必须一并解除，否则一个
+        # 已经能用的号会被旧的 cooldown_until_ms 继续挡到那个时刻（可能又是几十天）。
+        account = self._store.get_account(uid)
+        if account is not None and account.cooldown_kind == QUOTA_COOLDOWN_KIND:
+            self._store.update_runtime(uid, cooldown_until_ms=0, cooldown_kind="")
+
+    def _arm_quota_cooldown(self, uid: str, snapshot: dict[str, Any]) -> bool:
+        """额度确实用尽 → 按窗口重置时刻挂一条 quota 冷却（额度回满即失效）。
+
+        为什么挂冷却而不是改 status：状态机已经有一套（冷却 / 熔断 / 暂停 / 禁用），
+        选号池、界面、运维动作都认它；而"额度用尽"的本质就是"到重置时刻之前都不能用"，
+        正是冷却的语义。改 `status='disabled'` 反而要额外想清楚谁来恢复、什么时候恢复。
+
+        判定只认上游的**明确**信号（limit_reached=True / allowed=False）。不用
+        "used_percent 到 100" 兜底：实测有号 100% 但仍 allowed=True，那是整数百分比
+        四舍五入的边界，一并判死会白白闲置一个还能出量的号。
+
+        重置时刻已过（快照陈旧）或缺失时不动手——那种情况宁可让它按正常路径去试一次，
+        撞 429 再退避，也好过凭猜测把一个号锁起来。
+        """
+        reset_at = quota.reset_at_ms(snapshot)
+        now_ms = int(time.time() * 1000)
+        if reset_at is None or reset_at <= now_ms:
+            return False
+        account = self._store.get_account(uid)
+        if account is not None and account.cooldown_until_ms >= reset_at:
+            return False  # 已经挂到不早于重置时刻的冷却，不必重写
+        logger.info(
+            f"[codex] uid={uid[:8]}… 额度已用尽, 冷却至重置时刻 "
+            f"(约 {(reset_at - now_ms) // 3_600_000} 小时后)"
+        )
+        self._store.update_runtime(
+            uid, cooldown_until_ms=reset_at, cooldown_kind=QUOTA_COOLDOWN_KIND
+        )
+        return True
+
+    def _clear_quota_cooldown(self, account: Account) -> None:
+        """额度恢复可用（上游 allowed=True）时解除 quota 冷却。
+
+        只解除自己挂的那种：auth / waf / 429 软冷却代表别的故障，不该被"额度恢复了"
+        顺手清掉。
+        """
+        if account.cooldown_kind != QUOTA_COOLDOWN_KIND:
+            return
+        logger.info(f"[codex] uid={account.uid[:8]}… 额度已恢复, 解除额度冷却")
+        self._store.update_runtime(account.uid, cooldown_until_ms=0, cooldown_kind="")
 
     @staticmethod
     def _account_totals() -> dict[str, dict[str, Any]]:
@@ -560,8 +614,24 @@ class CodexProvider:
                 cooldown_s = min(
                     CODEX_COOLDOWN_SOFT_BASE * (2 ** min(failures, 8)), CODEX_COOLDOWN_SOFT_MAX
                 )
-            fields["cooldown_until_ms"] = now_ms + int(cooldown_s * 1000)
-            fields["cooldown_kind"] = "soft"
+            until_ms = now_ms + int(cooldown_s * 1000)
+            kind_out = "soft"
+            # 额度用尽的 429 不能按"软冷却 + 指数退避"处理：退避最长 2 小时，而额度的恢复
+            # 时刻由窗口重置决定（免费档 30 天）——按退避放回池子，它只会被反复选中、反复
+            # 撞同一条错误。判定优先用上游的固定文案（比整数百分比可靠），再退回快照里的
+            # 明确信号与重置时刻。
+            state = current or account
+            if classify.quota_exhausted_message(text) or quota.exhausted(state.rate_limit, live=True):
+                reset_at = quota.reset_at_ms(state.rate_limit)
+                if reset_at is not None and reset_at > until_ms:
+                    until_ms = reset_at
+                    kind_out = QUOTA_COOLDOWN_KIND
+            # 反过来，已有的额度冷却不许被 429 退避**缩短**（同样取更晚的那个）。
+            if state.cooldown_kind == QUOTA_COOLDOWN_KIND and state.cooldown_until_ms > until_ms:
+                until_ms = state.cooldown_until_ms
+                kind_out = QUOTA_COOLDOWN_KIND
+            fields["cooldown_kind"] = kind_out
+            fields["cooldown_until_ms"] = until_ms
             fields["consecutive_failures"] = failures + 1
         elif kind == classify.AUTH:
             failures += 1
@@ -682,7 +752,13 @@ class CodexProvider:
         for account in self._store.list_accounts():
             if account.status != STATUS_ACTIVE or not account.refresh_token:
                 continue
-            if account.account_cooldown_active(now_ms) and account.cooldown_kind != "soft":
+            # 冷却中的号照样刷 token：soft（429 退避）与 quota（额度等到重置）都不代表
+            # 凭证有问题，而额度冷却可能持续几十天——把它排除在外，等于长期不管这些号的
+            # token 过期，等额度回来时反而先被 401 挡一道。
+            if (
+                account.account_cooldown_active(now_ms)
+                and account.cooldown_kind not in ("soft", QUOTA_COOLDOWN_KIND)
+            ):
                 continue
             if not account.token_expiring(now_ms, ahead_ms):
                 continue
@@ -722,6 +798,14 @@ class CodexProvider:
             if plan and plan != account.plan_type:
                 fields["plan_type"] = plan
             self._store.update_runtime(account.uid, **fields)
+            # /usage 是唯一带 allowed / limit_reached 的数据源，所以额度的"用尽"与"恢复"
+            # 都在这里判定：用尽按重置时刻锁住（别让号池选到它去撞 429），恢复则解除冷却
+            # ——否则一个已经能用的号会被上一轮的冷却继续挡到那个时刻（可能又是几十天）。
+            fresh = self._store.get_account(account.uid) or account
+            if quota.exhausted(snapshot, live=True):
+                self._arm_quota_cooldown(account.uid, snapshot)
+            else:
+                self._clear_quota_cooldown(fresh)
             refreshed += 1
         return {"refreshed": refreshed, "failed": failed}
 

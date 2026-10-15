@@ -76,6 +76,11 @@ function stateOf(account: CodexAccount): { label: string; tone: string } {
     return { label: "熔断中", tone: "is-bad" };
   }
   if (account.cooldown_until_ms > now) {
+    // 额度用尽也走冷却（见后端 provider 的 QUOTA_COOLDOWN_KIND）：状态机一致，但文案必须
+    // 分开——「冷却中」像是刚被罚过，「额度耗尽」是在等窗口重置，运维要看的是后者。
+    if (account.cooldown_kind === "quota") {
+      return { label: "额度耗尽", tone: "is-bad" };
+    }
     return { label: "冷却中", tone: "is-warn" };
   }
   if (!account.has_access_token) {
