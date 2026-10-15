@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Any
 
 from providers.common import apply_retry_after  # noqa: F401  (对外沿用 classify.apply_retry_after)
 
@@ -37,6 +38,78 @@ def quota_exhausted_message(body: str) -> bool:
     """429 的错误体是否在说"额度用尽"（而不是瞬时速率限制）。"""
     lowered = (body or "").lower()
     return any(hint in lowered for hint in QUOTA_MESSAGE_HINTS)
+
+
+# 额度类错误的结构化字段（官方 codex-api/src/api_bridge.rs:192-226 解析同一组）：
+#   {"error": {"type": "usage_limit_reached", "message": "…", "plan_type": "pro",
+#              "resets_at": <epoch 秒>, "limit_window_minutes": 300}}
+# resets_at 是**窗口重置的绝对时刻**——文案只说明"用尽了"，它才说明"什么时候回来"。
+_QUOTA_ERROR_TYPES = ("usage_limit_reached",)
+# 官方把这两个 code 也当额度类失败（InsufficientQuota）：积分/余额耗尽，
+# 没有重置时刻可等（api_bridge.rs 同一段的 insufficient_quota / credit_balance_exhausted）。
+_QUOTA_ERROR_CODES = ("insufficient_quota", "credit_balance_exhausted")
+
+
+@dataclass
+class QuotaSignal:
+    """429 错误体里的额度信号；reset_at_ms 为 None 表示上游没给重置时刻。"""
+
+    reset_at_ms: int | None = None
+    window_minutes: int | None = None
+    plan_type: str = ""
+
+
+def _as_number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def quota_signal(body: str, now_ms: int) -> QuotaSignal | None:
+    """429 错误体 → 额度信号；不是额度类错误返回 None。
+
+    文案判据（quota_exhausted_message）只认固定英文串，上游换个说法就漏；结构化的
+    `error.type` / `error.code` 才是权威判据，`resets_at` 还给出精确重置时刻——
+    对刚导入、还没跑过任何响应头快照的账号，这是唯一能避免"按退避猜、反复撞 429"
+    的数据源。只看错误体，不发请求。
+    """
+    text = (body or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    error = parsed.get("error")
+    if not isinstance(error, dict):
+        error = parsed
+    kind = str(error.get("type") or "").strip()
+    code = str(error.get("code") or "").strip()
+    if kind not in _QUOTA_ERROR_TYPES and code not in _QUOTA_ERROR_CODES:
+        return None
+    signal = QuotaSignal()
+    resets_at = _as_number(error.get("resets_at"))
+    if resets_at is not None:
+        reset_ms = int(resets_at * 1000)
+        # 已过期的重置时刻当"没有"处理：宁可走正常退避，也不拿陈旧的时刻做判断
+        if reset_ms > now_ms:
+            signal.reset_at_ms = reset_ms
+    window = _as_number(error.get("limit_window_minutes"))
+    if window is not None and window > 0:
+        signal.window_minutes = int(window)
+    plan = error.get("plan_type")
+    if isinstance(plan, str) and plan.strip():
+        signal.plan_type = plan.strip()
+    return signal
 
 
 @dataclass

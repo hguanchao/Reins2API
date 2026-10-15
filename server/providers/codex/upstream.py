@@ -38,6 +38,11 @@ from providers.codex.store import Account
 _RESPONSES_PATH = "/responses"
 _MODELS_PATH = "/models"
 
+# 粘性路由令牌：上游在响应头里下发、官方客户端在后续请求里回显（对照
+# codex-rs/codex-api/src/sse/responses.rs:33,66-73 的捕获与
+# core/src/client.rs:2461-2484 的回显），让同一段会话尽量落在同一个后端分片。
+TURN_STATE_HEADER = "x-codex-turn-state"
+
 # SIWC 出站身份：CPA 同位置放 `"<标识> (<GOOS>; <GOARCH>)"`（codexSIWCUserAgent），
 # 这里保持同一形状、用自己的标识——授权时的 agent_name_hint 不落在票上，上游
 # 在请求期并不校验它。
@@ -88,18 +93,35 @@ def codex_headers(account: Account, session_id: str) -> dict[str, str]:
     return headers
 
 
-def responses_request(account: Account, body: bytes, session_id: str) -> crequests.Response:
-    """POST {base}/responses，恒 stream=True。网络异常抛 curl_cffi RequestsError。"""
+def responses_request(
+    account: Account, body: bytes, session_id: str, turn_state: str = ""
+) -> crequests.Response:
+    """POST {base}/responses，恒 stream=True。网络异常抛 curl_cffi RequestsError。
+
+    turn_state 非空时带上粘性路由令牌（只对签发它的同一个账号有意义，调用方按
+    账号×会话取值，见 provider._turn_state_for）。
+    """
     url = f"{base_url(account)}{_RESPONSES_PATH}"
+    headers = codex_headers(account, session_id)
+    if turn_state:
+        headers[TURN_STATE_HEADER] = turn_state
     return crequests.post(
         url,
-        headers=codex_headers(account, session_id),
+        headers=headers,
         data=body,
         stream=True,
         timeout=(float(CODEX_TIMEOUT_CONNECT), float(CODEX_TIMEOUT_IDLE)),
         proxies=proxies_for(url),
         impersonate="chrome",
     )
+
+
+def turn_state_of(headers: dict[str, str]) -> str:
+    """响应头里的粘性路由令牌（头名大小写不敏感取一次）。"""
+    for key, value in headers.items():
+        if str(key).lower() == TURN_STATE_HEADER:
+            return str(value or "").strip()
+    return ""
 
 
 def _float(value: Any) -> float | None:

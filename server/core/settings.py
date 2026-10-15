@@ -127,10 +127,12 @@ CODEX_SIWC_REFRESH_AHEAD_S = 300
 # 该版本同时是模型目录的门控参数：/models?client_version=X 只下发
 # minimal_client_version ≤ X 的模型，0.153.3 会漏掉需要 0.155.0 的 gpt-6-luna。
 CODEX_CLI_VERSION = "0.155.0"
-CODEX_USER_AGENT = (
-    f"codex-tui/{CODEX_CLI_VERSION} (Mac OS 15.5.0; arm64) "
-    f"xterm-256color (codex-tui; {CODEX_CLI_VERSION})"
-)
+# 官方 UA 形态（codex-rs/login/src/auth/default_client.rs 的 get_codex_user_agent）：
+#   {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}[ (suffix)]
+# originator 默认就是 codex_cli_rs，后缀只有 app-server/桌面通道注入时才有
+# （2026-03 的 codex-tui 兼容 workaround 已从官方仓库移除）——所以 CLI 形态是
+# 四段、无后缀。前缀与 Originator 头同源，本文件下一行即 codex_cli_rs。
+CODEX_USER_AGENT = f"codex_cli_rs/{CODEX_CLI_VERSION} (Mac OS 15.5.0; arm64) xterm-256color"
 CODEX_ORIGINATOR = "codex_cli_rs"
 CODEX_BETA_FEATURES = "remote_compaction_v2"
 

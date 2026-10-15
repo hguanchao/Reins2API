@@ -177,6 +177,35 @@ def test_codex_headers_minimal_trusted_set():
     )
 
 
+def test_codex_user_agent_matches_official_form():
+    """出站 UA 形态对齐官方（codex-rs login/src/auth/default_client.rs）：
+
+        {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
+
+    originator 与 Originator 头同源；后缀只有 app-server 通道注入时才出现——
+    CLI 形态是四段、无后缀（0.155.0 时代已无 codex-tui workaround）。
+    """
+    from core.settings import CODEX_CLI_VERSION, CODEX_ORIGINATOR, CODEX_USER_AGENT
+
+    assert CODEX_ORIGINATOR == "codex_cli_rs"
+    assert CODEX_USER_AGENT == (
+        f"codex_cli_rs/{CODEX_CLI_VERSION} (Mac OS 15.5.0; arm64) xterm-256color"
+    )
+    # 只有平台那一对括号：app-server 后缀会是紧随其后的第二个 (...) 组
+    assert CODEX_USER_AGENT.count("(") == 1 and CODEX_USER_AGENT.count(")") == 1
+    assert "codex-tui" not in CODEX_USER_AGENT  # 已从官方移除的兼容 workaround 形态
+
+
+def test_turn_state_header_helpers():
+    """x-codex-turn-state：响应头取值大小写不敏感；无令牌时不发该头。"""
+    account = Account(uid="acc-1", account_id="acc-1", access_token="AT")
+    assert cx_upstream.turn_state_of({"X-Codex-Turn-State": "ts-1"}) == "ts-1"
+    assert cx_upstream.turn_state_of({"x-codex-turn-state": " ts-2 "}) == "ts-2"
+    assert cx_upstream.turn_state_of({"content-type": "text/event-stream"}) == ""
+    headers = cx_upstream.codex_headers(account, "ses-9")
+    assert cx_upstream.TURN_STATE_HEADER not in headers  # 无令牌不出现
+
+
 # ── 错误分类 ──
 
 
@@ -334,7 +363,7 @@ def test_send_injects_session_and_passes_through():
 
             seen: dict[str, object] = {}
 
-            def fake_request(account, body, session_id):
+            def fake_request(account, body, session_id, turn_state=""):
                 seen["body"] = json.loads(body)
                 seen["session"] = session_id
                 return _Resp()
@@ -367,6 +396,60 @@ def test_send_injects_session_and_passes_through():
             store.close()
 
 
+def test_turn_state_captured_and_echoed_per_account_session():
+    """响应头里的 x-codex-turn-state 记住并在同「账号×会话」的后续请求回显。
+
+    官方客户端就是会话级持有、换账号即重置（codex-rs core/src/client.rs:2461-2484
+    与 :1688-1692）；网关按 uid×session 作键，轮换到别的号自然取不到旧令牌。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1")
+            provider = _provider_with_catalog(store, ["gpt-5-codex"])
+
+            seen: list[str] = []
+            states = iter(["ts-1", "ts-2", "ts-3"])
+
+            class _Resp:
+                status_code = 200
+
+                def __init__(self, turn_state: str) -> None:
+                    self.headers: dict[str, str] = {"content-type": "text/event-stream"}
+                    self.headers[cx_upstream.TURN_STATE_HEADER] = turn_state
+
+                def iter_content(self, chunk_size: int = 8192):
+                    yield b"data: {}\n\n"
+
+                def close(self) -> None:
+                    pass
+
+            def fake_request(account, body, session_id, turn_state=""):
+                seen.append(turn_state)
+                return _Resp(next(states))
+
+            original = cx_upstream.responses_request
+            cx_upstream.responses_request = fake_request
+            try:
+                route = provider.route("cx:gpt-5-codex")
+                outbound = {"model": "gpt-5-codex", "input": []}
+                provider.shape(outbound, "responses")
+                raw = json.dumps(outbound).encode()
+                for session, request_id in (("ses-tt", "r1"), ("ses-tt", "r2"), ("ses-other", "r3")):
+                    provider.send(
+                        route, "responses", raw,
+                        RequestIDs(session=session, request=request_id, project="p"),
+                        stream=True,
+                    )
+            finally:
+                cx_upstream.responses_request = original
+
+            # 第一次没有令牌；第二次带上第一次捕获的；另一个会话不串用
+            assert seen == ["", "ts-1", ""], seen
+        finally:
+            store.close()
+
+
 def test_send_rotates_on_error():
     """非 2xx 且可重试 → 换号重试；预算耗尽返回最后一个上游错误。"""
     import providers.codex.upstream as cx_upstream
@@ -390,7 +473,7 @@ def test_send_rotates_on_error():
                 def close(self) -> None:
                     pass
 
-            def fake_request(account, body, session_id):
+            def fake_request(account, body, session_id, turn_state=""):
                 calls.append(account.uid)
                 return _Resp(429)
 
@@ -739,6 +822,77 @@ def test_quota_429_locks_until_window_reset():
             cooled = store.get_account("acc-1")
             assert cooled.cooldown_kind == "quota", f"应锁到窗口重置，实际 {cooled.cooldown_kind}"
             assert cooled.cooldown_until_ms == reset_at
+        finally:
+            store.close()
+
+
+def test_quota_signal_parses_official_error_shape():
+    """结构化额度信号（官方 codex-api/api_bridge.rs:192-226 的字段名）。
+
+    文案判据只认固定英文串；`error.type` / `error.code` 才是权威判据，
+    `resets_at` 给出精确重置时刻。
+    """
+    now = int(time.time() * 1000)
+    future = time.time() + 7200
+    body = json.dumps(
+        {
+            "error": {
+                "type": "usage_limit_reached",
+                "message": "usage limit reached",
+                "plan_type": "pro",
+                "resets_at": future,
+                "limit_window_minutes": 300,
+            }
+        }
+    )
+    signal = classify.quota_signal(body, now)
+    assert signal is not None
+    assert signal.reset_at_ms == int(future * 1000)
+    assert signal.window_minutes == 300 and signal.plan_type == "pro"
+    # 普通限流不是额度信号
+    assert classify.quota_signal('{"error":{"message":"Rate limit exceeded."}}', now) is None
+    # 余额/积分耗尽（官方同段的 code 判据）：是额度类，但没有重置时刻
+    credits = classify.quota_signal('{"error":{"code":"insufficient_quota"}}', now)
+    assert credits is not None and credits.reset_at_ms is None
+    # 已过期的 resets_at 视为没有（不拿陈旧时刻做判断）
+    stale = classify.quota_signal('{"error":{"type":"usage_limit_reached","resets_at":1}}', now)
+    assert stale is not None and stale.reset_at_ms is None
+    # 非 JSON / 空体宽容返回 None
+    assert classify.quota_signal("", now) is None
+    assert classify.quota_signal("not json", now) is None
+
+
+def test_quota_429_body_reset_locks_account_without_snapshot():
+    """错误体自带 resets_at 时，账号还没有任何快照也要锁到重置时刻。
+
+    这是新导入账号的唯一数据源：没有它，首次撞 429 只能按 2 小时软退避反复回池、
+    反复撞同一条错误（退避上限远短于窗口长度）。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1")  # 注意：不带 rate_limit 快照
+            provider = CodexProvider(store=store)
+            resets_at = time.time() + 3 * 86_400
+            body = json.dumps(
+                {
+                    "error": {
+                        "type": "usage_limit_reached",
+                        "message": "usage limit reached",
+                        "plan_type": "plus",
+                        "resets_at": resets_at,
+                        "limit_window_minutes": 10080,
+                    }
+                }
+            )
+            provider._penalize(
+                store.get_account("acc-1"),
+                classify.Classified(kind=classify.RATE_LIMIT),
+                body,
+            )
+            cooled = store.get_account("acc-1")
+            assert cooled.cooldown_kind == "quota", cooled.cooldown_kind
+            assert cooled.cooldown_until_ms == int(resets_at * 1000)
         finally:
             store.close()
 

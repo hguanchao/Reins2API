@@ -38,6 +38,7 @@ from core.settings import (
     CODEX_REFRESH_AHEAD_S,
     CODEX_ROTATE_ATTEMPTS,
     CODEX_SIWC_CLIENT_ID,
+    CODEX_STICKY_TTL_S,
 )
 from gateway.base import (
     ModelInfo,
@@ -66,6 +67,9 @@ _NO_PENALTY_KINDS = frozenset({classify.CLIENT})
 # 额度用尽用的冷却类别。区别于 soft（429 退避）/ auth / waf：它表达的是"到窗口重置
 # 时刻之前都没额度"，时长可以长达几十天，且只有"额度恢复"或"新窗口"才该解除它。
 QUOTA_COOLDOWN_KIND = "quota"
+# 粘性路由令牌的进程内缓存上限（超了先清过期、再丢最旧的一半）。条目量级 = 活跃
+# 会话数×账号轮换跨度，几千条足够；纯内存缓存，重启后重新捕获即可。
+_TURN_STATE_MAX_ENTRIES = 4096
 
 
 def access_token_usable(account: Account, now_ms: int) -> bool:
@@ -159,6 +163,11 @@ class CodexProvider:
         # 「请求路径按需刷」与「后台巡检」并发刷同一个号会造成 RT 双花。
         self._refresh_locks: dict[str, threading.Lock] = {}
         self._refresh_locks_guard = threading.Lock()
+        # x-codex-turn-state：上游下发的粘性路由令牌，按「账号 × 会话」回显（官方
+        # 客户端同款：会话级持有、换账号即重置，见 _note_turn_state 的注释）。
+        # 纯进程内缓存——重启后重新捕获，最多丢一次粘性，无副作用。
+        self._turn_states: dict[str, tuple[str, int]] = {}
+        self._turn_states_lock = threading.Lock()
         from providers.codex.login import LoginManager
 
         # 不挂 on_account_added：新号入库不再自动拉模型目录（目录只在手动
@@ -419,7 +428,12 @@ class CodexProvider:
                     body_dirty = True
                 attempt_body = self._attempt_body(account, body_dict, body, body_dirty)
                 try:
-                    response = cx_upstream.responses_request(account, attempt_body, session_id)
+                    response = cx_upstream.responses_request(
+                        account,
+                        attempt_body,
+                        session_id,
+                        self._turn_state_for(account.uid, session_id),
+                    )
                 except crequests.RequestsError as exc:
                     logger.warning(f"[codex] uid={account.uid[:8]}… 传输失败: {exc}")
                     self._feed_breaker(account)
@@ -434,12 +448,14 @@ class CodexProvider:
 
                 status = int(response.status_code)
                 if 200 <= status < 300:
+                    response_headers = dict(response.headers)
                     self._note_success(account)
-                    self._note_rate_limit(account, dict(response.headers))
+                    self._note_rate_limit(account, response_headers)
+                    self._note_turn_state(account, session_id, response_headers)
                     self._pool.rebind_sticky(session_id, account.uid)
                     return UpstreamResponse(
                         status=status,
-                        headers=dict(response.headers),
+                        headers=response_headers,
                         raw=response,
                         account=account.uid,
                     )
@@ -558,6 +574,51 @@ class CodexProvider:
         if quota.exhausted(snapshot, live=True) and "rate_limit" in fields:
             self._arm_quota_cooldown(account.uid, snapshot)
 
+    def _note_turn_state(self, account: Account, session_id: str, headers: dict[str, str]) -> None:
+        """记住本次响应下发的粘性路由令牌（x-codex-turn-state）。
+
+        官方客户端把令牌存在会话上、跟着后续请求回显，换账号即重置——同一段会话
+        因此尽量落回同一个后端分片，缓存与路由都受益（对照 codex-rs 的捕获与回显
+        位置见 upstream.TURN_STATE_HEADER）。网关按「账号 × 会话」存：换号轮换后
+        取不到旧令牌，与官方语义一致。
+        """
+        state = cx_upstream.turn_state_of(headers)
+        if not state or not session_id:
+            return
+        now_ms = int(time.time() * 1000)
+        key = f"{account.uid}\x00{session_id}"
+        with self._turn_states_lock:
+            self._turn_states[key] = (state, now_ms)
+            if len(self._turn_states) > _TURN_STATE_MAX_ENTRIES:
+                self._prune_turn_states_locked(now_ms)
+
+    def _turn_state_for(self, uid: str, session_id: str) -> str:
+        """取该「账号 × 会话」的粘性令牌；过期即清（TTL 与会话粘性同源）。"""
+        if not session_id:
+            return ""
+        key = f"{uid}\x00{session_id}"
+        now_ms = int(time.time() * 1000)
+        with self._turn_states_lock:
+            entry = self._turn_states.get(key)
+            if entry is None:
+                return ""
+            state, at_ms = entry
+            if now_ms - at_ms > CODEX_STICKY_TTL_S * 1000:
+                self._turn_states.pop(key, None)
+                return ""
+            return state
+
+    def _prune_turn_states_locked(self, now_ms: int) -> None:
+        """清过期；仍超上限就按时间丢最旧的一半（调用方持锁）。"""
+        ttl_ms = CODEX_STICKY_TTL_S * 1000
+        for key in [k for k, (_, at) in self._turn_states.items() if now_ms - at > ttl_ms]:
+            self._turn_states.pop(key, None)
+        overflow = len(self._turn_states) - _TURN_STATE_MAX_ENTRIES // 2
+        if overflow > 0:
+            oldest = sorted(self._turn_states.items(), key=lambda item: item[1][1])[:overflow]
+            for key, _ in oldest:
+                self._turn_states.pop(key, None)
+
     def _mark_window(self, uid: str, snapshot: dict[str, Any], previous: dict[str, Any]) -> None:
         """换了窗口就在快照里重立容量估算的基线（累积 token + 当时的百分比）。
 
@@ -665,11 +726,21 @@ class CodexProvider:
             kind_out = "soft"
             # 额度用尽的 429 不能按"软冷却 + 指数退避"处理：退避最长 2 小时，而额度的恢复
             # 时刻由窗口重置决定（免费档 30 天）——按退避放回池子，它只会被反复选中、反复
-            # 撞同一条错误。判定优先用上游的固定文案（比整数百分比可靠），再退回快照里的
-            # 明确信号与重置时刻。
+            # 撞同一条错误。判定优先用错误体里的结构化信号（官方同款：
+            # error.type=usage_limit_reached 且自带 resets_at，见 classify.quota_signal），
+            # 再退回固定文案与快照里的明确信号。
             state = current or account
-            if classify.quota_exhausted_message(text) or quota.exhausted(state.rate_limit, live=True):
-                reset_at = quota.reset_at_ms(state.rate_limit)
+            signal = classify.quota_signal(text, now_ms)
+            if (
+                signal is not None
+                or classify.quota_exhausted_message(text)
+                or quota.exhausted(state.rate_limit, live=True)
+            ):
+                # 错误体自带的 resets_at 最直接——新导入、还没跑过任何响应头快照的账号，
+                # 首次撞 429 时只有它有；快照里的重置时刻作为回退。
+                reset_at = (
+                    signal.reset_at_ms if signal is not None else None
+                ) or quota.reset_at_ms(state.rate_limit)
                 if reset_at is not None and reset_at > until_ms:
                     until_ms = reset_at
                     kind_out = QUOTA_COOLDOWN_KIND

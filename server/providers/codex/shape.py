@@ -8,6 +8,11 @@
   4. `store=false`（本网关不落上游侧存储），且恒 `stream=true`（上游 SSE 是常态，
      非流式客户端由网关 collapse_stream 折叠）。
 
+**不代客户端补 `include`**（官方客户端恒发 `["reasoning.encrypted_content"]`）：
+Codex CLI 自己就带它、透传已经覆盖；给桥接进来的 chat/anthropic 客户端补，只会
+把加密 reasoning 计入输出 token，还让没有该概念的协议多出 `[redacted thinking]`
+占位文本。上游不要求这个字段（实测缺它就是 200），所以只在客户端真发了时原样带过。
+
 part 归一不在这里做：上游是 Responses 协议，桥的 responses 编码器已经产出
 `input_text` / `input_image` 等原生 item，没有 chat 的 messages 形态可归一。
 """
