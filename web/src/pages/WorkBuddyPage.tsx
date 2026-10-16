@@ -13,6 +13,7 @@ import {
   CalendarClock,
   Check,
   CircleUserRound,
+  Clock,
   Copy,
   Cpu,
   Inbox,
@@ -89,7 +90,14 @@ import { ActivityCell } from "@/components/accounts/ActivityCell";
 import { UsageStatsCell } from "@/components/accounts/UsageStatsCell";
 import { catalogTimeLabel, fmtLimit, modelRefreshOutcome } from "@/lib/format";
 import { useSessionCountdown } from "@/lib/countdown";
-import { cn, expiringNote, fmtCompact, fmtInt, parseCreditFactor } from "@/lib/utils";
+import {
+  cn,
+  expiringHint,
+  fmtCompact,
+  fmtInt,
+  parseCreditFactor,
+  type ExpiringTone,
+} from "@/lib/utils";
 
 const AUTO_REFRESH_MS = 10_000;
 const LOGIN_POLL_MS = 3_000;
@@ -303,6 +311,33 @@ function beijingTimeLabel(ms: number): string {
     hour12: false,
   });
 }
+
+/** 北京时间的「年/月/日 时:分:秒」：积分到期是一个**绝对时刻**，秒是判定的粒度
+ *  （≤24h 就变红），所以不像任务时点那样只给到分。时区同样钉在 Asia/Shanghai。 */
+function beijingStamp(ms: number): string {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+/** 到期档位色：图标与卡片里的到期时刻共用一份映射，读者才知道图标那档色指的是
+ *  卡片里的哪一行。色走主题 token（--warn / --destructive），与 icons.css 的分类色
+ *  无关——这里表达的是"急不急"（状态），不是"这是什么东西"。
+ *  卡片挂在 portal 下，取不到 .wb-credits 的后代关系，所以映射必须留在 TSX 里
+ *  （写在组件类下会被 portal 甩掉），图标也照这份色走。 */
+const TONE_TEXT: Record<ExpiringTone, string> = {
+  "": "text-muted-foreground",
+  "is-soon": "text-warn",
+  "is-urgent": "text-destructive",
+};
 
 /** cron 的粗校验（够用即止）：5 个字段、每字段只含数字与 * , - /。
  *  语义合法性由后端解析器判定（错误文案也从后端来），这儿只挡明显打错的输入，
@@ -709,18 +744,6 @@ export function WorkBuddyPage() {
         </div>
         <div className="metric">
           <div className="metric-k">
-            <Pause className="metric-ico ico-amber" strokeWidth={1.6} />
-            暂停选号
-          </div>
-          <div className={cn("metric-v", (pool?.paused ?? 0) > 0 && "is-warn")}>
-            {pool?.paused ?? 0}
-          </div>
-          <div className="metric-sub usage-metric-sub">
-            不参与选号 · 保号任务照跑
-          </div>
-        </div>
-        <div className="metric">
-          <div className="metric-k">
             <KeyRound className="metric-ico ico-indigo" strokeWidth={1.6} />
             模型
           </div>
@@ -815,7 +838,7 @@ export function WorkBuddyPage() {
                       const busy = busyUid === account.uid;
                       const avail = availabilityOf(account);
                       const unsupported = checkinUnsupported(account);
-                      const expiring = expiringNote(account);
+                      const expiring = expiringHint(account);
                       const checkedToday = account.last_checkin_day === beijingToday();
                       return (
                         <TableRow key={account.uid}>
@@ -850,17 +873,51 @@ export function WorkBuddyPage() {
                             </div>
                           </TableCell>
                           <TableCell className="font-mono text-xs">
-                            {/* 双行：上「剩余 / 总」，下快过期提示（没有则整行不出现） */}
-                            <div className="cell-2">
+                            {/* 单行「剩余 / 总」；有快过期批次时在右侧挂一个时钟图标，
+                                明细（数额 + 到期时刻）在悬浮卡片里——列里只留"有没有、急不急" */}
+                            <div className="wb-credits">
                               <span>
                                 {account.credits_remain != null
                                   ? `${fmtCompact(account.credits_remain)} / ${fmtCompact(account.credits_total ?? 0)}`
                                   : "—"}
                               </span>
                               {expiring ? (
-                                <small className={cn("credits-note", expiring.tone)}>
-                                  {expiring.text}
-                                </small>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className={cn("wb-credits-hint", TONE_TEXT[expiring.tone])}>
+                                      <Clock className="size-3.5" strokeWidth={1.9} aria-hidden />
+                                    </span>
+                                  </TooltipTrigger>
+                                  {/* 卡片按"标签 + 数值"两列排，不写成一句话：上游一个号可以
+                                      挂着好几包，而这两个数口径不同（最早一批 vs 7 天窗口合计）
+                                      ——「249 积分将于 X 到期」只在窗口里仅一批时成立。
+                                      窗口里不止一批才补第三行合计，那时读者自己就能看出差额。 */}
+                                  <TooltipContent side="top" tone="surface">
+                                    <div className="grid grid-cols-[auto_1fr] items-baseline gap-x-3.5 gap-y-1">
+                                      <span className="text-fg-subtle">最近一批</span>
+                                      <span className="font-mono font-semibold tabular-nums">
+                                        {fmtCompact(expiring.earliestRemain)} 积分
+                                      </span>
+                                      <span className="text-fg-subtle">到期时刻</span>
+                                      <span
+                                        className={cn(
+                                          "font-mono tabular-nums",
+                                          TONE_TEXT[expiring.tone],
+                                        )}
+                                      >
+                                        {beijingStamp(expiring.atMs)}
+                                      </span>
+                                      {expiring.expiring > expiring.earliestRemain ? (
+                                        <>
+                                          <span className="text-fg-subtle">7 天内合计</span>
+                                          <span className="font-mono tabular-nums">
+                                            {fmtCompact(expiring.expiring)} 积分
+                                          </span>
+                                        </>
+                                      ) : null}
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
                               ) : null}
                             </div>
                           </TableCell>

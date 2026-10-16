@@ -88,37 +88,45 @@ export function fmtClock(createdAt: string | null | undefined): string {
   return /^\d{2}:\d{2}:\d{2}$/.test(clock) ? clock : raw;
 }
 
-/* ── 快过期积分提示（账号表积分列第二行）────────────────────────────
-   文案：`xx 积分将在 x 天后到期`；不足 1 天按小时（"6 小时后到期"）——到了这一步
-   "还剩几天"已经没有信息量。
-   颜色分档按**实际剩余时长**：<1 天 urgent（红）、<7 天 soon（橙）、≥7 天常规（无色）。
-   到期即作废（官方赠送/补偿积分带期限），所以值得占一档语义色；已经过期的批次不提示
-   ——余额刷新后它就消失了，留着只会是过期信息。 */
+/* ── 积分到期提示（账号表积分列的小图标）────────────────────────────
+   一次余额查询上游回的是**包列表**，前端只拿得到两个口径的聚合值：
+     expiring       = 窗口内（服务端 WB_EXPIRING_SOON_H = 7 天）各包余额之和
+     earliestRemain = 最早到期**那一批**的余额，与 atMs 同批
+   多批同时落在窗口里时 expiring > earliestRemain，两者不能当成一件事读——卡片
+   据这个差值决定要不要多列一行合计（见 WorkBuddyPage 的悬浮卡片）。
+   档位按 atMs 的**实际剩余时长**：≤24h urgent（红）、≤7d soon（橙）、更远无色。
+   到期即作废（官方赠送/补偿积分带期限），所以值得占一档语义色；已经过期的批次不
+   提示——余额刷新后它就消失了，留着只会是过期信息。 */
 export type ExpiringTone = "" | "is-soon" | "is-urgent";
 
-export interface ExpiringNote {
-  text: string;
+export interface ExpiringHint {
+  /** 最早到期那一批的余额（与 atMs 同批，图标色档也按这一刻算） */
+  earliestRemain: number;
+  /** 窗口内各批合计；与 earliestRemain 相等 = 窗口里就这一批 */
+  expiring: number;
+  /** 最早一批的到期时刻（毫秒） */
+  atMs: number;
   tone: ExpiringTone;
 }
 
-export function expiringNote(
-  account: { credits_expiring: number; credits_earliest_at_ms: number },
+export function expiringHint(
+  account: {
+    credits_expiring: number;
+    credits_earliest_at_ms: number;
+    credits_earliest_remaining: number;
+  },
   nowMs: number = Date.now(),
-): ExpiringNote | null {
-  const amount = account.credits_expiring || 0;
-  const at = account.credits_earliest_at_ms || 0;
-  if (amount <= 0 || at <= 0) return null;
-  const remainMs = at - nowMs;
+): ExpiringHint | null {
+  const expiring = account.credits_expiring || 0;
+  const earliestRemain = account.credits_earliest_remaining || 0;
+  const atMs = account.credits_earliest_at_ms || 0;
+  if (expiring <= 0 || earliestRemain <= 0 || atMs <= 0) return null;
+  const remainMs = atMs - nowMs;
   if (remainMs <= 0) return null;
-  const hours = remainMs / 3_600_000;
-  if (hours < 24) {
-    return { text: `${fmtCompact(amount)} 积分将在 ${Math.max(1, Math.floor(hours))} 小时后到期`, tone: "is-urgent" };
-  }
-  const days = Math.floor(hours / 24);
-  return {
-    text: `${fmtCompact(amount)} 积分将在 ${days} 天后到期`,
-    tone: days < 7 ? "is-soon" : "",
-  };
+  const HOUR_MS = 3_600_000;
+  const tone: ExpiringTone =
+    remainMs <= 24 * HOUR_MS ? "is-urgent" : remainMs <= 7 * 24 * HOUR_MS ? "is-soon" : "";
+  return { earliestRemain, expiring, atMs, tone };
 }
 
 /* ── 耗时列分档（两个用量页共用，阈值只在这里定义）──────────────

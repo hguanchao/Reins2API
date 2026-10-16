@@ -49,7 +49,8 @@
    不被压折行。调比例改数字即可。 */
 .wb-acct-table {
   table-layout: fixed;
-  /* 比 1060 再宽一档：积分列要多放一行「快过期提示」，靠百分比摊薄会把它挤成两行 */
+  /* min-width 是各列功能下限之和：窄于它就让卡片横向滚动，而不是把某一列压到内容
+     放不下（与 Codex 表同一口径） */
   min-width: 1120px;
 }
 .wb-acct-table .col-acct {
@@ -60,7 +61,7 @@
   width: 11%; /* 可用性徽章 + 原因/剩余时间副行 */
 }
 .wb-acct-table .col-credits {
-  width: 14%; /* 上行「余 / 总」，下行「250 积分将在 6 天后到期」（最长的一条副行） */
+  width: 14%; /* 单行「余 / 总」+ 到期提示图标（明细移进悬浮卡片，不再占第二行） */
 }
 .wb-acct-table .col-checkin {
   width: 11%; /* 点标 + 副行「连签 N 天 · 累计 X」 */
@@ -412,6 +413,28 @@
 .acct-expiry {
   font-size: var(--fs-xs);
   color: var(--fg-subtle);
+}
+
+/* ── 积分到期提示（WorkBuddy 账号池）──────────────────────────────────
+   「余 / 总」右侧的时钟图标：列里只留"有没有、急不急"，明细进悬浮卡片（卡片是
+   surface 皮，与列内其它明细提示同一套）。这里只管布局与触发区——**颜色不在这里**：
+   卡片挂在 portal 下，取不到 .wb-credits 的后代关系，档位色（橙/红）与图标共用
+   一份映射留在 WorkBuddyPage 的 TONE_TEXT 里，所以这个类不设 color，免得与
+   Tailwind 工具类争同一个属性。 */
+.wb-credits {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.wb-credits-hint {
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+  /* 等宽数字只有大写字高（12px 字 ≈ 8.8px）、没有下伸部，它的光学中心比行盒中心
+     高约 0.5px；而 flex 居中是按行盒算的，所以图标会看着往下坠（DPR 2 下正好 1 个
+     物理像素）。中文标签的字面几乎占满 em 框，光学中心与行盒中心重合——KPI 那种
+     「图标 + 中文」不吃这个亏，这里是「图标 + 纯数字」才有的。 */
+  transform: translateY(-0.5px);
 }
 
 /* ── 定时任务弹窗（WorkBuddy 页）─────────────────────────────────────
