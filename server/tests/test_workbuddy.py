@@ -176,6 +176,84 @@ def test_shape_prompt_cache_key():
     assert shape.inject_prompt_cache_key(body, "u", "c") is False
 
 
+def test_shape_drops_tool_calls_with_blank_function_name():
+    """空 function.name 的 tool_call 必须剔除（上游 11133 直接拒参，带结果也拒）。
+
+    形态来源：流式响应在 name 分片到达前断掉，客户端把 name:"" 写进历史，下一轮原样
+    转发 → 整条会话每轮 400，只能清历史。判定收窄到「function 存在且 name 是空白串」。
+    """
+    def _call(call_id, name):
+        return {"id": call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}
+
+    # 带配对结果的空 name 调用：光靠"按 id 对称裁剪"挡不住（它正好命中 keep），必须否决
+    body = {"model": "m", "messages": [
+        {"role": "assistant", "tool_calls": [_call("c0", ""), _call("c1", "read_file")]},
+        {"role": "tool", "tool_call_id": "c0", "content": "r0"},
+        {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+    ]}
+    shape.shape_workbuddy_body(body)
+    calls = [tc["id"] for m in body["messages"] if m.get("role") == "assistant"
+             for tc in (m.get("tool_calls") or [])]
+    assert calls == ["c1"]  # 脏调用与它的结果一起被对称裁掉
+    assert [m["tool_call_id"] for m in body["messages"] if m.get("role") == "tool"] == ["c1"]
+
+    # 纯空白也算脏
+    body = {"model": "m", "messages": [
+        {"role": "assistant", "tool_calls": [_call("c0", "   ")]},
+        {"role": "tool", "tool_call_id": "c0", "content": "r0"},
+    ]}
+    shape.shape_workbuddy_body(body)
+    assert not any(m.get("tool_calls") for m in body["messages"])
+
+    # 缺 function / 缺 name 字段的占位条目**不判脏**（上游不因此拒参，不扩大打击面）
+    body = {"model": "m", "messages": [
+        {"role": "assistant", "tool_calls": [
+            {"id": "c0", "type": "function"},
+            {"id": "c1", "type": "function", "function": {"arguments": "{}"}},
+            {"id": "c2", "type": "function", "function": {"name": "read_file"}},
+        ]},
+        {"role": "tool", "tool_call_id": "c0", "content": "r0"},
+        {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+        {"role": "tool", "tool_call_id": "c2", "content": "r2"},
+    ]}
+    shape.shape_workbuddy_body(body)
+    assert [tc["id"] for m in body["messages"] if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])] == ["c0", "c1", "c2"]
+
+    # 批内混合：只剔脏项，其余原样
+    body = {"model": "m", "messages": [
+        {"role": "assistant", "tool_calls": [_call("c0", "read_file"), _call("c1", ""), _call("c2", "grep")]},
+        {"role": "tool", "tool_call_id": "c0", "content": "r0"},
+        {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+        {"role": "tool", "tool_call_id": "c2", "content": "r2"},
+    ]}
+    shape.shape_workbuddy_body(body)
+    assert [tc["id"] for m in body["messages"] if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])] == ["c0", "c2"]
+    result_ids = [m["tool_call_id"] for m in body["messages"] if m.get("role") == "tool"]
+    assert result_ids == ["c0", "c2"]
+
+
+def test_shape_prompt_cache_key_falls_back_to_session():
+    """缺 conversation_id 时必须回退会话键：不回退的话同账号所有请求共享一个常量键。"""
+    # 同一会话的两轮 → 同一个键（前缀缓存能命中）
+    first = {"model": "m", "messages": []}
+    second = {"model": "m", "messages": []}
+    shape.inject_prompt_cache_key(first, "u_1", "ses_abc")
+    shape.inject_prompt_cache_key(second, "u_1", "ses_abc")
+    assert first["prompt_cache_key"] == second["prompt_cache_key"]
+    # 不同会话 → 不同键（否则互相驱逐）
+    other = {"model": "m", "messages": []}
+    shape.inject_prompt_cache_key(other, "u_1", "ses_xyz")
+    assert other["prompt_cache_key"] != first["prompt_cache_key"]
+    # body 里的 conversation_id 优先于回退值
+    body = {"model": "m", "messages": [], "conversation_id": "conv-9"}
+    shape.inject_prompt_cache_key(body, "u_1", "ses_abc")
+    session_only = {"model": "m", "messages": []}
+    shape.inject_prompt_cache_key(session_only, "u_1", "conv-9")
+    assert body["prompt_cache_key"] == session_only["prompt_cache_key"]
+
+
 # ── dsml.py：标记修复（wb2api dsml 向量移植）──
 
 
@@ -691,7 +769,9 @@ def test_checkin_all_only_active_accounts():
                 (200, {"credit": 20}),
                 (200, {"streak_days": 1, "total_credits": 20}),
             ):
-                summary = provider.checkin_all()
+                # 余额刷新与连登管家由 tests/test_workbuddy_tasks.py 单独覆盖：
+                # 这里只验「谁进这一轮」，别让用例挂着真实上游调用。
+                summary = provider.checkin_all(with_balance=False, with_streak=False)
 
             assert summary["total"] == 2  # active 的 u_a + global 的 u_g
             assert summary["claimed"] == 1 and summary["skipped"] == 1

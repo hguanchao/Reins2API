@@ -83,15 +83,53 @@ WB_SESSION_INVALID_LIMIT = 3   # refresh 后仍 session 失效的连续次数 �
 # 权重与额度
 WB_IDLE_BOOST_PER_HOUR = 0.5   # 闲置补偿/小时
 WB_IDLE_BOOST_MAX = 5.0
-WB_CREDIT_FLOOR = 0            # credits_remain ≤ 该值不再派号；0 = 关闭
+WB_CREDIT_FLOOR = 0            # credits_remain ≤ 该值不再派号（仅收费模型）；0 = 关闭
 WB_CREDITS_REFRESH_MIN = 30    # 余额刷新周期（分钟）
-WB_NEGATIVE_CACHE_S = 600      # 11102 (uid,model) 负缓存避让时长
+# 11102「该后端无此模型」的 (uid,model) 负缓存：基础 6h，重复命中指数退避（×2^n），
+# 封顶 24h。11102 是账号-模型维度的**稳定属性**（不是瞬时故障），短 TTL 只会让同一个
+# 不可用的组合被反复重试（每次白打一遍上游再被拒）。
+WB_NEGATIVE_CACHE_BASE_S = 6 * 3600
+WB_NEGATIVE_CACHE_MAX_S = 24 * 3600
+WB_NEGATIVE_CACHE_SHIFT = 4    # 指数退避的位移上限（命中次数封顶后再乘也没意义）
 
-# ── 签到（billing 域；CN 专属，见 providers/workbuddy/checkin.py）──
-# 只保留手动触发（「立即签到」/「一键全签」），没有定时调度——号少时手动点一次够用，
-# 也免得整点齐射成为明显的机器特征。global 域没有签到活动、企业号上游直接拒绝，
-# 两者都在发请求前短路。
-WB_CHECKIN_STAGGER_MS = 800    # 一键全签时账号之间的间隔
+# 选号：快过期加成 + 成本分层 + Top-N 候选 + 防惊群（只对 WorkBuddy 生效，见
+# providers/account_pool.py 的默认失效钩子——Codex 无 credits/倍率概念，行为不变）
+WB_PREFER_EXPIRING = True      # 快过期待花积分优先消耗
+WB_EXPIRING_SOON_H = 168       # 「快过期」窗口（小时，7 天）；包到期 ≤ now+窗口 计入
+WB_EXPIRING_SLOTS = 3.0        # 快过期账号在候选集里的虚拟实例权重（×N）
+WB_TOP_CANDIDATES = 5          # 短名单长度：按权重取前 N 再在 N 内加权抽签（打散热点）
+WB_MIN_PICK_GAP_MS = 100       # 同号撞号窗口：该窗口内刚被选中的号让位给其它号
+WB_COST_EXPLORE_S = 1800       # 成本分层条件探索窗口（秒）；0 = 关闭探索
+WB_MODEL_COST_TTL_S = 6 * 3600 # 实测扣费观测有效期（秒）；过期的观测不再参与分层
+
+# ── 签到与定时任务（billing / growth 域；见 providers/workbuddy/{checkin,growth,scheduler}.py）──
+# 四类任务各自独立排程、各有开关（管理台可改，落盘 server/config.json 的 schedule 段）：
+#   签到 09/21 点（末尾自动跑连登管家：兑换已解锁档位 + 抽完抽奖次数）
+#   活跃上报 10 点（点亮连登 / 解锁 first_buddy 领养 + streak 自检）
+#   猫猫旅行 09/21 点（无猫领养 / idle 派出 / arrived 领奖，与签到解耦的独立排程）
+#   token 保活 22 点（全账号续期；连续 3 次 session 失效才自动禁用）
+# 挂在整点后的第几分钟触发见 WB_SCHEDULE_MINUTE：整点齐射是最容易被上游记成
+# 机器特征的形态，错开几分钟便宜且无害。
+# 不适用账号在发请求前短路：global 域没有 CN 任务体系（growth/report 缺席）、
+# 企业号上游一律拒绝（既无签到也无成长中心），空撞既是日志噪音也是风控特征。
+WB_SCHEDULE_MINUTE = 7         # 时点分钟数：默认 cron 与旧 hours 配置迁移都用它（0 = 整点）
+WB_SCHEDULE_CHECK_STEP_S = 60  # 等待时点的分段长度（墙钟重判粒度：休眠唤醒后至多一段补跑）
+WB_SCHEDULE_IDLE_POLL_S = 60   # 四类任务全关时的空转周期（仍周期读配置，在线开启即生效）
+WB_SCHEDULE_WAKE_GRACE_S = 5.0 # 迟到补跑前的网络宽限（睡眠唤醒瞬间 DNS 尚未就绪）
+WB_CHECKIN_STAGGER_MS = 800    # 批量任务里账号之间的间隔（签到/活跃/旅行共用）
+WB_ADOPT_REPORT_GAP_MS = 1050  # 领养前置：上报后等上游事件处理再发 buddy/first
+WB_ACTIVITY_MODEL_ID = "deepseek-v4-flash"      # 活跃上报携带的模型（对齐客户端事件形状）
+WB_ACTIVITY_MODEL_NAME = "DeepSeek V4 Flash"
+
+# 排程默认值（管理台未改过时的取值）：5 字段 cron，时区恒北京时间。
+# 分钟数用 WB_SCHEDULE_MINUTE 拼进去——它是"错开整点齐射"的唯一出处，
+# 改这一个常量，四条默认排程一起跟着走。
+WB_SCHEDULE_DEFAULTS: dict[str, dict[str, object]] = {
+    "checkin": {"enabled": True, "cron": f"{WB_SCHEDULE_MINUTE} 9,21 * * *"},
+    "activity": {"enabled": True, "cron": f"{WB_SCHEDULE_MINUTE} 10 * * *"},
+    "travel": {"enabled": True, "cron": f"{WB_SCHEDULE_MINUTE} 9,21 * * *"},
+    "keepalive": {"enabled": True, "cron": f"{WB_SCHEDULE_MINUTE} 22 * * *"},
+}
 
 # ── Codex provider（ChatGPT 后端 Codex 服务；OAuth PKCE + Responses 协议）──
 CODEX_ENABLED = True
@@ -106,22 +144,6 @@ CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
 CODEX_SCOPES = "openid profile email offline_access"
 CODEX_REFRESH_SCOPES = "openid profile email"
 CODEX_LOGIN_TTL_S = 600        # 登录会话（state/verifier）有效期，与弹窗倒计时同源
-
-# Sign in with ChatGPT（CPA auth 文件里的 use_siwc 分区）。这套凭证不是 Codex CLI
-# 客户端签发的，授权、兑换与刷新都在另一套端点上，且签发时绑定 resource（受众），
-# 所以刷新必须带 resource、服务域也跟着换到 api.openai.com/v1——三者缺一，票就是废的。
-# 事实依据：CLIProxyAPI internal/auth/codex/siwc_auth.go（SIWCTokenURL / SIWCResource /
-# SIWCDynamicClientID）与 codex_executor_auth.go 的 defaultOpenAISIWCBaseURL。
-CODEX_SIWC_TOKEN_URL = "https://auth.openai.com/api/accounts/oauth/token"
-CODEX_SIWC_RESOURCE = "https://api.openai.com/v1"   # 刷新表单的 resource 参数
-CODEX_SIWC_BASE = "https://api.openai.com/v1"       # 推理与模型域（与 resource 同值）
-# 文件没带 client_id 时的兜底（CPA 自带登录流程的默认值）；带了的用文件里的，
-# 因为那是授权时实际签发的 client（CPA 也只认它）。
-CODEX_SIWC_CLIENT_ID = "dynamic_agent_client"
-CODEX_SIWC_AGENT_NAME = "Reins2API"   # 出站 UA 前缀（CPA 同位置放它自己的标识）
-# SIWC 的 AT 是短票，提前量照 CPA（CodexSIWCRefreshLead = 5min）取，比外层的 10min 小，
-# 免得票本身不到 10min 时每个请求都刷一次（每次刷新都会轮换 RT）。
-CODEX_SIWC_REFRESH_AHEAD_S = 300
 
 # 出站身份（对齐 Codex CLI 指纹的最小可信集；取值见 docs/codex-provider-design.md §3.2）
 # 该版本同时是模型目录的门控参数：/models?client_version=X 只下发
@@ -161,9 +183,6 @@ CODEX_BREAKER_THRESHOLD = 3    # 连续失败次数
 CODEX_BREAKER_BASE_S = 1800    # base ×2^n
 CODEX_BREAKER_MAX_S = 21600    # 封顶 6h
 CODEX_REFRESH_AHEAD_S = 600    # token 到期前主动刷新窗口（请求路径与后台巡检同一门槛）
-# 导入时「校验+认领」refresh_token 的单次调用上限（秒）。这是导入响应里的同步等待，
-# 不能按常规 TTFB（120s）等——批量导入时一个卡住的号会把整批拖住。
-CODEX_CLAIM_TIMEOUT_S = 20
 
 # 权重
 CODEX_IDLE_BOOST_PER_HOUR = 0.5

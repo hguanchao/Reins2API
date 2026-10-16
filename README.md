@@ -7,9 +7,9 @@
 - **流转码**:同协议 SSE 透传;跨协议 parser → BridgeStreamEvent → emitter 转码;客户端要 JSON 而上游被强制流式时自动折叠
 - **免费档自动塑形**:上游对免费档强制"流式 + agent 工具集",网关补齐后把强制流折叠回客户端要的形态,客户端完全无感
 - **分库遥测**:每个上游一个 SQLite 文件(`server/data/opencode.db`、`server/data/workbuddy.db`、`server/data/codex.db`),用量与请求日志同源;另有 `server/data/models.json` 保存各上游模型目录快照——三家**统一核心字段**(`id`/`name`/`description`/`context_window`/`max_output_tokens`/`input_modalities`/`output_modalities`/`supports_images`/`supports_reasoning`/`supports_tool_call`/`reasoning_efforts`/`default_effort`/`protocol`/`free`/`extras`,上游没声明的字段省略),形状 `{"opencode":[],"workbuddy":{"cn":[],"glb":[]},"codex":[],"meta":{"<provider>":{"updated_at_ms":…}}}`,每次刷新覆盖对应键,供排查/对照。**模型目录只在页面点「获取模型」时刷新**(`POST /api/{provider}/refresh`),启动只读这份快照(缓存为空才兜底拉一次);内容有变才写盘,写前把现文件轮转成 `models.json.bak`
-- **WorkBuddy 号池**:多账号加权选号、冷却/熔断、会话粘性、token 自动刷新、手动签到、OAuth 设备码登录、DSML 工具调用标记还原(见 `docs/workbuddy-provider-design.md`)
+- **WorkBuddy 号池**:多账号加权选号(快过期积分加权 + 成本分层 + Top-5 候选 + 防惊群)、冷却/熔断、会话粘性、token 自动刷新、OAuth 设备码登录、DSML 工具调用标记还原;四类定时任务(签到+连登管家 / 活跃上报 / 猫猫旅行 / token 保活)各有独立开关与时点(见 `docs/workbuddy-provider-design.md`)
 - **Codex 号池**:ChatGPT 账号 OAuth(PKCE 授权码)接入、多账号加权选号、冷却/熔断、会话粘性、refresh_token 轮换与自动刷新、模型目录按账号下发(见 `docs/codex-provider-design.md`)
-- **管理台**:OpenCode 状态页、WorkBuddy 号池页、系统配置页
+- **管理台**:OpenCode 状态页、WorkBuddy 号池页(含定时任务弹窗、暂停选号单列统计;账号表**积分列**在主行「剩余 / 总」下再给一行**快过期提示**——<7 天橙色、<1 天红色,数据全部来自本地库、打开页面不打上游)、Codex 页、系统配置页
 - **插件轴**:`providers/` 按上游分包,后期加新上游 = 一个包 + 一行注册
 
 ## 接入
@@ -61,10 +61,13 @@ curl http://127.0.0.1:8787/v1/messages \
 | `GET/POST/DELETE /api/workbuddy/accounts[/{uid}]` | 账号列表 / 手动导入 / 删除 |
 | `POST /api/workbuddy/accounts/{uid}/action` | pause / resume / disable / revive / refresh |
 | `POST /api/workbuddy/accounts/{uid}/checkin` | 立即签到(force 绕过本地台账,上游幂等兜底) |
-| `POST /api/workbuddy/checkin/run-all` | 一键全签(串行 + 账号间错峰;跳过 global/企业号) |
+| `POST /api/workbuddy/checkin/run-all` | 一键全签 = 签到 + 余额刷新(回血解冻硬冷却)+ 连登管家(串行 + 账号间错峰;跳过 global/企业号) |
+| `GET /api/workbuddy/schedule` | 定时任务排程快照(四类开关/cron/下次触发/上次结果,并附一句人话说明) |
+| `POST /api/workbuddy/schedule` | 改定时任务开关与时点(cron 表达式；非法表达式 400 并给出坏在哪个字段) |
+| `POST /api/workbuddy/tasks/{checkin\|activity\|travel\|keepalive}/run` | 立即运行一类定时任务(与自动排程同一条管线;在跑 → 409) |
 | `POST /api/workbuddy/login/start`、`GET .../login/poll` | OAuth 设备码登录(浏览器授权 → 自动入池) |
 | `GET/POST/DELETE /api/codex/accounts[/{uid}]` | 账号列表 / 手动导入(粘贴 refresh_token 或 access_token+account_id) / 删除 |
-| `POST /api/codex/accounts/import` | 批量导入(CPA / codex2api 形状的 JSON:单对象 / 数组 / `{"accounts":[…]}`;默认逐条「校验+认领」refresh_token,可传 `claim:false` 关闭) |
+| `POST /api/codex/accounts/import` | 批量导入(CPA / codex2api 形状的 JSON:单对象 / 数组 / `{"accounts":[…]}`) |
 | `GET /api/codex/accounts/export?format=cpa\|codex2api` | 导出账号为对应形状的 JSON |
 | `POST /api/codex/accounts/{uid}/action` | pause / resume / disable / revive / refresh |
 | `POST /api/codex/login/start` | 发起 OAuth(PKCE):返回授权 URL 与 session_id |
@@ -75,12 +78,26 @@ Web 管理台:构建前端后访问 `http://127.0.0.1:8787/`(SPA;根路径会 re
 ## 凭证与安全
 
 - **OpenCode**:凭证体系固定为**单一 `public` 匿名凭证**:只服务免费档模型(路由层拦截非免费模型,上游对它们一律回 "Missing API key")。
-- **WorkBuddy**:多账号号池,凭证存 `server/data/workbuddy.db` 的 accounts 表(明文,与 wb2api 同款取舍);通过管理台「添加账号」走 OAuth 设备码登录,或手动粘贴 token;token 过期前 10 分钟自动刷新。**签到只手动触发**(管理台「立即签到」/「一键全签」,没有定时调度):上游只对 CN 个人号开放,global 域与企业号在发请求前跳过;领取结果落 accounts 表(本地台账),接口本身幂等,重复调用只会返回"已签"。参数(冷却/熔断/超时/签到等)写死在 `server/core/settings.py` 的 `WB_*` 常量。
-- **Codex**:多账号号池,凭证存 `server/data/codex.db` 的 accounts 表(明文)。通过管理台/API 走 **OAuth PKCE 授权码**登录(浏览器授权 → 把回调 URL 粘贴回 `/api/codex/login/exchange` 自动入池),或手动粘贴 `refresh_token`(会立即刷新换取 AT 并解析账号)。`refresh_token` 会**轮换**(上游可能换发新 RT,没换发时保留旧值);token 刷新有两条路——**请求前按需**(距过期不足 10 分钟)与**后台巡检**(每 2 分钟醒来,只刷同样快过期的号;不做全量刷,免得每个号的 RT 周期性轮换),两条路按账号串行化以防 RT 双花;凭证失效(401)先刷新同号重试,连续失败达阈值则禁用待人工重新授权。**额度**(5h/7d 限流窗口)由每次成功响应的 `x-codex-{primary,secondary}-*` 头回填。参数(冷却/熔断/超时/池等)写死在 `server/core/settings.py` 的 `CODEX_*` 常量。
-  - **两套凭证形态**并存:外层(Codex CLI 客户端 PKCE 授权,走 `chatgpt.com/backend-api/codex`)与 **SIWC**(Sign in with ChatGPT,CPA auth 文件里的 `use_siwc` 分区,走 `api.openai.com/v1`)。SIWC 的授权、刷新端点与受众都不同(`/api/accounts/oauth/token` + `resource`),导入时按分区取凭据(拿外层那份去刷只会得到 `invalid_refresh_token`),刷新、头族、请求体规则与模型目录都按账号形态分叉;SIWC 账号没有 `/usage` 接口,额度列留空。
-  - **CPA / codex2api 迁移**:Codex 的 RT 单次使用且每次刷新轮换,导出的 auth 文件只是某一刻的快照——源系统(如 CPA)只要再用一次就把快照作废,而 AT 有 10 天寿命,导入后能照常请求、到期才以 401 暴露。所以导入默认对每条 RT 做一次**校验+认领**(换一张新票,同时把所有权拿到本系统,摘要里给出 `claimed`/`unverified`/告警);源系统还要继续跑时传 `claim:false` 只做副本。要长期两个系统并用同一个号是做不到的——一张票只能有一个持有者。
+- **WorkBuddy**:多账号号池,凭证存 `server/data/workbuddy.db` 的 accounts 表(明文,与 wb2api 同款取舍);通过管理台「添加账号」走 OAuth 设备码登录,或手动粘贴 token;token 过期前 10 分钟自动刷新,保活排程另在全账号范围无条件续期。**定时任务四类各自独立开关与时点**(管理台「定时任务」弹窗,入口在号池面板头「一键全签」左侧;时点是一条 **5 字段 cron**(分 时 日 月 周,时区恒北京时间,如 `7 9,21 * * *` = 每天 9:07 与 21:07),保存即生效、落盘 `server/config.json` 的 `schedule` 段;老配置里的 `hours: [9,21]` 会在首次读取时按 `WB_SCHEDULE_MINUTE` 自动迁成 cron):
+  - **签到**(默认 09/21 点):全池签到 → 查余额(余额回血则解冻「积分耗尽」硬冷却)→ 末尾跑**连登管家**(兑换所有已解锁档位 + 抽完所有抽奖次数;档位 7d/14d/28d 按连续登录天数解锁,幂等)
+  - **活跃上报**(默认 10 点):每号一条 `chat_request_send` 上报,同时点亮 growth 连登天数并解锁 `first_buddy`(领养前置);上报后回读连登天数自检「200 但被静默丢弃」
+  - **猫猫旅行**(默认 09/21 点,独立排程):无猫 → 上报(解锁任务)→ 同意协议 → 领养;有猫 → 按状态机「到站领奖 / 空闲派出 / 在途跳过」,一趟只推进一步
+  - **token 保活**(默认 22 点):全账号用 refresh_token 换新 AT(不看剩余时长);失败按连续计数判定,连续 3 次 session 失效才自动禁用(网络抖动不计入,刷新成功即清零复活)
+
+  账号门控:上游的**签到与成长写侧任务**(档位兑换、抽奖、猫猫旅行/领养)只对 CN 个人号开放——global 域与企业号在发请求前跳过(空撞既是日志噪音也是风控特征)。**活跃上报连 global 一起报**(国际版 `/v2/report` 实测可用,不报则国际版的连登永远点不亮),而连登天数回读在国际版同样正常(实测),所以上报与自检对 global 照跑、只跳过那里的写侧任务。global 域走 `www.workbuddy.ai`、CN 走 `copilot.tencent.com`(growth)/`www.codebuddy.cn`(billing),按 realm 自动分流。参数(冷却/熔断/超时/排程/账号间隔等)写死在 `server/core/settings.py` 的 `WB_*` 常量。
+
+  **选号**(实现住共用的 `providers/account_pool.py`,但新机制只在 WorkBuddy 打开;Codex 不覆写任何钩子、行为逐字不变):粘性会话优先 → 过滤(冷却/熔断/在途占满/积分保底)→ **成本分层** → **加权随机** → **Top-5 短名单** → **防惊群** → 软冷却兜底。
+  - **加权随机**:`1 + 闲置补偿(0.5/h 封顶 5.0) + credits 项(按候选集最大余额归一,满额 +10)`,未知余额不加 credits 项(按 1.0 计)。**企业额度**走 `get-enterprise-user-usage`(`X-Enterprise-Id`,`credit`=本周期已用四舍五入、`limitNum`=额度;负值=不限量 → 大剩余量 + 总量 -1),所以企业号也有真实余额参与权重与积分保底
+  - **快过期积分加权**:余额查询解析**包级到期时间**(`CycleEndTime`),7 天窗口内到期的余额单独落库;带有效快过期批次的号在候选集里按 3 个虚拟实例计权(`WB_EXPIRING_SLOTS`),把快到期的赠送/补偿积分先花掉——实测本机账号 350 分里有 250 分在 7 天内到期
+  - **成本分层**:按 (账号, 模型) 的**实测扣费**分三层(响应末帧 `usage.credit` 按每千 token 归一 → 0 实测免费 / 1 无观测 / 2 实测收费),只留最优层;存在"免费层垄断 + 无观测号"时每 30 分钟把一轮真实请求改道给无观测号去实测(**条件探索**,零额外上游请求),成功即毕业。`/api/workbuddy/state` 的 `model_costs` 就是这本台账(默认 6 小时观测有效期,"夜间免费"这类时段优惠过期后不再影响选号)
+  - **Top-5 短名单**:按 (单价, 权重) 取前 5 再在名单内加权抽签,打散热点;并列候选在截断前洗牌(否则排序会把并列号里固定的那批钉死在名单里)
+  - **防惊群**:同号 100ms 撞号窗口内让位给其它号(短名单全热时按**单调选中序号**在全候选里取最旧——墙钟精度不足,连续选号可能同一毫秒,只有序号能分全序)
+  - **积分保底**:`WB_CREDIT_FLOOR`(默认 0 = 关闭)触底的号只拒绝**收费**模型,免费/未知倍率照放行(保底的目的正是"留余额给免费模型用");收费判据实测台账优先、目录倍率兜底
+  - **模型级阻塞**:上游 11102("该后端无此模型")按 (账号, 模型) 落**负缓存**(基础 6h、重复命中指数退避封顶 24h,成功请求即清除)——11102 是账号-模型维度的稳定属性,不记的话每次请求都会重撞一遍。当**所有**账号都被该模型挡住时,返回 400 + `model_unavailable`(而不是伪装成"没有可用账号"的 429):换模型才有用,退避重试同一个模型是白等
+  - 选号的"最近使用"时刻与选中序号是进程内状态,重启清零(良性:退化为无补偿/无 LRU)
+- **Codex**:多账号号池,凭证存 `server/data/codex.db` 的 accounts 表(明文)。通过管理台/API 走 **OAuth PKCE 授权码**登录(浏览器授权 → 把回调 URL 粘贴回 `/api/codex/login/exchange` 自动入池),或手动粘贴 `refresh_token`(会立即刷新换取 AT 并解析账号)。`refresh_token` 会**轮换**(上游可能换发新 RT,没换发时保留旧值);token 刷新有两条路——**请求前按需**(距过期不足 10 分钟)与**后台巡检**(每 2 分钟醒来,只刷同样快过期的号;不做全量刷,免得每个号的 RT 周期性轮换),两条路按账号串行化以防 RT 双花;凭证失效(401)先刷新同号重试,连续失败达阈值则禁用待人工重新授权;**上游明确拒绝这张 RT(invalid_grant 等)或换票成功但落库失败时也直接停用**(前者说明票已经死在别处,后者说明新票只在上游那一侧存在过——两种情况库里剩下的都是废票,再拿去换只会白打一次上游)。**额度**(5h/7d 限流窗口)由每次成功响应的 `x-codex-{primary,secondary}-*` 头回填。参数(冷却/熔断/超时/池等)写死在 `server/core/settings.py` 的 `CODEX_*` 常量。
 - **管理 API 与推理端点都无鉴权**,安全姿态是默认只监听 `127.0.0.1`。对外暴露前请自己加反代鉴权(WorkBuddy 与 Codex 号池都有真实凭证,务必先加)。
-- 运行时可持久化配置只有代理三档(`server/config.json`);其余值写死在 `server/core/settings.py` 与各 provider。
+- 运行时可持久化配置有两块(`server/config.json`):**出站代理三档**与 **WorkBuddy 定时任务**(`schedule` 段的四类开关与时点);其余值写死在 `server/core/settings.py` 与各 provider。
 
 ## 架构
 
@@ -106,7 +123,7 @@ server/
 │                        / account_store·account_pool(两个号池 provider 的公共内核:
 │                          SQLite 管道 + 选号/租约/粘性;子类只声明列集与三处钩子)
 ├── providers/opencode/  OpenCode Zen 接入:routing/discovery/upstream
-├── providers/workbuddy/ WorkBuddy 号池接入:pool/store/classify/shape/dsml/streamwrap/upstream/login/checkin
+├── providers/workbuddy/ WorkBuddy 号池接入:pool/store/classify/shape/dsml/streamwrap/upstream/login/checkin/growth/scheduler
 ├── providers/codex/     Codex 号池接入:pool/store/classify/shape/oauth/upstream/login
 ├── net/proxy.py         direct/system(环境变量→WinINET 注册表)/manual
 └── db/                  分库遥测:每 provider 一个 SQLite(requests 表 + 用量聚合;workbuddy/codex 另有 accounts 表)
@@ -119,10 +136,13 @@ web/                     React 管理台(OpenCodePage / WorkBuddyPage / CodexPag
 
 - 会话亲和:首条 user 消息哈希成规范 `ses_` 形态,跨轮次稳定,保住上游 prompt cache。
 - 遥测只进不出(无保留期清理),涨大后需再加 janitor。
-- 首字耗时:遥测记 `requests.first_byte_ms`(上游首个非空字节)。workbuddy 打上游恒流式,该列恒有值;opencode 的 curl 流模式跟随客户端意图——客户端要**非流式**时整包被 curl 缓冲,网关看不到"第一个字节",该列为 0(界面显示「—」)。不拿"整包到齐"冒充首字:那等于总耗时,是条错数据。
+- 首字耗时:遥测记 `requests.first_byte_ms`(上游首个非空字节)。workbuddy 打上游恒流式,该列恒有值;opencode 的 curl 流模式跟随客户端意图——客户端要**非流式**时整包被 curl 缓冲,网关看不到"第一个字节",该列为 0(界面显示「—」)。不拿"整包到齐"冒充首字:那等于总耗时,是条错数据。**吐字速率**同理:分母是扣除首字等待的生成耗时(扣完不足 200ms 或没有首字观测时退回端到端),否则同一模型 TTFB 从 0.3s 涨到 2s 会让速率凭空掉一半,读起来像"模型变慢"。
 - 日志/时间戳强制北京时间(与 SQLite 字符串比较一致)。
+- 定时任务的 cron 是**有意收窄的子集**(`core/cron.py`):支持 `*` / `a` / `a-b` / `a,b` / `*/n` / `a-b/n` / `a/n`,日与周同时受限时按 Vixie 的「或」语义;不支持 `@daily` 别名、秒/年字段、`JAN`/`MON` 英文名与 `L`/`W`/`#` 扩展——遇到即判非法并回具体字段的错误,**不静默降级**(静默降级会让人以为排程生效了)。"永不触发"是合法配置(如 `0 0 30 2 *`),界面显示"该表达式近期不触发"而不是报错。
 - 错误透传:上游 4xx(如限流 429、凭证 401)原样带回,客户端需能区分上游与本地错误(看 `error.type`)。
 - workbuddy 出站脱敏:上游内容审核按**逐字精确匹配**拦整单(400,`code 11128`)——会话里只要出现过 `You are Claude Code, Anthropic's official CLI for Claude` 这类模板句(客户端 system prompt 注入的,或工具结果里引用过参考实现源码),之后**每一轮**都被拒(历史每轮重发)。`providers/workbuddy/sanitize.py` 在出站前把这类指纹做最小改写(换一个词/整段删除 header 键值对),命中即改写并打一条 WARNING 日志。客户端自己的历史不受影响;只改发往上游的副本。
+- workbuddy 出站清理的另一类脏数据:历史里的 `tool_calls[].function.name` 为空/纯空白(流式响应在 name 分片到达前断掉时,客户端会把这个占位写进会话)。上游对它直接回 400 `11133 ... must be a non-empty string`,**带不带配对结果都会拒**——这类脏条目正好命中"按 id 对称裁剪"的保留条件,所以光靠孤儿清理挡不住,整条会话会每轮 400。`shape.py` 的清理层现在把空 name 的调用一并裁掉(判定收窄到「function 存在且 name 是空白串」,缺字段的占位不判脏)。
+- `prompt_cache_key` 缺 `conversation_id` 时回退**会话键**(Anthropic/Claude Code 流量不带对话 id):不回退的话 `conv` 为空串,该账号下所有请求会算出同一个常量键,前缀缓存互相驱逐、每轮都冷启动。
 
 ## 多模态与模型能力适配
 

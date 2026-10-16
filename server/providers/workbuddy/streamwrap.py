@@ -128,10 +128,12 @@ class SseRepairStream:
         repair: MarkupRepair | None,
         on_error_frame: Callable[[str], None] | None = None,
         closer: Callable[[], None] | None = None,
+        on_usage_frame: Callable[[dict[str, Any]], None] | None = None,
     ):
         self._chunks = chunks
         self._repair = repair
         self._on_error_frame = on_error_frame
+        self._on_usage_frame = on_usage_frame
         self._closer = closer
         self._buffer = b""
         self._done = False          # 上游 [DONE] 之后的帧一律丢弃
@@ -209,6 +211,16 @@ class SseRepairStream:
                     pass  # 观察者缺陷不得击穿流透传主路径
             return f"data: {payload}\n\n".encode()
         frames = self._repair_frame(obj, payload)
+        if self._on_usage_frame is not None:
+            # 末帧 usage 观测（成本台账）：上游把本次真实扣费放在 usage.credit 里，
+            # 同一账号在不同模型上"免不免费"只有实测才知道。观察者缺陷不得击穿流。
+            for frame in frames:
+                usage = frame.get("usage")
+                if isinstance(usage, dict):
+                    try:
+                        self._on_usage_frame(usage)
+                    except Exception:
+                        pass
         return "".join(
             f"data: {json.dumps(_normalize_frame(f), ensure_ascii=False)}\n\n" for f in frames
         ).encode("utf-8")

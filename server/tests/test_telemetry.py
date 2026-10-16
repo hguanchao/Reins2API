@@ -127,6 +127,108 @@ def test_record_persists_first_byte_ms():
             store.close()
 
 
+# ── 明细筛选与排序（必须落在 SQL 侧：日志是分页的，只筛当前页会给出假象）──
+
+
+def test_recent_filters_status_model_and_account():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ProviderStore("t", Path(tmp) / "t.db")
+        try:
+            store.log_request(RequestRecord(
+                id="ok", model="oc:big-pickle", upstream_model="big-pickle",
+                account_uid="acct-aaa", http_status=200, created_ms=1_000,
+            ))
+            store.log_request(RequestRecord(
+                id="busy", model="oc:deepseek-v4.1-flash", upstream_model="deepseek-v4.1-flash",
+                account_uid="acct-bbb", http_status=429, created_ms=2_000,
+            ))
+            store.log_request(RequestRecord(
+                id="boom", model="oc:deepseek-v4.1-flash", upstream_model="deepseek-v4.1-flash",
+                account_uid="acct-bbb", http_status=502, created_ms=3_000,
+            ))
+
+            total, rows = store.recent(limit=10, status="failed")
+            assert total == 2 and {r["request_id"] for r in rows} == {"busy", "boom"}
+            total, rows = store.recent(limit=10, status="429")
+            assert total == 1 and rows[0]["request_id"] == "busy"
+            total, _ = store.recent(limit=10, status="4xx")
+            assert total == 1
+            total, _ = store.recent(limit=10, status="5xx")
+            assert total == 1
+            total, _ = store.recent(limit=10, status="2xx")
+            assert total == 1
+            # 认不出的取值当"不筛"：宁可放宽，也不能把日志筛成空
+            total, _ = store.recent(limit=10, status="??")
+            assert total == 3
+
+            # 模型子串同时匹配客户端别名与上游裸名
+            total, rows = store.recent(limit=10, model="deepseek")
+            assert total == 2
+            total, rows = store.recent(limit=10, model="oc:big")
+            assert total == 1 and rows[0]["request_id"] == "ok"
+            # 账号按前缀匹配（uid 是长串，子串匹配没意义）
+            total, _ = store.recent(limit=10, account="acct-b")
+            assert total == 2
+            total, _ = store.recent(limit=10, account="aaa")
+            assert total == 0
+            # 组合筛选是 AND
+            total, rows = store.recent(limit=10, status="failed", model="deepseek", account="acct-b")
+            assert total == 2
+        finally:
+            store.close()
+
+
+def test_recent_like_metachars_are_literal():
+    """用户输入里的 % 和 _ 要当字面量：搜 "a_b" 不该命中 "axb"。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ProviderStore("t", Path(tmp) / "t.db")
+        try:
+            store.log_request(RequestRecord(id="lit", model="oc:a_b", created_ms=1_000))
+            store.log_request(RequestRecord(id="other", model="oc:axb", created_ms=2_000))
+            store.log_request(RequestRecord(id="pct", model="oc:100%free", created_ms=3_000))
+            _, rows = store.recent(limit=10, model="a_b")
+            assert [r["request_id"] for r in rows] == ["lit"]
+            _, rows = store.recent(limit=10, model="100%")
+            assert [r["request_id"] for r in rows] == ["pct"]
+        finally:
+            store.close()
+
+
+def test_recent_sorting_uses_whitelist():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ProviderStore("t", Path(tmp) / "t.db")
+        try:
+            store.log_request(RequestRecord(
+                id="slow", created_ms=1_000, duration_ms=900, first_byte_ms=800,
+                input_tokens=10, output_tokens=5, http_status=200,
+            ))
+            store.log_request(RequestRecord(
+                id="fast", created_ms=2_000, duration_ms=100, first_byte_ms=20,
+                input_tokens=1_000, output_tokens=500, http_status=429,
+            ))
+
+            _, rows = store.recent(limit=10, sort="duration", desc=True)
+            assert [r["request_id"] for r in rows] == ["slow", "fast"]
+            _, rows = store.recent(limit=10, sort="duration", desc=False)
+            assert [r["request_id"] for r in rows] == ["fast", "slow"]
+            # token 排序按输入+输出之和
+            _, rows = store.recent(limit=10, sort="tokens", desc=True)
+            assert [r["request_id"] for r in rows] == ["fast", "slow"]
+            _, rows = store.recent(limit=10, sort="status", desc=False)
+            assert [r["request_id"] for r in rows] == ["slow", "fast"]  # 200 在 429 之前
+            # 默认按时间（id）倒序：最近的在最前
+            _, rows = store.recent(limit=10)
+            assert [r["request_id"] for r in rows] == ["fast", "slow"]
+
+            # 白名单：外部字符串绝不会进 SQL（这里塞的是注入串），退回时间序
+            _, rows = store.recent(limit=10, sort="duration; DROP TABLE requests--")
+            assert [r["request_id"] for r in rows] == ["fast", "slow"]
+            total, _ = store.recent(limit=10)
+            assert total == 2  # 表还在
+        finally:
+            store.close()
+
+
 # ── 迁移：老库（无该列）打开后自动补列 ──
 
 

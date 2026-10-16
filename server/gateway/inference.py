@@ -25,6 +25,7 @@ from db import RequestRecord, store
 from gateway.base import (
     ALIAS_PREFIXES,
     ModelNotFound,
+    ModelUnavailable,
     Provider,
     Route,
     UpstreamResponse,
@@ -238,6 +239,14 @@ def _serve_inner(
             ids,
             stream=client_stream,
         )
+    except ModelUnavailable as exc:
+        # 号都在、只是都不服务这个模型（模型级冷却）：400 + 明确 code。
+        # 用 400 而非 429/503 是刻意的——换号重试必然同样失败，客户端该做的是换模型，
+        # 而不是把"模型不可用"读成"服务端过载"然后自动重试。
+        record.error_message = str(exc)[:255]
+        logger.warning(f"[推理] request={ids.request} 模型不可用: {exc}")
+        _send_error(handler, external, 400, str(exc), "model_unavailable", extra)
+        return 400
     except UpstreamUnavailable as exc:
         # 号池无可用资源（全冷却/全占满）：协议正确的 429，客户端可退避重试
         record.error_message = str(exc)[:255]

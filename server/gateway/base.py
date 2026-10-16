@@ -24,6 +24,19 @@ class UpstreamUnavailable(RuntimeError):
     """provider 无可用上游资源（如号池全冷却/全占满）——推理层映射 429。"""
 
 
+class ModelUnavailable(RuntimeError):
+    """该模型在当前账号池里被模型级冷却挡住（号都在，只是都不服务这个模型）。
+
+    与 UpstreamUnavailable 的区别在调用方该怎么做：池子不可用该退避重试，模型不可用
+    换模型才有用。所以推理层映射 400 + `model_unavailable`——避免客户端把"这个模型
+    不可用"当成服务端过载反复重试（历史形态：503 → 客户端自动重试 5 次）。
+    """
+
+    def __init__(self, message: str, *, hint: str = ""):
+        super().__init__(message)
+        self.hint = hint
+
+
 def random_id(prefix: str, size: int) -> str:
     """prefix_ + size 字节随机 hex（移植自 zen2api util/identity.ts randomID）。"""
     return f"{prefix}_{secrets.token_hex(size)}"
@@ -264,6 +277,7 @@ registry = Registry()
 __all__ = [
     "ModelInfo",
     "ModelNotFound",
+    "ModelUnavailable",
     "Provider",
     "Registry",
     "RequestIDs",

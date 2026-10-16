@@ -10,12 +10,14 @@ import {
   AlertTriangle,
   Boxes,
   CalendarCheck,
+  CalendarClock,
   Check,
   CircleUserRound,
   Copy,
   Cpu,
   Inbox,
   KeyRound,
+  MoreHorizontal,
   Pause,
   Play,
   Plus,
@@ -28,12 +30,18 @@ import { toast } from "sonner";
 import {
   Badge,
   Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
   Empty,
+  Input,
   Pagination,
   Table,
   TableBody,
@@ -52,26 +60,36 @@ import {
   fetchWorkBuddyAccounts,
   fetchWorkBuddyOps,
   fetchWorkBuddyRequests,
+  fetchWorkBuddySchedule,
   pollWorkBuddyLogin,
   refreshProviderModels,
   runWorkBuddyCheckin,
   runWorkBuddyCheckinAll,
+  runWorkBuddyTask,
+  saveWorkBuddySchedule,
   startWorkBuddyLogin,
   workBuddyAccountAction,
+  toggleRequestSort,
+  REQUEST_QUERY_DEFAULT,
   type ModelInfo,
+  type RequestQuery,
   type RequestRow,
   type UsageRange,
   type WorkBuddyAccount,
   type WorkBuddyLoginStart,
   type WorkBuddyOps,
+  type WorkBuddySchedule,
+  type WorkBuddyScheduleTask,
+  type WorkBuddyTaskKind,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
+import { RequestsFilters } from "@/components/requests/RequestsFilters";
 import { ActivityCell } from "@/components/accounts/ActivityCell";
 import { UsageStatsCell } from "@/components/accounts/UsageStatsCell";
 import { catalogTimeLabel, fmtLimit, modelRefreshOutcome } from "@/lib/format";
 import { useSessionCountdown } from "@/lib/countdown";
-import { cn, fmtCompact, fmtInt, parseCreditFactor } from "@/lib/utils";
+import { cn, expiringNote, fmtCompact, fmtInt, parseCreditFactor } from "@/lib/utils";
 
 const AUTO_REFRESH_MS = 10_000;
 const LOGIN_POLL_MS = 3_000;
@@ -272,6 +290,161 @@ function ModelDetailDialog({
   );
 }
 
+/** 北京时间的「月/日 时:分」：任务时点按 UTC+8 结算，与本机时区无关，
+ *  所以展示也钉死在 Asia/Shanghai（本机在东八区之外时不至于看成别的钟点）。 */
+function beijingTimeLabel(ms: number): string {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+/** cron 的粗校验（够用即止）：5 个字段、每字段只含数字与 * , - /。
+ *  语义合法性由后端解析器判定（错误文案也从后端来），这儿只挡明显打错的输入，
+ *  省一次往返。 */
+function cronLooksValid(expr: string): boolean {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5) return false;
+  return fields.every((field) => /^[\d*/,\-]+$/.test(field));
+}
+
+/** 定时任务弹窗：四类任务各自独立开关 + 一条 cron（北京时间），可随时手动跑一趟。
+ *  时点与开关存在服务端（config.json 的 schedule 段），保存即生效、重启保留。 */
+function TaskScheduleDialog({
+  open,
+  onOpenChange,
+  schedule,
+  busyKind,
+  onToggle,
+  onCron,
+  onRun,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  schedule: WorkBuddySchedule | null;
+  busyKind: WorkBuddyTaskKind | null;
+  onToggle: (kind: WorkBuddyTaskKind, enabled: boolean) => void;
+  onCron: (kind: WorkBuddyTaskKind, cron: string) => void;
+  onRun: (kind: WorkBuddyTaskKind) => void;
+}) {
+  /** 正在编辑的 cron 草稿（kind → 文本）；未编辑的行显示服务端的值 */
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+
+  const commit = (task: WorkBuddyScheduleTask) => {
+    const text = drafts[task.kind];
+    if (text === undefined) return;
+    setDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.kind];
+      return next;
+    });
+    const trimmed = text.trim().replace(/\s+/g, " ");
+    if (trimmed === task.cron) return;
+    if (!cronLooksValid(trimmed)) {
+      toast.error("cron 需为 5 个字段（分 时 日 月 周），如 7 9,21 * * *");
+      return;
+    }
+    onCron(task.kind, trimmed);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="wb-task-dialog">
+        <DialogHeader>
+          <DialogTitle>定时任务</DialogTitle>
+        </DialogHeader>
+        <p className="wb-task-hint">
+          时点为 <b>5 字段 cron</b>（分 时 日 月 周），时区恒<b>北京时间</b>；改完回车或点击别处即保存，
+          四类任务互不影响。
+        </p>
+        {!schedule ? (
+          <p className="wb-task-hint">排程状态读取中…</p>
+        ) : (
+          <ul className="wb-task-list">
+            {schedule.tasks.map((task) => (
+              <li key={task.kind} className={cn("wb-task-row", !task.enabled && "is-off")}>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={task.enabled}
+                  aria-label={`${task.label}开关`}
+                  className={cn("wb-switch", task.enabled && "is-on")}
+                  onClick={() => onToggle(task.kind, !task.enabled)}
+                >
+                  <i aria-hidden />
+                </button>
+                <span className="wb-task-name">{task.label}</span>
+                <span className="wb-task-when">
+                  <Input
+                    className="wb-task-cron"
+                    value={drafts[task.kind] ?? task.cron}
+                    disabled={!task.enabled}
+                    aria-label={`${task.label} cron`}
+                    spellCheck={false}
+                    onChange={(event) =>
+                      setDrafts((prev) => ({ ...prev, [task.kind]: event.target.value }))
+                    }
+                    onBlur={() => commit(task)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                      if (event.key === "Escape") {
+                        setDrafts((prev) => {
+                          const next = { ...prev };
+                          delete next[task.kind];
+                          return next;
+                        });
+                        event.currentTarget.blur();
+                      }
+                    }}
+                  />
+                  <small className="wb-task-describe">
+                    {task.enabled
+                      ? task.describe || (task.next_ms ? "" : "该表达式近期不触发")
+                      : "已关闭"}
+                  </small>
+                </span>
+                <span className="wb-task-next">
+                  {task.enabled && task.next_ms ? `下次 ${beijingTimeLabel(task.next_ms)}` : "—"}
+                </span>
+                <span className={cn("wb-task-last", task.last && !task.last.ok && "is-fail")}>
+                  {task.running ? (
+                    <span className="wb-task-running">运行中…</span>
+                  ) : task.last ? (
+                    <>
+                      <span className="wb-task-last-at">{beijingTimeLabel(task.last.at_ms)}</span>
+                      {task.last.ok ? task.last.text : task.last.error}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">尚未运行</span>
+                  )}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busyKind !== null}
+                  onClick={() => onRun(task.kind)}
+                >
+                  {busyKind === task.kind ? "运行中…" : "立即运行"}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <DialogFooter>
+          <Button size="sm" variant="outline" type="button" onClick={() => onOpenChange(false)}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function WorkBuddyPage() {
   const [ops, setOps] = useState<WorkBuddyOps | null>(null);
   const [accounts, setAccounts] = useState<WorkBuddyAccount[]>([]);
@@ -280,11 +453,19 @@ export function WorkBuddyPage() {
   const [busyUid, setBusyUid] = useState<string | null>(null);
   /** 一键全签进行中（后端串行 + 账号间错峰，可能要跑一会儿） */
   const [checkinAllBusy, setCheckinAllBusy] = useState(false);
+  /** 定时任务排程（开关/时点/下次触发/上次结果），随页面轮询一起刷新 */
+  const [schedule, setSchedule] = useState<WorkBuddySchedule | null>(null);
+  /** 手动触发中的任务名（同时只允许跑一个：后端对并发同名任务返回 409） */
+  const [taskBusy, setTaskBusy] = useState<WorkBuddyTaskKind | null>(null);
+  /** 定时任务弹窗 */
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   /** 最近请求分页（服务端 limit/offset，total 由接口返回） */
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
+  /** 最近请求的筛选与排序（服务端执行；空值 = 不筛） */
+  const [query, setQuery] = useState<RequestQuery>(REQUEST_QUERY_DEFAULT);
   /** 用量图表时间范围(今日/7天/14天/30天,默认 7 天) */
   const [usageRange, setUsageRange] = useState<UsageRange>("7d");
   /** 手动「获取模型」进行中 */
@@ -308,10 +489,11 @@ export function WorkBuddyPage() {
   const load = useCallback(async (soft = false) => {
     const id = ++seq.current;
     try {
-      const [opsData, accountData, requestPage] = await Promise.all([
+      const [opsData, accountData, requestPage, scheduleData] = await Promise.all([
         fetchWorkBuddyOps(),
         fetchWorkBuddyAccounts(),
-        fetchWorkBuddyRequests(pageSize, (page - 1) * pageSize),
+        fetchWorkBuddyRequests(pageSize, (page - 1) * pageSize, query),
+        fetchWorkBuddySchedule(),
       ]);
       // 丢弃过期响应：10s 轮询与账号动作触发的刷新可能同时在飞，先发后到的旧结果
       // 不能覆盖新结果（与 OpenCodePage 同一套守卫）。
@@ -325,6 +507,7 @@ export function WorkBuddyPage() {
       setAccounts(accountData);
       setRequests(requestPage.items);
       setTotal(requestPage.total);
+      setSchedule(scheduleData);
       setLoadError(null);
     } catch (error) {
       if (id !== seq.current) return;
@@ -332,7 +515,13 @@ export function WorkBuddyPage() {
         setLoadError(error instanceof ApiError ? error.message : String(error));
       }
     }
-  }, [page, pageSize]);
+  }, [page, pageSize, query]);
+
+  /** 改筛选/排序后回到第 1 页：页码是服务端 offset 的输入，留在旧页会落空 */
+  const patchQuery = useCallback((patch: Partial<RequestQuery>) => {
+    setQuery((prev) => ({ ...prev, ...patch }));
+    setPage(1);
+  }, []);
 
   const changePage = useCallback((next: number) => {
     setPage(Math.max(1, next));
@@ -430,6 +619,34 @@ export function WorkBuddyPage() {
     }
   };
 
+  /** 定时任务开关/时点：保存即生效（服务端热读配置，无需重启） */
+  const saveSchedule = async (
+    patch: Partial<Record<WorkBuddyTaskKind, { enabled?: boolean; cron?: string }>>,
+    okText: string,
+  ) => {
+    try {
+      setSchedule(await saveWorkBuddySchedule(patch));
+      toast.success(okText);
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : String(error));
+      await load(true); // 保存失败：把展示拉回服务端的真实取值
+    }
+  };
+
+  /** 立即运行一类定时任务（与自动排程同一条管线） */
+  const runTask = async (task: WorkBuddyScheduleTask) => {
+    setTaskBusy(task.kind);
+    try {
+      const summary = await runWorkBuddyTask(task.kind);
+      toast.success(summary.summary ? `${task.label}：${summary.summary}` : `${task.label}已完成`);
+      await load(true);
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : String(error));
+    } finally {
+      setTaskBusy(null);
+    }
+  };
+
   const pool = ops?.status.pool;
   const totals = ops?.usage.totals;
 
@@ -459,7 +676,7 @@ export function WorkBuddyPage() {
       <div className="mission-strip mission-strip-gw" role="group" aria-label="WorkBuddy 池 KPI">
         <div className="metric">
           <div className="metric-k">
-            <CircleUserRound className="metric-ico" strokeWidth={1.6} />
+            <CircleUserRound className="metric-ico ico-green" strokeWidth={1.6} />
             可用号
           </div>
           <div className="metric-v is-ok">{pool?.active ?? 0}</div>
@@ -467,7 +684,7 @@ export function WorkBuddyPage() {
         </div>
         <div className="metric">
           <div className="metric-k">
-            <Pause className="metric-ico" strokeWidth={1.6} />
+            <Pause className="metric-ico ico-amber" strokeWidth={1.6} />
             冷却 / 熔断
           </div>
           <div
@@ -484,7 +701,7 @@ export function WorkBuddyPage() {
         </div>
         <div className="metric">
           <div className="metric-k">
-            <Cpu className="metric-ico" strokeWidth={1.6} />
+            <Cpu className="metric-ico ico-cyan" strokeWidth={1.6} />
             在途
           </div>
           <div className="metric-v">{pool?.in_flight ?? 0}</div>
@@ -492,7 +709,19 @@ export function WorkBuddyPage() {
         </div>
         <div className="metric">
           <div className="metric-k">
-            <KeyRound className="metric-ico" strokeWidth={1.6} />
+            <Pause className="metric-ico ico-amber" strokeWidth={1.6} />
+            暂停选号
+          </div>
+          <div className={cn("metric-v", (pool?.paused ?? 0) > 0 && "is-warn")}>
+            {pool?.paused ?? 0}
+          </div>
+          <div className="metric-sub usage-metric-sub">
+            不参与选号 · 保号任务照跑
+          </div>
+        </div>
+        <div className="metric">
+          <div className="metric-k">
+            <KeyRound className="metric-ico ico-indigo" strokeWidth={1.6} />
             模型
           </div>
           <div className="metric-v">{ops?.status.models ?? 0}</div>
@@ -502,7 +731,7 @@ export function WorkBuddyPage() {
         </div>
         <div className="metric">
           <div className="metric-k">
-            <Send className="metric-ico" strokeWidth={1.6} />
+            <Send className="metric-ico ico-blue" strokeWidth={1.6} />
             24h 请求
           </div>
           <div className="metric-v">{fmtInt(totals?.requests ?? 0)}</div>
@@ -512,7 +741,7 @@ export function WorkBuddyPage() {
         </div>
         <div className="metric">
           <div className="metric-k">
-            <Activity className="metric-ico" strokeWidth={1.6} />
+            <Activity className="metric-ico ico-violet" strokeWidth={1.6} />
             24h Tokens
           </div>
           <div className="metric-v">{fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}</div>
@@ -526,10 +755,14 @@ export function WorkBuddyPage() {
       <div className="gw-grid gw-grid-1">
         <section className="gw-panel">
           <div className="gw-panel-head">
-            <CircleUserRound className="size-3.5" strokeWidth={1.6} aria-hidden />
+            <CircleUserRound className="size-3.5 ico-green" strokeWidth={1.6} aria-hidden />
             <h2 className="gw-panel-title">账号池({accounts.length})</h2>
-            {/* 这两个动作只作用于号池，挂在号池面板头上——放页面右上角离作用对象太远 */}
+            {/* 这几个动作只作用于号池，挂在号池面板头上——放页面右上角离作用对象太远 */}
             <div className="gw-head-actions">
+              <Button size="sm" variant="outline" onClick={() => setScheduleOpen(true)}>
+                <CalendarClock className="size-3.5" strokeWidth={1.9} />
+                定时任务
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -582,6 +815,7 @@ export function WorkBuddyPage() {
                       const busy = busyUid === account.uid;
                       const avail = availabilityOf(account);
                       const unsupported = checkinUnsupported(account);
+                      const expiring = expiringNote(account);
                       const checkedToday = account.last_checkin_day === beijingToday();
                       return (
                         <TableRow key={account.uid}>
@@ -616,9 +850,19 @@ export function WorkBuddyPage() {
                             </div>
                           </TableCell>
                           <TableCell className="font-mono text-xs">
-                            {account.credits_remain != null
-                              ? `${fmtCompact(account.credits_remain)} / ${fmtCompact(account.credits_total ?? 0)}`
-                              : "—"}
+                            {/* 双行：上「剩余 / 总」，下快过期提示（没有则整行不出现） */}
+                            <div className="cell-2">
+                              <span>
+                                {account.credits_remain != null
+                                  ? `${fmtCompact(account.credits_remain)} / ${fmtCompact(account.credits_total ?? 0)}`
+                                  : "—"}
+                              </span>
+                              {expiring ? (
+                                <small className={cn("credits-note", expiring.tone)}>
+                                  {expiring.text}
+                                </small>
+                              ) : null}
+                            </div>
                           </TableCell>
                           <TableCell className="text-xs">
                             {unsupported ? (
@@ -670,27 +914,61 @@ export function WorkBuddyPage() {
                                 label={unsupported || (checkedToday ? "再签一次（幂等）" : "立即签到")}
                                 icon={<CalendarCheck className="size-3.5" strokeWidth={1.9} />}
                                 disabled={busy || Boolean(unsupported)}
-                                onClick={() => runCheckin(account)} />
-                              {account.status === "active" ? (
-                                <ActionButton
-                                  label="暂停" icon={<Pause className="size-3.5" strokeWidth={1.9} />}
-                                  disabled={busy} onClick={() => runAccountAction(account, "pause")} />
-                              ) : (
-                                <ActionButton
-                                  label="恢复" icon={<Play className="size-3.5" strokeWidth={1.9} />}
-                                  disabled={busy} onClick={() => runAccountAction(account, "resume")} />
-                              )}
+                                onClick={() => runCheckin(account)} tone="ico-violet" />
                               <ActionButton
                                 label="复活（清除冷却/熔断）" icon={<RotateCcw className="size-3.5" strokeWidth={1.9} />}
-                                disabled={busy} onClick={() => runAccountAction(account, "revive")} />
+                                disabled={busy} tone="ico-green" onClick={() => runAccountAction(account, "revive")} />
                               <ActionButton
                                 label="刷新 Token" icon={<RefreshCw className="size-3.5" strokeWidth={1.9} />}
                                 disabled={busy || !account.has_refresh_token}
-                                onClick={() => runAccountAction(account, "refresh")} />
-                              <ActionButton
-                                label="删除" icon={<Trash2 className="size-3.5" strokeWidth={1.9} />}
-                                disabled={busy} destructive
-                                onClick={() => removeAccount(account)} />
+                                tone="ico-blue" onClick={() => runAccountAction(account, "refresh")} />
+                              {/* 低频与危险动作收进「更多」：常驻留三个，操作列才收得窄 */}
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button
+                                        size="icon"
+                                        className="size-7"
+                                        variant="ghost"
+                                        disabled={busy}
+                                        aria-label="更多操作"
+                                      >
+                                        <MoreHorizontal className="size-3.5" strokeWidth={1.9} />
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end" side="bottom">
+                                      {account.status === "active" ? (
+                                        <DropdownMenuItem
+                                          disabled={busy}
+                                          onSelect={() => runAccountAction(account, "pause")}
+                                        >
+                                          <Pause className="size-3.5 ico-amber" strokeWidth={1.9} />
+                                          暂停
+                                        </DropdownMenuItem>
+                                      ) : (
+                                        <DropdownMenuItem
+                                          disabled={busy}
+                                          onSelect={() => runAccountAction(account, "resume")}
+                                        >
+                                          <Play className="size-3.5 ico-green" strokeWidth={1.9} />
+                                          恢复
+                                        </DropdownMenuItem>
+                                      )}
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem
+                                        variant="destructive"
+                                        disabled={busy}
+                                        onSelect={() => removeAccount(account)}
+                                      >
+                                        <Trash2 className="size-3.5" strokeWidth={1.9} />
+                                        删除
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                </TooltipTrigger>
+                                <TooltipContent side="top">更多操作</TooltipContent>
+                              </Tooltip>
                             </div>
                           </TableCell>
                         </TableRow>
@@ -705,11 +983,26 @@ export function WorkBuddyPage() {
 
       </div>
 
-      <div className="gw-grid">
+            <TaskScheduleDialog
+        open={scheduleOpen}
+        onOpenChange={setScheduleOpen}
+        schedule={schedule}
+        busyKind={taskBusy}
+        onToggle={(kind, enabled) =>
+          void saveSchedule({ [kind]: { enabled } }, enabled ? "已开启" : "已关闭")
+        }
+        onCron={(kind, cron) => void saveSchedule({ [kind]: { cron } }, "时点已更新")}
+        onRun={(kind) => {
+          const task = schedule?.tasks.find((item) => item.kind === kind);
+          if (task) void runTask(task);
+        }}
+      />
+
+<div className="gw-grid">
         {/* ── 左：模型列表 ── */}
         <section className="gw-panel">
           <div className="gw-panel-head">
-            <Boxes className="size-3.5" strokeWidth={1.6} aria-hidden />
+            <Boxes className="size-3.5 ico-indigo" strokeWidth={1.6} aria-hidden />
             <h2 className="gw-panel-title">模型列表({ops?.models.length ?? 0})</h2>
             {/* 目录不再自动刷新：这是唯一的常规获取入口（三页同一枚图标按钮） */}
             <Button
@@ -835,7 +1128,7 @@ export function WorkBuddyPage() {
         {/* ── 右：用量趋势(时间范围可选,默认 7 天) ── */}
         <section className="gw-panel">
           <div className="gw-panel-head">
-            <Activity className="size-3.5" strokeWidth={1.6} aria-hidden />
+            <Activity className="size-3.5 ico-violet" strokeWidth={1.6} aria-hidden />
             <h2 className="gw-panel-title">Token 用量与请求次数</h2>
             <UsageRangeSelect value={usageRange} onChange={setUsageRange} className="ml-auto" />
           </div>
@@ -847,12 +1140,20 @@ export function WorkBuddyPage() {
         {/* ── 最近请求 ── */}
         <section className="gw-panel">
           <div className="gw-panel-head">
-            <Inbox className="size-3.5" strokeWidth={1.6} aria-hidden />
+            <Inbox className="size-3.5 ico-blue" strokeWidth={1.6} aria-hidden />
             <h2 className="gw-panel-title">最近请求</h2>
+            <RequestsFilters
+              value={query}
+              onPatch={patchQuery}
+              models={ops?.models.map((m) => m.id) ?? []}
+              accounts={accounts.map((a) => ({ uid: a.uid, label: a.label || a.uid }))}
+            />
           </div>
           <RequestsTable
             rows={requests}
             accountLabelFor={(uid) => accountLabels.get(uid)}
+            query={query}
+            onSortChange={(key) => patchQuery(toggleRequestSort(query, key))}
           />
 
           <div className="gw-panel-foot">
@@ -884,20 +1185,22 @@ export function WorkBuddyPage() {
 }
 
 function ActionButton({
-  label, icon, onClick, disabled, destructive,
+  label, icon, onClick, disabled, destructive, tone,
 }: {
   label: string;
   icon: ReactNode;
   onClick: () => void;
   disabled?: boolean;
   destructive?: boolean;
+  /** 分类色（见 styles/icons.css 映射表） */
+  tone?: string;
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
           size="icon"
-          className="size-7"
+          className={cn("size-7", tone)}
           variant={destructive ? "destructive" : "ghost"}
           aria-label={label}
           disabled={disabled}

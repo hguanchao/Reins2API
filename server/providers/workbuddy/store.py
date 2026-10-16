@@ -75,6 +75,12 @@ CREATE TABLE IF NOT EXISTS accounts (
     checkin_streak       INTEGER NOT NULL DEFAULT 0,
     checkin_total_credits REAL,
     checkin_updated_ms   INTEGER NOT NULL DEFAULT 0,
+    -- 快过期积分（选号加权依据，见 upstream.fetch_credits_detail / pool 快过期加成）
+    -- credits_expiring = 窗口内到期的那部分余额（是 credits_remain 的子集）；
+    -- credits_earliest_* = 最近一批到期包的到期时刻与余额（无到期包为 0）
+    credits_expiring          REAL NOT NULL DEFAULT 0,
+    credits_earliest_at_ms    INTEGER NOT NULL DEFAULT 0,
+    credits_earliest_remaining REAL NOT NULL DEFAULT 0,
     -- 时间
     created_ms           INTEGER NOT NULL,
     updated_ms           INTEGER NOT NULL
@@ -88,6 +94,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("checkin_streak", "INTEGER NOT NULL DEFAULT 0"),
     ("checkin_total_credits", "REAL"),
     ("checkin_updated_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("credits_expiring", "REAL NOT NULL DEFAULT 0"),
+    ("credits_earliest_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("credits_earliest_remaining", "REAL NOT NULL DEFAULT 0"),
 )
 
 _ACCOUNT_COLUMNS = (
@@ -97,6 +106,7 @@ _ACCOUNT_COLUMNS = (
     "model_cooldowns", "consecutive_failures", "credits_total", "credits_remain",
     "credits_updated_ms", "used_seq", "idle_boost", "last_error",
     "last_checkin_day", "checkin_streak", "checkin_total_credits", "checkin_updated_ms",
+    "credits_expiring", "credits_earliest_at_ms", "credits_earliest_remaining",
     "created_ms", "updated_ms",
 )
 
@@ -106,6 +116,7 @@ _RUNTIME_FIELDS = frozenset({
     "model_cooldowns", "consecutive_failures", "credits_total", "credits_remain",
     "credits_updated_ms", "used_seq", "idle_boost", "last_error",
     "last_checkin_day", "checkin_streak", "checkin_total_credits", "checkin_updated_ms",
+    "credits_expiring", "credits_earliest_at_ms", "credits_earliest_remaining",
     "status", "status_reason",
 })
 
@@ -144,6 +155,9 @@ class Account:
     checkin_streak: int = 0
     checkin_total_credits: float | None = None
     checkin_updated_ms: int = 0
+    credits_expiring: float = 0.0
+    credits_earliest_at_ms: int = 0
+    credits_earliest_remaining: float = 0.0
     created_ms: int = 0
     updated_ms: int = 0
 
@@ -189,6 +203,9 @@ class Account:
             "checkin_streak": self.checkin_streak,
             "checkin_total_credits": self.checkin_total_credits,
             "checkin_updated_ms": self.checkin_updated_ms,
+            "credits_expiring": self.credits_expiring,
+            "credits_earliest_at_ms": self.credits_earliest_at_ms,
+            "credits_earliest_remaining": self.credits_earliest_remaining,
             "created_ms": self.created_ms,
             "updated_ms": self.updated_ms,
         }
@@ -241,6 +258,9 @@ class WorkBuddyStore(AccountStore):
             checkin_streak=int(data.get("checkin_streak") or 0),
             checkin_total_credits=data.get("checkin_total_credits"),
             checkin_updated_ms=int(data.get("checkin_updated_ms") or 0),
+            credits_expiring=float(data.get("credits_expiring") or 0.0),
+            credits_earliest_at_ms=int(data.get("credits_earliest_at_ms") or 0),
+            credits_earliest_remaining=float(data.get("credits_earliest_remaining") or 0.0),
             created_ms=int(data.get("created_ms") or 0),
             updated_ms=int(data.get("updated_ms") or 0),
         )

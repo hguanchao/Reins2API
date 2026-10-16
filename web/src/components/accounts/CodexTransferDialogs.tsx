@@ -23,12 +23,9 @@ import { cn } from "@/lib/utils";
  *
  * 格式取自两个参考项目：CLIProxyAPI 把每个账号存成一个 auth JSON（键为
  * `type/email/plan_type/expired/id_token/account_id/access_token/last_refresh/
- * refresh_token`，另有 `use_siwc` + 嵌套 `siwc` 分区装 Sign in with ChatGPT 那套
- * 凭证），codex2api 的导出结构体就是照它来的（`cpaExportEntry`），而它的导入宽容
- * 接受"单对象 / 数组 / 带 accounts 的封装"三种形状。
- * 所以这里：**导入宽容**（含 siwc 分区，按实际在用的那套凭证入库），**导出分两档**
- * （cpa 给单文件形状，codex2api 给批量迁移封装）；导入默认带一次「校验+认领」
- * （见 api.importCodexAccounts 的说明）。
+ * refresh_token`），codex2api 的导出结构体就是照它来的（`cpaExportEntry`），
+ * 而它的导入宽容接受"单对象 / 数组 / 带 accounts 的封装"三种形状。
+ * 所以这里：**导入宽容**，**导出分两档**（cpa 给单文件形状，codex2api 给批量迁移封装）。
  */
 
 /** 把导出结果落成 .json 下载（前端触发，避免给接口加 Content-Disposition）。 */
@@ -80,7 +77,6 @@ export function CodexImportDialog({
   onImported: () => void | Promise<void>;
 }) {
   const [text, setText] = useState("");
-  const [claim, setClaim] = useState(true);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<CodexImportSummary | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -95,23 +91,16 @@ export function CodexImportDialog({
     if (!text.trim()) return;
     setBusy(true);
     try {
-      const summary = await importCodexAccounts(text, claim);
+      const summary = await importCodexAccounts(text);
       setResult(summary);
       if (summary.imported + summary.updated > 0) {
         toast.success(
           `导入完成：新增 ${summary.imported}、更新 ${summary.updated}` +
-            (summary.skipped ? `、跳过 ${summary.skipped}` : "") +
-            (summary.unverified ? `、待重新授权 ${summary.unverified}` : ""),
+            (summary.skipped ? `、跳过 ${summary.skipped}` : ""),
         );
         // 跳过的详情跟 toast 走：弹窗随即关闭，结果面板留不住这些信息
         if (summary.errors.length) {
           toast.warning(summary.errors.slice(0, 3).join("；"), { duration: 8000 });
-        }
-        if (summary.unverified) {
-          toast.warning(
-            `${summary.unverified} 个号的 refresh_token 已失效，只有 access_token 还能用到到期`,
-            { duration: 10000 },
-          );
         }
         // 先关窗再刷新：目录补刷在服务端后台线程里跑，onImported 要等它一拍
         reset();
@@ -144,27 +133,9 @@ export function CodexImportDialog({
         <div className="grid gap-3 text-[13px]">
           <p className="text-muted-foreground leading-[1.6]">
             支持 <b>CLIProxyAPI(CPA)</b> 与 <b>codex2api</b> 导出的 JSON：单个账号对象、
-            账号数组、或带 <span className="mono">accounts</span> 的迁移封装都可以
-            （CPA 文件里的 <span className="mono">siwc</span> 分区会按实际在用的那套
-            凭证导入）。同一账号重复导入会覆盖凭证并清掉旧的冷却/熔断（等于人工恢复）。
+            账号数组、或带 <span className="mono">accounts</span> 的迁移封装都可以。
+            同一账号重复导入会覆盖凭证并清掉旧的冷却/熔断（等于人工恢复）。
           </p>
-
-          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border px-3 py-2">
-            <input
-              type="checkbox"
-              checked={claim}
-              onChange={(event) => setClaim(event.target.checked)}
-              className="mt-[2px] size-3.5 shrink-0 accent-[var(--primary)]"
-            />
-            <span className="leading-[1.5]">
-              <span className="font-medium">导入时校验并认领 refresh_token</span>
-              <span className="text-muted-foreground block text-[11px]">
-                逐条用它换一次新票：当场发现已被上游作废的凭证，并把所有权拿到本系统。
-                Codex 的 refresh_token 单次使用且每次刷新都会轮换——源系统（如
-                CPA）还要继续用这批账号时请取消勾选，否则两边会互相作废。
-              </span>
-            </span>
-          </label>
 
           <div className="flex items-center gap-2">
             <input
@@ -230,19 +201,10 @@ export function CodexImportDialog({
               <div>
                 共 {result.total} 条：新增 {result.imported}、更新 {result.updated}、跳过{" "}
                 {result.skipped}
-                {result.claimed ? `、已认领 ${result.claimed}` : ""}
-                {result.unverified ? `、待重新授权 ${result.unverified}` : ""}
               </div>
               {result.errors.length ? (
                 <ul className="mt-1.5 list-disc space-y-0.5 pl-4 opacity-90">
                   {result.errors.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              ) : null}
-              {result.warnings?.length ? (
-                <ul className="mt-1.5 list-disc space-y-0.5 pl-4 opacity-80">
-                  {result.warnings.map((item) => (
                     <li key={item}>{item}</li>
                   ))}
                 </ul>

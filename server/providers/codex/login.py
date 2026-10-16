@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 from core.logger import logger
 from core.settings import CODEX_LOGIN_TTL_S, CODEX_REDIRECT_URI
 from providers.codex import oauth
-from providers.codex.store import Account, CodexStore
+from providers.codex.store import Account, CodexStore, write_with_retry
 
 # 回调监听参数直接从 redirect_uri（http://localhost:1455/auth/callback）推出来。
 _REDIRECT = urlparse(CODEX_REDIRECT_URI)
@@ -222,7 +222,15 @@ class LoginManager:
             token_expires_ms=tokens.expires_ms(),
         )
         # 重新授权 = 人工恢复口径：INSERT OR REPLACE 覆盖旧凭证与遗留的禁用/冷却/熔断。
-        self._store.upsert_account(account)
+        # 落库失败必须明说：授权码已经兑掉了，写不进去就等于这次授权白做，
+        # 用户得重新发起（不能报个含糊的失败让他反复重试同一段回调）。
+        try:
+            write_with_retry(lambda: self._store.upsert_account(account))
+        except Exception as exc:
+            raise RuntimeError(
+                f"授权已兑换但保存失败（{type(exc).__name__}: {exc}）；"
+                "本次授权码已作废，请重新发起授权"
+            ) from exc
         result = {
             "uid": uid,
             "email": info.email,

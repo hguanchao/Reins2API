@@ -33,6 +33,22 @@
   gap: 8px;
 }
 
+/* ── 窄屏面板头：标题占一行、动作组换到下一行 ──────────────────────
+   面板头是 flex 行且原来不换行：窄屏上动作组（刷新额度/导入/导出/添加账号）
+   保持自身宽度顶出去，标题被压成一列一个字，最右那个按钮还会溢出卡片边界。
+   这里允许换行：第一行留给标题，动作组带着 margin-left:auto 落到第二行右对齐
+   （窄屏下右对齐比左对齐更贴近"主操作在右下"的读法）。 */
+@media (max-width: 900px) {
+  .gw-panel-head {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+  .gw-head-actions {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+}
+
 /* ── 页面级提示条（加载失败等）─────────────────────────────────────
    此前 `.banner` / `.is-danger` 只在 TSX 里出现、全项目没有任何样式定义，
    于是页面唯一的错误状态渲染成一段裸文字，和正文完全分不出来。
@@ -502,7 +518,7 @@
 }
 .gw-panel-head > svg {
   flex-shrink: 0;
-  opacity: 0.75;
+  /* 同上：面板头图标按分类色着色，不走透明度降噪 */
 }
 .gw-panel-title {
   margin: 0;
@@ -510,6 +526,10 @@
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--foreground);
+  /* 标题永不参与宽度收缩：默认 flex-shrink:1 且中文可按字断行，窄屏上会被挤成
+     "账/号/池" 一列一个字；nowrap 让它的最小宽度等于整条文字，不够就把动作组
+     挤到下一行（见下面的窄屏规则）。 */
+  white-space: nowrap;
 }
 .gw-panel-meta {
   margin-left: auto;
@@ -629,7 +649,8 @@
 .gw-workspace .metric-ico {
   width: 12px;
   height: 12px;
-  opacity: 0.7;
+  /* 不再压透明度：图标现在按分类色着色（styles/icons.css），半透明会把色相
+     洗成灰调，同一套色板在不同图标上深浅不一。存在感靠 12px 的尺寸就够。 */
 }
 
 /* 失败率：对齐 demo 的 .stat-sub——副行一律浅色，不做红黄绿分级。

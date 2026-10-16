@@ -1,4 +1,4 @@
-import { ArrowRight, Inbox } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronUp, Inbox } from "lucide-react";
 import {
   Badge,
   Empty,
@@ -15,26 +15,64 @@ import {
 } from "@/components/ui";
 import { CacheCell } from "@/components/usage/CacheCell";
 import { effortTone, fmtSeconds, protocolTone, statusTone } from "@/lib/format";
-import type { RequestRow } from "@/lib/api";
+import type { RequestQuery, RequestRow, RequestSortKey } from "@/lib/api";
 import { cn, fmtClock, fmtCompact, fmtInt, latencyMark, shortClientUa } from "@/lib/utils";
 
 /**
- * 最近请求明细表（OpenCode / WorkBuddy 两页共用）。
+ * 最近请求明细表（OpenCode / WorkBuddy / Codex 三页共用）。
  *
  * accountLabelFor 传入时多渲染一列「账号」（号池 provider 才有归属账号，uid → 显示名）；
  * 不传则与旧 OpenCode 表逐字一致。列结构、单元格样式与分档规则集中在这里，
- * 避免两页各抄一份后漂移（此前两页的请求表已有近 460 行重复）。
+ * 避免各页各抄一份后漂移（此前两页的请求表已有近 460 行重复）。
+ *
+ * query / onSortChange 传入时，表头可点排序（时间 / Token / 耗时 / 状态）——排序与
+ * 筛选都走服务端，客户端排只会排当前页。不传则是纯展示表。
  */
 export function RequestsTable({
   rows,
   accountLabelFor,
+  query,
+  onSortChange,
 }: {
   rows: RequestRow[];
   /** 有则渲染「账号」列：uid → 账号名（缺名回退截断 uid，悬停看完整 uid） */
   accountLabelFor?: (uid: string) => string | undefined;
+  /** 当前排序与筛选（表头的活动态与 aria-sort 由它决定） */
+  query?: RequestQuery;
+  /** 点表头：同列切换升/降，换列默认倒序 */
+  onSortChange?: (key: RequestSortKey) => void;
 }) {
   const showAccount = accountLabelFor !== undefined;
   const colSpan = showAccount ? 13 : 12;
+  const sortable = query !== undefined && onSortChange !== undefined;
+  const sortHead = (label: string, key: RequestSortKey, className?: string) => (
+    <TableHead
+      className={cn(className, sortable && "req-sort-head")}
+      aria-sort={
+        sortable && query.sort === key ? (query.desc ? "descending" : "ascending") : undefined
+      }
+    >
+      {sortable ? (
+        <button
+          type="button"
+          className="req-sort-btn"
+          onClick={() => onSortChange?.(key)}
+          title={`按${label}排序`}
+        >
+          {label}
+          {query.sort === key ? (
+            query.desc ? (
+              <ChevronDown className="size-3" strokeWidth={2} aria-hidden />
+            ) : (
+              <ChevronUp className="size-3" strokeWidth={2} aria-hidden />
+            )
+          ) : null}
+        </button>
+      ) : (
+        label
+      )}
+    </TableHead>
+  );
 
   return (
     <div className={cn("gw-table-card", rows.length === 0 && "is-empty")}>
@@ -42,7 +80,7 @@ export function RequestsTable({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>时间</TableHead>
+              {sortHead("时间", "time")}
               {showAccount ? <TableHead>账号</TableHead> : null}
               <TableHead>客户端</TableHead>
               <TableHead>出口 IP</TableHead>
@@ -50,9 +88,9 @@ export function RequestsTable({
               <TableHead>协议</TableHead>
               <TableHead>流式</TableHead>
               <TableHead>思考强度</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead>耗时</TableHead>
-              <TableHead>Token</TableHead>
+              {sortHead("状态", "status")}
+              {sortHead("耗时", "duration")}
+              {sortHead("Token", "tokens")}
               <TableHead>缓存</TableHead>
               <TableHead>原因</TableHead>
             </TableRow>
@@ -184,7 +222,7 @@ export function RequestsTable({
                       <div className="cell-2 is-compact items-start">
                         <span
                           className={cn(
-                            "mono",
+                            "mono whitespace-nowrap",
                             latency.ttft === "warn" && "text-warn",
                             latency.ttft === "bad" && "font-medium text-destructive",
                           )}
@@ -193,7 +231,10 @@ export function RequestsTable({
                           首字 {row.first_byte_ms > 0 ? fmtSeconds(row.first_byte_ms, 1) : "—"}
                         </span>
                         <small
-                          className={cn("mono", latency.slow && "font-medium text-destructive")}
+                          className={cn(
+                            "mono whitespace-nowrap",
+                            latency.slow && "font-medium text-destructive",
+                          )}
                           title={`耗时 ${row.duration_ms}ms${
                             latency.speed != null ? ` · ${latency.speed.toFixed(1)} tok/s` : ""
                           }`}
@@ -206,7 +247,7 @@ export function RequestsTable({
                       <Tooltip>
                         <TooltipTrigger asChild>
                           {/* 上输入、下输出：并排两个裸数字只看颜色认不出哪条是哪条 */}
-                          <span className="usage-token-pair">
+                          <span className="usage-token-pair whitespace-nowrap">
                             <span className="in">输入 {fmtCompact(row.input_tokens)}</span>
                             <span className="out">输出 {fmtCompact(row.output_tokens)}</span>
                           </span>

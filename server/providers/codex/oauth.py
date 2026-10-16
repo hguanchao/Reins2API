@@ -4,11 +4,6 @@
 授权 `{AUTH}/oauth/authorize`、兑换与刷新 `{AUTH}/oauth/token`；client_id 与
 redirect_uri 是 Codex CLI 内置的公开固定值。刷新走 grant_type=refresh_token，
 响应可能换发新 refresh_token（RT 轮换）——没换发时调用方应保留旧值。
-
-另有一套凭证形态 **SIWC（Sign in with ChatGPT）**（CPA auth 文件里的 use_siwc 分区）：
-端点、client 与受众都不同（`/api/accounts/oauth/token` + `resource` 参数，见
-settings 里的 CODEX_SIWC_* 与 refresh_siwc）。两套票不通用：拿外层端点刷 SIWC 的
-RT，上游只会回 invalid_refresh_token。
 """
 
 from __future__ import annotations
@@ -30,8 +25,6 @@ from core.settings import (
     CODEX_REDIRECT_URI,
     CODEX_REFRESH_SCOPES,
     CODEX_SCOPES,
-    CODEX_SIWC_RESOURCE,
-    CODEX_SIWC_TOKEN_URL,
     CODEX_TIMEOUT_CONNECT,
     CODEX_TIMEOUT_TTFB,
 )
@@ -42,40 +35,12 @@ _TOKEN_PATH = "/oauth/token"
 _TOKEN_UA = f"codex-cli/{CODEX_CLI_VERSION}"
 
 
-class TokenRejected(RuntimeError):
-    """token 端点明确拒绝了这次请求（4xx）：手里的 RT/授权不可用，重试无意义。
-
-    与传输失败、5xx 分开——调用方据此把"需重新授权"与"这次没打通"分开处理：
-    导入时的校验/认领只把前者算成"凭证已死"，后者仍当可用的号入库。
-    """
-
-    def __init__(self, status_code: int, body: str):
-        self.status_code = status_code
-        self.body = body
-        super().__init__(f"token 端点 HTTP {status_code}: {body[:160]}")
-
-    @property
-    def code(self) -> str:
-        """上游错误码（invalid_refresh_token / invalid_grant / refresh_token_reused…）。"""
-        try:
-            payload = json.loads(self.body)
-        except ValueError:
-            return ""
-        if not isinstance(payload, dict):
-            return ""
-        error = payload.get("error")
-        if isinstance(error, dict):
-            return str(error.get("code") or error.get("type") or "").strip()
-        return str(payload.get("error") or "").strip()
-
-
 @dataclass
 class TokenData:
     access_token: str = ""
     refresh_token: str = ""
     id_token: str = ""
     expires_in: int = 0
-    scope: str = ""      # SIWC 会回 scope（须含 chatgpt.tokens.use.direct），外层不回
 
     def expires_ms(self) -> int:
         """绝对过期毫秒；expires_in 缺失/非正按 3600s 兜底（与参考实现一致）。"""
@@ -126,42 +91,102 @@ def authorize_url(state: str, challenge: str, redirect_uri: str = CODEX_REDIRECT
     return f"{CODEX_AUTH_BASE}{_AUTHORIZE_PATH}?{urlencode(params)}"
 
 
-def _post_token(
-    form: dict[str, str],
-    *,
-    url: str | None = None,
-    timeout_s: float | None = None,
-) -> TokenData:
-    """POST 表单到 token 端点。
+class TokenRejected(RuntimeError):
+    """上游**明确拒绝**这组凭证（4xx + 认识的错误码，如 invalid_grant）。
 
-    失败分两类：4xx 抛 `TokenRejected`（凭证/授权被拒，重试无意义），其余
-    （5xx、响应不是 JSON、缺 access_token）抛 RuntimeError。
+    终局：这张 RT 已经死了（被别的持有者换走、过期或被撤销），重试与换代理都
+    换不出票，只能人工重新授权/重新导出。判据只认错误体里的 code——CF/网页
+    拦截返回的 HTML 没有 code，那种归到"结果不确定"（见 RefreshUncertain）。
     """
-    url = url or f"{CODEX_AUTH_BASE}{_TOKEN_PATH}"
-    read_s = float(timeout_s) if timeout_s else float(CODEX_TIMEOUT_TTFB - CODEX_TIMEOUT_CONNECT)
-    response = crequests.post(
-        url,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-            "User-Agent": _TOKEN_UA,
-        },
-        data=urlencode(form),
-        timeout=(float(CODEX_TIMEOUT_CONNECT), read_s),
-        proxies=proxies_for(url),
-        impersonate="chrome",
-    )
-    body = response.text or ""
-    if 400 <= response.status_code < 500:
-        raise TokenRejected(response.status_code, body)
+
+
+class RefreshUncertain(RuntimeError):
+    """交换结果不确定：传输失败、5xx、或 200 但响应畸形。
+
+    请求可能已经到了上游并把 RT 轮换走（新票在这里就丢了），也可能压根没发出去。
+    两种都不该据此判死账号：留给下一次刷新去试，真死了会拿到 invalid_grant
+    收敛到 TokenRejected。取舍对照 codex2api 的 ErrCodexRefreshUncertain。
+    """
+
+
+# 上游明说"这组凭证不行"的错误码（白名单对照 codex2api 的 isNonRetryable）
+_REJECTED_CODES = frozenset({
+    "invalid_grant", "invalid_client", "unauthorized_client", "access_denied",
+    "refresh_token_reused", "refresh_token_invalidated", "refresh_token_expired",
+    "refresh_token_revoked", "token_invalidated",
+})
+
+
+def _secret_of(form: dict[str, str]) -> str:
+    """本次请求里要抹掉的凭证（错误消息可能被上游原样回显）。"""
+    return str(form.get("refresh_token") or form.get("code") or "")
+
+
+def _redact(text: str, secret: str) -> str:
+    return text.replace(secret, "[REDACTED]") if secret else text
+
+
+def _error_code(body: str) -> str:
+    """错误体里的 error 码：标准形状是字符串，也有 `{"error":{"code":…}}` 的写法。"""
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    error = payload.get("error")
+    if isinstance(error, str):
+        return error.strip().lower()
+    if isinstance(error, dict):
+        return str(error.get("code") or error.get("type") or "").strip().lower()
+    return ""
+
+
+def _is_rejected(code: str, body: str) -> bool:
+    """明确的拒绝：认识的错误码优先；没有码就退回到错误体里找同族关键字
+    （有的实现把 invalid_grant 塞在别的字段里）。"""
+    if code:
+        return code in _REJECTED_CODES
+    lowered = body.lower()
+    return any(needle in lowered for needle in _REJECTED_CODES)
+
+
+def _post_token(form: dict[str, str]) -> TokenData:
+    """POST 表单到 token 端点。失败按"终局 / 不确定"两类抛出（消息里抹掉凭证）。
+
+    RuntimeError 的既有调用方不受影响：两个分类都是它的子类。
+    """
+    url = f"{CODEX_AUTH_BASE}{_TOKEN_PATH}"
+    secret = _secret_of(form)
+    try:
+        response = crequests.post(
+            url,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+                "User-Agent": _TOKEN_UA,
+            },
+            data=urlencode(form),
+            timeout=(float(CODEX_TIMEOUT_CONNECT), float(CODEX_TIMEOUT_TTFB - CODEX_TIMEOUT_CONNECT)),
+            proxies=proxies_for(url),
+            impersonate="chrome",
+        )
+    except crequests.RequestsError as exc:
+        raise RefreshUncertain(f"token 端点传输失败: {_redact(str(exc), secret)}") from exc
+    body = _redact(response.text or "", secret)
     if response.status_code != 200:
-        raise RuntimeError(f"token 端点 HTTP {response.status_code}: {body[:160]}")
+        code = _error_code(body)
+        detail = f" code={code}" if code else ""
+        message = f"token 端点 HTTP {response.status_code}{detail}: {body[:160]}"
+        if _is_rejected(code, body):
+            raise TokenRejected(message)
+        raise RefreshUncertain(message)
     try:
         payload = json.loads(body)
     except ValueError as exc:
-        raise RuntimeError(f"token 响应非 JSON: {body[:160]}") from exc
+        raise RefreshUncertain(f"token 响应非 JSON: {body[:160]}") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError("token 响应形状异常")
+        raise RefreshUncertain("token 响应形状异常")
     data = TokenData(
         access_token=str(payload.get("access_token") or ""),
         refresh_token=str(payload.get("refresh_token") or ""),
@@ -169,10 +194,9 @@ def _post_token(
         expires_in=int(payload.get("expires_in") or 0) if isinstance(
             payload.get("expires_in"), (int, float)
         ) else 0,
-        scope=str(payload.get("scope") or ""),
     )
     if not data.access_token:
-        raise RuntimeError("token 响应缺少 access_token")
+        raise RefreshUncertain("token 响应缺少 access_token")
     return data
 
 
@@ -187,39 +211,18 @@ def exchange_code(code: str, verifier: str, redirect_uri: str = CODEX_REDIRECT_U
     })
 
 
-def refresh(refresh_token: str, *, timeout_s: float | None = None) -> TokenData:
-    """RT 换 AT（grant_type=refresh_token）。"""
+def refresh(refresh_token: str) -> TokenData:
+    """RT 换 AT（grant_type=refresh_token）。
+
+    失败抛 TokenRejected（这张票已死，终局）或 RefreshUncertain（交换可能已经
+    发生但结果没拿到）——两者的后续处置完全不同，见 _post_token。
+    """
     return _post_token({
         "grant_type": "refresh_token",
         "client_id": CODEX_CLIENT_ID,
         "refresh_token": refresh_token,
         "scope": CODEX_REFRESH_SCOPES,
-    }, timeout_s=timeout_s)
-
-
-def refresh_siwc(refresh_token: str, client_id: str, *, timeout_s: float | None = None) -> TokenData:
-    """SIWC（Sign in with ChatGPT）凭证刷新：另一套端点 + `resource` 参数。
-
-    事实依据取自 CLIProxyAPI 的 `RefreshSIWCTokens`（internal/auth/codex/siwc_auth.go）：
-    端点 `/api/accounts/oauth/token`，表单 `grant_type=refresh_token` + `client_id` +
-    `refresh_token` + `resource=https://api.openai.com/v1`。三个字段缺一不可——少了
-    resource 上游就按另一个受众签票，票在 api.openai.com/v1 上不认。
-
-    `device_id` 不参与这个请求（它只出现在授权 URL 的 `ext_agent_host_id`），所以
-    不在这里传；`client_id` 必须是授权时实际签发的那个（文件里带的那个）。
-    """
-    token = (refresh_token or "").strip()
-    client = (client_id or "").strip()
-    if not token:
-        raise ValueError("缺少 SIWC refresh_token")
-    if not client:
-        raise ValueError("缺少 SIWC client_id（CPA 的 siwc 分区里有它，缺了只能重新授权）")
-    return _post_token({
-        "grant_type": "refresh_token",
-        "client_id": client,
-        "refresh_token": token,
-        "resource": CODEX_SIWC_RESOURCE,
-    }, url=CODEX_SIWC_TOKEN_URL, timeout_s=timeout_s)
+    })
 
 
 def _b64url_decode(segment: str) -> bytes:

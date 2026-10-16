@@ -329,13 +329,41 @@ def _repack_tool_result_blocks(messages: list[Any]) -> bool:
     return True
 
 
+def _tool_call_name_empty(tc: Any) -> bool:
+    """该 tool_call 的 function.name 是否为空/纯空白。
+
+    只认「function 对象存在、name 字段存在且是空白字符串」这一种形态：历史报文里
+    有既不带 function、也不带 name 的占位条目，上游不因此拒参，这里不扩大打击面。
+    """
+    if not isinstance(tc, dict):
+        return False
+    function = tc.get("function")
+    if not isinstance(function, dict):
+        return False
+    name = function.get("name")
+    if not isinstance(name, str):
+        return False
+    return name.strip() == ""
+
+
 def _cleanup_orphan_tool_calls(messages: list[Any]) -> bool:
-    """剔除无法配对的 tool_call 与 tool 结果（工具执行失败的坏历史会让上游对
-    之后每条消息都 400，整条会话报废——这是让会话自愈的安全网）。"""
+    """剔除无法配对的 tool_call 与 tool 结果，以及 function.name 为空的脏调用。
+
+    工具执行失败的坏历史会让上游对之后每条消息都 400，整条会话报废——这是让会话
+    自愈的安全网。
+
+    空 name 的判定（对齐 wb2api 线上 11133）：上游流式响应在工具调用 name 分片到达
+    前异常结束（200 空流也算）时，聚合器会产出 `name:""` 的条目，客户端把它写进
+    会话历史，下一轮原样转发即被上游判 `11133 ... function.name must be a non-empty
+    string`——**带不带配对结果都会拒**，所以光靠"按 id 对称裁剪"挡不住：带结果的
+    脏条目正好命中 keep 原样出站。这里把空 name 的调用一并否决（删除动作复用两侧
+    对称裁剪，assistant 消息本身保留）。
+    """
     if not messages:
         return False
     call_ids: set[str] = set()
     result_ids: set[str] = set()
+    name_bad_ids: set[str] = set()
     for item in messages:
         if not isinstance(item, dict):
             continue
@@ -346,9 +374,11 @@ def _cleanup_orphan_tool_calls(messages: list[Any]) -> bool:
             for tc in item["tool_calls"]:
                 if isinstance(tc, dict) and isinstance(tc.get("id"), str) and tc["id"]:
                     call_ids.add(tc["id"])
+                    if _tool_call_name_empty(tc):
+                        name_bad_ids.add(tc["id"])
     if not call_ids and not result_ids:
         return False
-    keep = {cid for cid in call_ids if cid in result_ids}
+    keep = {cid for cid in call_ids if cid in result_ids and cid not in name_bad_ids}
     changed = False
     # ① assistant.tool_calls 按 keep 对称裁剪（只留有结果的调用；过滤后为空删键）。
     for item in messages:

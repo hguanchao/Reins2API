@@ -145,6 +145,15 @@ def _code_marker(lower_body: str, code: str) -> bool:
     return f'"code":{code}' in lower_body or f'"code": {code}' in lower_body
 
 
+def session_dead_text(text: str) -> bool:
+    """文案里是否出现 session 死亡标记。
+
+    给 refresh 失败留的口子：那条路径只有上游 msg 文本（没有状态码可判），
+    保活任务据此决定要不要计入「连续 N 次 → 禁用」。
+    """
+    return any(marker in (text or "") for marker in _SESSION_DEAD_MARKERS)
+
+
 def _prompt_too_long(status: int, body: str) -> bool:
     if status not in (400, 404, 413):
         return False

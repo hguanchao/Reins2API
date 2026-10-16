@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -37,6 +38,14 @@ REFRESH_PATH = "/v2/plugin/auth/token/refresh"
 V3_CONFIG_PATH = "/v3/config"
 USER_RESOURCE_PATH = "/billing/meter/get-user-resource"
 USER_RESOURCE_PATH_V2 = "/v2/billing/meter/get-user-resource"
+# 企业版额度不属「个人资源包」体系：get-user-resource* 对企业号恒返回空 Accounts
+# （实测 code 0 且 Accounts null），企业额度走这个端点（wb2api enterpriseResource）。
+ENTERPRISE_USAGE_PATH = "/v2/billing/meter/get-enterprise-user-usage"
+
+# 「不限量」在企业额度里的等价表示（limitNum < 0）：余额给一个不可能触顶的大数、
+# 总量给 -1 标记不限。这样路由权重（credits 项）与积分保底都不构成限制。
+ENTERPRISE_UNLIMITED_REMAIN = 1 << 40
+ENTERPRISE_UNLIMITED_TOTAL = -1.0
 
 # /v3/config 对 UA 敏感（UA 常量见 default_user_agent 之后定义）。
 V3_CONFIG_PRODUCT = "SaaS"
@@ -189,6 +198,18 @@ def billing_headers(account: Account) -> dict[str, str]:
     device_token = account.device_token or WB_DEVICE_TOKEN
     if device_token:
         headers["x-device-token"] = device_token
+    return headers
+
+
+def growth_headers(account: Account) -> dict[str, str]:
+    """growth 域（连登/旅行/活跃上报）请求头：billing 头 + 显式 X-Domain。
+
+    X-Domain 是上游做域路由的显式声明（值 = 该 realm 的 chat host，写 v3/config 时
+    也是同一个值）；billing_headers 自身不带，签到/余额用不上它，但成长中心接口
+    在跨域（cn/global 同一套路径）时靠它认域。
+    """
+    headers = billing_headers(account)
+    headers["x-domain"] = _host(account)
     return headers
 
 
@@ -429,13 +450,56 @@ def is_non_chat_model(entry: dict[str, Any]) -> bool:
 
 
 def fetch_credits(account: Account) -> tuple[float, float]:
-    """POST get-user-resource → (remain, total)。
+    """POST get-user-resource → (remain, total)（只要聚合值的调用方走这个）。"""
+    detail = fetch_credits_detail(account)
+    return detail.remain, detail.total
+
+
+@dataclass
+class CreditsDetail:
+    """一次余额查询的完整观测（聚合值 + 包级到期信息）。
+
+    expiring / earliest_* 是「优先消耗快过期积分」的依据：
+      - expiring：到期时刻 ≤ now + 窗口 的那部分余额（它是 remain 的子集）
+      - earliest_at_ms / earliest_remaining：最近一批到期包的到期时刻与余额
+        （无到期包时为 0 / 0）
+    """
+
+    remain: float = 0.0
+    total: float = 0.0
+    expiring: float = 0.0
+    earliest_at_ms: int = 0
+    earliest_remaining: float = 0.0
+
+
+def _package_end_ms(raw: Any) -> int:
+    """套餐 `CycleEndTime`（"YYYY-MM-DD HH:MM:SS"，UTC+8）→ 绝对到期毫秒。
+
+    解析不出返回 0（= 该包不参与快过期判定）：上游偶发回空串/脏格式，不臆测。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return 0
+    try:
+        at = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return 0
+    # 上游时间戳恒按 UTC+8 解释（与签到/余额查询的账期口径一致），本机时区不参与
+    return int(at.replace(tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000)
+
+
+def fetch_credits_detail(account: Account, *, expiring_within_ms: int = 0) -> CreditsDetail:
+    """POST get-user-resource（企业号走企业额度端点）→ 聚合余额 + 快过期分桶。
 
     个人资源包聚合（ProductCode p_tcaca）；remain 负值钳 0；上游缺 size 的
     包按 remain 兜底。billing 路径按 realm 分流（wb2api billingMeterPaths）：
-    global 首选无 /v2 前缀（404 回落 /v2），CN 固定 /v2。企业版走不了该端点
-    （返回空 Accounts）——企业账号 credits 保持 None（未知，权重按 1.0）。
+    global 首选无 /v2 前缀（404 回落 /v2），CN 固定 /v2。
+
+    `expiring_within_ms` > 0 时，对「到期时刻 ≤ now+窗口」的包单独累加余额；
+    0 = 不分桶（expiring 恒 0，与只有聚合值的调用方行为一致）。
     """
+    if account.enterprise_id:
+        return _fetch_enterprise_detail(account, expiring_within_ms=expiring_within_ms)
     tz = timezone(timedelta(hours=8))
     body = {
         "PageNumber": 1,
@@ -479,8 +543,8 @@ def fetch_credits(account: Account) -> tuple[float, float]:
         raise ValueError(f"user-resource code={envelope.get('code')} msg={envelope.get('msg')}")
     payload = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
     accounts = ((((payload or {}).get("Response") or {}).get("Data") or {}).get("Accounts")) or []
-    remain = 0.0
-    total = 0.0
+    now_ms = int(time.time() * 1000)
+    detail = CreditsDetail()
     for pkg in accounts:
         if not isinstance(pkg, dict):
             continue
@@ -496,15 +560,85 @@ def fetch_credits(account: Account) -> tuple[float, float]:
                 continue
             r = max(plain_remain, 0.0)
             size = plain_size if (plain_size is not None and plain_size >= r) else r
-        remain += r
-        total += size
-    return remain, total
+        detail.remain += r
+        detail.total += size
+        # 到期分桶：只在包里还有余额时才有意义（空包到期不影响选号）
+        if r <= 0:
+            continue
+        end_ms = _package_end_ms(pkg.get("CycleEndTime"))
+        if end_ms <= now_ms:
+            continue
+        if detail.earliest_at_ms == 0 or end_ms < detail.earliest_at_ms:
+            detail.earliest_at_ms = end_ms
+            detail.earliest_remaining = r
+        elif end_ms == detail.earliest_at_ms:
+            detail.earliest_remaining += r
+        if expiring_within_ms > 0 and end_ms <= now_ms + expiring_within_ms:
+            detail.expiring += r
+    # 快过期是 remain 的子集（上游对账延迟下可能算超，钳住）
+    detail.expiring = min(detail.expiring, detail.remain)
+    detail.earliest_remaining = min(detail.earliest_remaining, detail.remain)
+    return detail
 
 
 def _num(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _fetch_enterprise_detail(account: Account, *, expiring_within_ms: int = 0) -> CreditsDetail:
+    """企业额度：POST get-enterprise-user-usage（空体）→ remain/total（+周期到期分桶）。
+
+    字段口径照 wb2api enterpriseResource（兼容上游两套命名）：
+      - `limitNum` / `limit_num`：分配给该账号的周期额度；**负值 = 不限量**
+      - `credit`（已用积分，浮点）优先，缺省回落 `used_num`
+      - `cycleEndTime` 优先、缺省回落 `cycleResetTime`：周期到期时刻（快过期分桶同个人口径）
+
+    已用量四舍五入到整数（向下取整会低报剩余额度，与"还剩多少"的展示意图相悖）。
+    """
+    url = f"{billing_base(account).rstrip('/')}{ENTERPRISE_USAGE_PATH}"
+    try:
+        response = crequests.post(
+            url, headers=billing_headers(account), json={},
+            timeout=short_rpc_timeout(), proxies=proxies_for(url), impersonate="chrome",
+        )
+    except crequests.RequestsError as exc:
+        raise ValueError(f"enterprise-usage network: {type(exc).__name__}: {exc}") from exc
+    if response.status_code != 200:
+        raise ValueError(f"enterprise-usage status {response.status_code}: {response.text[:120]}")
+    envelope = response.json()
+    if not isinstance(envelope, dict):
+        raise ValueError("enterprise-usage parse: unexpected envelope")
+    if envelope.get("code") != 0:
+        raise ValueError(
+            f"enterprise-usage code={envelope.get('code')} msg={envelope.get('msg')}"
+        )
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    limit = _num(data.get("limitNum"))
+    if limit is None:
+        limit = _num(data.get("limit_num"))
+    used = _num(data.get("credit"))
+    if used is None or used == 0:
+        used = _num(data.get("used_num"))
+    if limit is None:
+        raise ValueError("enterprise-usage parse: no limit field")
+    if limit < 0:
+        return CreditsDetail(
+            remain=float(ENTERPRISE_UNLIMITED_REMAIN), total=ENTERPRISE_UNLIMITED_TOTAL
+        )
+    detail = CreditsDetail(
+        remain=max(limit - round(used or 0.0), 0.0),
+        total=limit,
+    )
+    now_ms = int(time.time() * 1000)
+    end_ms = _package_end_ms(data.get("cycleEndTime")) or _package_end_ms(data.get("cycleResetTime"))
+    if end_ms > now_ms and detail.remain > 0:
+        detail.earliest_at_ms = end_ms
+        detail.earliest_remaining = detail.remain
+        if expiring_within_ms > 0 and end_ms <= now_ms + expiring_within_ms:
+            detail.expiring = detail.remain
+    return detail
 
 
 def refresh_expires_ms(expires_in: Any) -> int:

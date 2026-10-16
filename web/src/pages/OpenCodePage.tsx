@@ -40,13 +40,17 @@ import {
   fetchOpenCodeOps,
   fetchOpenCodeRequests,
   refreshProviderModels,
+  toggleRequestSort,
+  REQUEST_QUERY_DEFAULT,
   type ModelInfo,
+  type RequestQuery,
   type OpenCodeOps,
   type RequestRow,
   type UsageRange,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
+import { RequestsFilters } from "@/components/requests/RequestsFilters";
 import { catalogTimeLabel, fmtLimit, fmtSeconds, modelRefreshOutcome, protocolTone } from "@/lib/format";
 import { cn, fmtCompact } from "@/lib/utils";
 
@@ -179,6 +183,8 @@ export function OpenCodePage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
+  /** 最近请求的筛选与排序（服务端执行；空值 = 不筛） */
+  const [query, setQuery] = useState<RequestQuery>(REQUEST_QUERY_DEFAULT);
   /** 目录表点开的模型详情 */
   const [detail, setDetail] = useState<ModelInfo | null>(null);
   /** 详情弹窗开关。刻意与 detail 分开：关闭时若同时把 detail 置空，
@@ -200,7 +206,7 @@ export function OpenCodePage() {
     try {
       const [nextOps, nextRequests] = await Promise.all([
         fetchOpenCodeOps(),
-        fetchOpenCodeRequests(pageSize, (page - 1) * pageSize),
+        fetchOpenCodeRequests(pageSize, (page - 1) * pageSize, query),
       ]);
       if (id !== seq.current) return;
       // 页码越界（记录变少）时回到第 1 页，避免停在空页
@@ -227,7 +233,7 @@ export function OpenCodePage() {
       if (id !== seq.current) return;
       setLoading(false);
     }
-  }, [page, pageSize]);
+  }, [page, pageSize, query]);
 
   useEffect(() => {
     void load();
@@ -236,6 +242,12 @@ export function OpenCodePage() {
   }, [load]);
 
   /** 翻页 / 改每页条数：page、pageSize 是 load 的依赖，变化即重新拉取该页 */
+  /** 改筛选/排序后回到第 1 页：页码是服务端 offset 的输入，留在旧页会落空 */
+  const patchQuery = useCallback((patch: Partial<RequestQuery>) => {
+    setQuery((prev) => ({ ...prev, ...patch }));
+    setPage(1);
+  }, []);
+
   const changePage = useCallback((next: number) => {
     setPage(Math.max(1, next));
   }, []);
@@ -289,7 +301,7 @@ export function OpenCodePage() {
           <div className="mission-strip mission-strip-gw" role="group" aria-label="OpenCode KPI">
             <div className="metric">
               <div className="metric-k">
-                <Send className="metric-ico" strokeWidth={1.6} />
+                <Send className="metric-ico ico-blue" strokeWidth={1.6} />
                 24h 请求
               </div>
               <div className="metric-v">{totals?.requests ?? 0}</div>
@@ -299,7 +311,7 @@ export function OpenCodePage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <CircleCheck className="metric-ico" strokeWidth={1.6} />
+                <CircleCheck className="metric-ico ico-green" strokeWidth={1.6} />
                 成功率
               </div>
               <div
@@ -318,7 +330,7 @@ export function OpenCodePage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Activity className="metric-ico" strokeWidth={1.6} />
+                <Activity className="metric-ico ico-violet" strokeWidth={1.6} />
                 Tokens
               </div>
               <div className="metric-v">
@@ -330,7 +342,7 @@ export function OpenCodePage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Zap className="metric-ico" strokeWidth={1.6} />
+                <Zap className="metric-ico ico-amber" strokeWidth={1.6} />
                 缓存命中率
               </div>
               <div
@@ -354,7 +366,7 @@ export function OpenCodePage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Timer className="metric-ico" strokeWidth={1.6} />
+                <Timer className="metric-ico ico-cyan" strokeWidth={1.6} />
                 平均延迟
               </div>
               <div className="metric-v">{fmtSeconds(totals?.avg_ms ?? 0)}</div>
@@ -364,7 +376,7 @@ export function OpenCodePage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Gauge className="metric-ico" strokeWidth={1.6} />
+                <Gauge className="metric-ico ico-indigo" strokeWidth={1.6} />
                 模型数
               </div>
               <div className="metric-v">{ops?.status.models ?? 0}</div>
@@ -379,7 +391,7 @@ export function OpenCodePage() {
             {/* ── 左:模型目录 ── */}
             <section className="gw-panel">
               <div className="gw-panel-head">
-                <Boxes className="size-3.5" strokeWidth={1.6} aria-hidden />
+                <Boxes className="size-3.5 ico-indigo" strokeWidth={1.6} aria-hidden />
                 <h2 className="gw-panel-title">模型列表({ops?.models.length ?? 0})</h2>
                 {/* 目录不再自动刷新：这是唯一的常规获取入口（三页同一枚图标按钮） */}
                 <Button
@@ -465,7 +477,7 @@ export function OpenCodePage() {
             {/* ── 右:Token 用量堆叠面积 + 请求次数折线(时间范围可选,默认 7 天) ── */}
             <section className="gw-panel">
               <div className="gw-panel-head">
-                <Activity className="size-3.5" strokeWidth={1.6} aria-hidden />
+                <Activity className="size-3.5 ico-violet" strokeWidth={1.6} aria-hidden />
                 <h2 className="gw-panel-title">Token 用量与请求次数</h2>
                 <UsageRangeSelect value={usageRange} onChange={setUsageRange} className="ml-auto" />
               </div>
@@ -476,10 +488,20 @@ export function OpenCodePage() {
           {/* ── 最近请求 ── */}
           <section className="gw-panel">
             <div className="gw-panel-head">
-              <Inbox className="size-3.5" strokeWidth={1.6} aria-hidden />
+              <Inbox className="size-3.5 ico-blue" strokeWidth={1.6} aria-hidden />
               <h2 className="gw-panel-title">最近请求</h2>
+              {/* opencode 是单凭证上游：没有账号可筛，只给模型候选 */}
+              <RequestsFilters
+                value={query}
+                onPatch={patchQuery}
+                models={ops?.models.map((m) => m.id) ?? []}
+              />
             </div>
-            <RequestsTable rows={requests} />
+            <RequestsTable
+              rows={requests}
+              query={query}
+              onSortChange={(key) => patchQuery(toggleRequestSort(query, key))}
+            />
 
             <div className="gw-panel-foot">
               <Pagination

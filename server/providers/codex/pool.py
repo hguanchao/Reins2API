@@ -2,7 +2,8 @@
 
 选号流水线在 `providers.account_pool.AccountPool`（与 workbuddy 共用）；Codex 的
 差异只有一处：**没有** credits 权重与模型级冷却——Codex 的限流是账号/计划级，
-不按模型计，故不做 `_healthy_extra` / `_weight_factor` 覆写。
+不按模型计，故不覆写任何钩子——权重恒为「1 + 闲置补偿」，也不参与快过期加成、
+成本分层、Top-N 短名单与撞号窗口（这些机制在基类里默认失效，只有 WorkBuddy 打开）。
 """
 
 from __future__ import annotations

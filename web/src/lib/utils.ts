@@ -88,6 +88,39 @@ export function fmtClock(createdAt: string | null | undefined): string {
   return /^\d{2}:\d{2}:\d{2}$/.test(clock) ? clock : raw;
 }
 
+/* ── 快过期积分提示（账号表积分列第二行）────────────────────────────
+   文案：`xx 积分将在 x 天后到期`；不足 1 天按小时（"6 小时后到期"）——到了这一步
+   "还剩几天"已经没有信息量。
+   颜色分档按**实际剩余时长**：<1 天 urgent（红）、<7 天 soon（橙）、≥7 天常规（无色）。
+   到期即作废（官方赠送/补偿积分带期限），所以值得占一档语义色；已经过期的批次不提示
+   ——余额刷新后它就消失了，留着只会是过期信息。 */
+export type ExpiringTone = "" | "is-soon" | "is-urgent";
+
+export interface ExpiringNote {
+  text: string;
+  tone: ExpiringTone;
+}
+
+export function expiringNote(
+  account: { credits_expiring: number; credits_earliest_at_ms: number },
+  nowMs: number = Date.now(),
+): ExpiringNote | null {
+  const amount = account.credits_expiring || 0;
+  const at = account.credits_earliest_at_ms || 0;
+  if (amount <= 0 || at <= 0) return null;
+  const remainMs = at - nowMs;
+  if (remainMs <= 0) return null;
+  const hours = remainMs / 3_600_000;
+  if (hours < 24) {
+    return { text: `${fmtCompact(amount)} 积分将在 ${Math.max(1, Math.floor(hours))} 小时后到期`, tone: "is-urgent" };
+  }
+  const days = Math.floor(hours / 24);
+  return {
+    text: `${fmtCompact(amount)} 积分将在 ${days} 天后到期`,
+    tone: days < 7 ? "is-soon" : "",
+  };
+}
+
 /* ── 耗时列分档（两个用量页共用，阈值只在这里定义）──────────────
    数据依据（2026-10-12 实测两张 requests 表）：首字 p90 = 6.3s、p95 = 8.0s，
    取 10s 大约只圈住最慢的 5%；30s 是 2%（p99 = 65s、max 98s）。
@@ -100,13 +133,15 @@ export const SLOW_TOTAL_MS = 30_000;
 export const SLOW_TOK_PER_S = 10;
 /** 吞吐样本下限：token 太少时除出来的"速度"没有意义，不参与慢判定 */
 const SPEED_MIN_TOKENS = 50;
+/** 可信生成窗口下限：扣掉首字等待后剩余不足它 → 生成时长不可测，退回端到端耗时 */
+const MIN_GEN_WINDOW_MS = 200;
 
 export interface LatencyMark {
   /** 首字档位：warn(>10s) / bad(>30s)；0 = 无数据（失败请求或旧记录），不给档 */
   ttft: "" | "warn" | "bad";
-  /** 慢且吞吐低：耗时 > 30s 且 (输出+推理)/耗时 < 10 tok/s */
+  /** 慢且吞吐低：耗时 > 30s 且生成速率 < 10 tok/s */
   slow: boolean;
-  /** 吞吐 tok/s；样本不足或耗时缺失时 null */
+  /** 生成速率 tok/s（分母是扣掉首字等待的生成耗时）；样本不足或耗时缺失时 null */
   speed: number | null;
 }
 
@@ -120,7 +155,15 @@ export function latencyMark(row: {
   const firstByte = row.first_byte_ms || 0;
   const duration = row.duration_ms || 0;
   const tokens = (row.output_tokens || 0) + (row.reasoning_tokens || 0);
-  const speed = tokens >= SPEED_MIN_TOKENS && duration > 0 ? tokens / (duration / 1000) : null;
+  // 速率的分母是「生成耗时」= 端到端 - 首字等待，不是端到端：
+  // 不减的话，首字等待越长速率被压得越低——同一模型 TTFB 从 0.3s 涨到 2s，速率能
+  // 凭空掉一半，读起来像"模型变慢了"，其实只是排队久了。首字等待与生成是两件事，
+  // 前者已经在首字列里如实显示。
+  // 首字缺失（非流式/旧记录）或扣完不足 200ms（时钟粒度、极小生成窗口）时退回端到端，
+  // 避免零/负分母把速率抬成虚高。
+  const genMs =
+    firstByte > 0 && duration - firstByte >= MIN_GEN_WINDOW_MS ? duration - firstByte : duration;
+  const speed = tokens >= SPEED_MIN_TOKENS && genMs > 0 ? tokens / (genMs / 1000) : null;
   return {
     ttft: firstByte <= 0 ? "" : firstByte > TTFT_BAD_MS ? "bad" : firstByte > TTFT_WARN_MS ? "warn" : "",
     slow: duration > SLOW_TOTAL_MS && speed !== null && speed < SLOW_TOK_PER_S,

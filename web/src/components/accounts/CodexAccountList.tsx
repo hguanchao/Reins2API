@@ -1,6 +1,7 @@
 import {
   CircleUserRound,
   Gauge,
+  MoreHorizontal,
   Pause,
   Play,
   Plus,
@@ -11,6 +12,11 @@ import {
 import {
   Badge,
   Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   Empty,
   Table,
   TableBody,
@@ -202,19 +208,22 @@ function IconAction({
   onClick,
   disabled,
   danger,
+  tone,
 }: {
   label: string;
   icon: React.ReactNode;
   onClick: () => void;
   disabled?: boolean;
   danger?: boolean;
+  /** 分类色（见 styles/icons.css 映射表）；danger 的红色优先级更高，不与之并用 */
+  tone?: string;
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          className={cn("acct-act", danger && "is-danger")}
+          className={cn("acct-act", tone, danger && "is-danger")}
           disabled={disabled}
           onClick={onClick}
           aria-label={label}
@@ -365,42 +374,69 @@ export function CodexAccountList({
                             label="刷新 Token"
                             icon={<RefreshCw className="size-3.5" strokeWidth={1.9} />}
                             disabled={busy || !account.has_refresh_token}
+                            tone="ico-blue"
                             onClick={() => onAction(account, "refresh")}
                           />
                           <IconAction
                             label="刷新额度（查上游 /usage）"
                             icon={<Gauge className="size-3.5" strokeWidth={1.9} />}
                             disabled={busy || !account.has_access_token}
+                            tone="ico-cyan"
                             onClick={() => onAction(account, "quota")}
                           />
-                          {account.status === "active" ? (
-                            <IconAction
-                              label="暂停"
-                              icon={<Pause className="size-3.5" strokeWidth={1.9} />}
-                              disabled={busy}
-                              onClick={() => onAction(account, "pause")}
-                            />
-                          ) : (
-                            <IconAction
-                              label="恢复"
-                              icon={<Play className="size-3.5" strokeWidth={1.9} />}
-                              disabled={busy}
-                              onClick={() => onAction(account, "resume")}
-                            />
-                          )}
                           <IconAction
                             label="复活（清除冷却/熔断）"
                             icon={<RotateCcw className="size-3.5" strokeWidth={1.9} />}
                             disabled={busy}
+                            tone="ico-green"
                             onClick={() => onAction(account, "revive")}
                           />
-                          <IconAction
-                            label="删除账号"
-                            icon={<Trash2 className="size-3.5" strokeWidth={1.9} />}
-                            disabled={busy}
-                            danger
-                            onClick={() => onDelete(account)}
-                          />
+                          {/* 低频与危险动作收进「更多」：常驻留三个，操作列才收得窄 */}
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <button
+                                    type="button"
+                                    className="acct-act"
+                                    disabled={busy}
+                                    aria-label="更多操作"
+                                  >
+                                    <MoreHorizontal className="size-3.5" strokeWidth={1.9} />
+                                  </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" side="bottom">
+                                  {account.status === "active" ? (
+                                    <DropdownMenuItem
+                                      disabled={busy}
+                                      onSelect={() => onAction(account, "pause")}
+                                    >
+                                      <Pause className="size-3.5 ico-amber" strokeWidth={1.9} />
+                                      暂停
+                                    </DropdownMenuItem>
+                                  ) : (
+                                    <DropdownMenuItem
+                                      disabled={busy}
+                                      onSelect={() => onAction(account, "resume")}
+                                    >
+                                      <Play className="size-3.5 ico-green" strokeWidth={1.9} />
+                                      恢复
+                                    </DropdownMenuItem>
+                                  )}
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    variant="destructive"
+                                    disabled={busy}
+                                    onSelect={() => onDelete(account)}
+                                  >
+                                    <Trash2 className="size-3.5" strokeWidth={1.9} />
+                                    删除账号
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">更多操作</TooltipContent>
+                          </Tooltip>
                         </div>
                         <span className="acct-expiry">{expiresIn(account.token_expires_ms)}</span>
                       </div>

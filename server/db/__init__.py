@@ -30,6 +30,56 @@ def beijing_ts(at_ms: int) -> str:
     return datetime.fromtimestamp(at_ms / 1000, _BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
+# 明细排序白名单：外部只传键，SQL 片段在这里映射——排序方向也由参数决定，
+# 不把调用方的字符串拼进 SQL。键集与前端可点击的表头一一对应（不留够不到的键）。
+# 同值过多（比如一堆 0 耗时）时统一用 id 兜底排序，否则分页边界上会出现
+# "同一条重复出现 / 漏掉"。
+_SORT_COLUMNS: dict[str, str] = {
+    "time": "id",
+    "tokens": "input_tokens + output_tokens",
+    "duration": "duration_ms",
+    "status": "http_status",
+}
+_STATUS_RANGES: dict[str, tuple[int, int]] = {"2xx": (200, 299), "4xx": (400, 499), "5xx": (500, 599)}
+
+
+def _escape_like(term: str) -> str:
+    """LIKE 的 % / _ 是通配符：用户输入里出现它们要当字面量（搜 "a_b" 不该命中 "axb"）。"""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def request_where(status: str = "", model: str = "", account: str = "") -> tuple[str, list[Any]]:
+    """明细筛选 → (WHERE 片段, 参数)。
+
+    status 取值：空 / all（不筛）· failed（非 2xx）· 2xx / 4xx / 5xx · 具体码（429）。
+    无法识别的取值一律当"不筛"——筛选条件宁可放宽也不能把日志筛成空。
+    账号按**前缀**匹配（uid 是几十字符的长串，子串匹配既没意义又扫全表）。
+    """
+    clauses: list[str] = []
+    values: list[Any] = []
+    key = (status or "").strip().lower()
+    if key and key != "all":
+        if key == "failed":
+            clauses.append("(http_status < 200 OR http_status >= 300)")
+        elif key in _STATUS_RANGES:
+            low, high = _STATUS_RANGES[key]
+            clauses.append("http_status BETWEEN ? AND ?")
+            values.extend([low, high])
+        elif key.isdigit():
+            clauses.append("http_status = ?")
+            values.append(int(key))
+    term = (model or "").strip()
+    if term:
+        pattern = f"%{_escape_like(term)}%"
+        clauses.append("(model LIKE ? ESCAPE '\\' OR upstream_model LIKE ? ESCAPE '\\')")
+        values.extend([pattern, pattern])
+    term = (account or "").strip()
+    if term:
+        clauses.append("account_uid LIKE ? ESCAPE '\\'")
+        values.append(f"{_escape_like(term)}%")
+    return (f" WHERE {' AND '.join(clauses)}" if clauses else ""), values
+
+
 @dataclass
 class RequestRecord:
     """字段顺序与 db/schema.py 的 DDL 保持一致（主键 → 标识 → 路由 → 特征 → 用量 → 来源 → 结果 → 时间）。"""
@@ -155,13 +205,35 @@ class ProviderStore:
             logger.warning(f"[遥测] provider={self.name} 窗口查询失败: {exc}")
             return []
 
-    def recent(self, limit: int = 20, offset: int = 0) -> tuple[int, list[dict[str, Any]]]:
+    def recent(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        *,
+        status: str = "",
+        model: str = "",
+        account: str = "",
+        sort: str = "time",
+        desc: bool = True,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """明细分页（可筛选、可排序）。
+
+        筛选放在 SQL 侧而不是让前端过滤当前页：日志是分页的，只筛当前页会给出
+        "这批里就这几条 429"的假象（真实数量可能在别的页里）。total 用同一套
+        条件计数，所以分页条数跟着筛选结果走。
+        """
+        where, values = request_where(status, model, account)
+        column = _SORT_COLUMNS.get(sort or "time", _SORT_COLUMNS["time"])
+        direction = "ASC" if not desc else "DESC"
         try:
             with self._lock:
-                total = self._conn.execute("SELECT COUNT(*) AS n FROM requests").fetchone()["n"]
+                total = self._conn.execute(
+                    f"SELECT COUNT(*) AS n FROM requests{where}", tuple(values)
+                ).fetchone()["n"]
                 rows = self._conn.execute(
-                    "SELECT * FROM requests ORDER BY id DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
+                    f"SELECT * FROM requests{where} ORDER BY {column} {direction}, id DESC"
+                    " LIMIT ? OFFSET ?",
+                    (*values, limit, offset),
                 ).fetchall()
             return int(total), [dict(row) for row in rows]
         except Exception as exc:

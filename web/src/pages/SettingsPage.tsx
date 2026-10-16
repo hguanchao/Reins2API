@@ -23,6 +23,8 @@ const PROXY_OPTIONS: Array<{
   mode: ProxyMode;
   label: string;
   icon: typeof Zap;
+  /** 分类色（见 styles/icons.css）：未选中时显示，选中态统一走品牌绿 */
+  tone: string;
   /** 卡片副行说明；跟随系统那档没有静态说明（选中时该行让位给出口 IP 实况） */
   desc?: string;
 }> = [
@@ -30,12 +32,14 @@ const PROXY_OPTIONS: Array<{
     mode: "direct",
     label: "直连",
     icon: Zap,
+    tone: "ico-cyan",
     desc: "不使用代理，请求直接访问上游",
   },
   {
     mode: "system",
     label: "跟随系统",
     icon: Monitor,
+    tone: "ico-indigo",
     // 只在该档未选中时显示：选中后这一行让位给出口 IP 实况
     desc: "读取系统设置或 HTTPS_PROXY 环境变量",
   },
@@ -43,6 +47,7 @@ const PROXY_OPTIONS: Array<{
     mode: "manual",
     label: "手动填写",
     icon: Link2,
+    tone: "ico-violet",
     // 只在该档未选中时显示：选中后这一行让位给地址本身
     desc: "使用自定义的代理地址",
   },
@@ -212,7 +217,7 @@ export function SettingsPage() {
         <>
         <section className="gw-panel">
           <div className="gw-panel-head">
-            <Network className="size-3.5" strokeWidth={1.6} aria-hidden />
+            <Network className="size-3.5 ico-cyan" strokeWidth={1.6} aria-hidden />
             <h2 className="gw-panel-title">出站代理</h2>
             <span className="gw-panel-meta" title="当前生效的代理实况">
               {config.proxy_status}
@@ -262,7 +267,7 @@ export function SettingsPage() {
                     <div className="flex items-center justify-between gap-2">
                       <span className="inline-flex items-center gap-2 text-[13.5px] font-medium">
                         <Icon
-                          className={cn("size-4", active ? "text-primary" : "text-muted-foreground")}
+                          className={cn("size-4", active ? "text-primary" : option.tone)}
                           strokeWidth={1.9}
                           aria-hidden
                         />

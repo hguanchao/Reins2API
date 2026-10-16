@@ -179,24 +179,76 @@ export function refreshProviderModels(provider: string): Promise<ProviderRefresh
   return request<ProviderRefreshResult>(`/api/${provider}/refresh`, { method: "POST" });
 }
 
-/** Provider 最近请求明细（分页；provider ∈ registry.names）。 */
+/** 请求明细的排序键（服务端白名单：time=入库顺序 / tokens=输入+输出 / ttft=首字）。 */
+export type RequestSortKey = "time" | "tokens" | "duration" | "ttft" | "status";
+
+/** 请求明细的筛选与排序条件（全部在服务端执行；空值 = 不筛）。 */
+export interface RequestQuery {
+  /** "" | "failed"（非 2xx）| "2xx" | "4xx" | "5xx" | 具体状态码（"429"） */
+  status: string;
+  /** 模型子串：客户端别名与上游裸名都匹配 */
+  model: string;
+  /** 账号 uid 前缀（页面侧把标签名解析成 uid 再传进来） */
+  account: string;
+  sort: RequestSortKey;
+  desc: boolean;
+}
+
+/** 空筛选：默认按时间倒序。共享常量，修改前先展开成新对象。 */
+export const REQUEST_QUERY_DEFAULT: RequestQuery = {
+  status: "",
+  model: "",
+  account: "",
+  sort: "time",
+  desc: true,
+};
+
+/** 是否等价于默认筛选（决定要不要显示「重置」）。 */
+export function isDefaultRequestQuery(query: RequestQuery): boolean {
+  return (
+    !query.status &&
+    !query.model.trim() &&
+    !query.account.trim() &&
+    query.sort === REQUEST_QUERY_DEFAULT.sort &&
+    query.desc === REQUEST_QUERY_DEFAULT.desc
+  );
+}
+
+/** 点表头：同一列切换升/降；换一列则默认倒序（日志先看最新/最大）。 */
+export function toggleRequestSort(query: RequestQuery, key: RequestSortKey): RequestQuery {
+  if (query.sort === key) return { ...query, desc: !query.desc };
+  return { ...query, sort: key, desc: true };
+}
+
+/** Provider 最近请求明细（分页 + 筛选 + 排序；provider ∈ registry.names）。 */
 export function fetchProviderRequests(
   provider: string,
   limit = 50,
   offset = 0,
+  query: RequestQuery = REQUEST_QUERY_DEFAULT,
 ): Promise<{ total: number; items: RequestRow[] }> {
   const params = new URLSearchParams({
     limit: String(Math.max(1, Math.min(limit, 200))),
     offset: String(Math.max(0, offset)),
+    sort: query.sort,
+    order: query.desc ? "desc" : "asc",
   });
+  // 空条件不进 query string：URL 保持干净，排查时一眼看得出筛了什么
+  if (query.status) params.set("status", query.status);
+  if (query.model.trim()) params.set("model", query.model.trim());
+  if (query.account.trim()) params.set("account", query.account.trim());
   return request<{ total: number; items: RequestRow[] }>(
     `/api/${provider}/requests?${params.toString()}`,
   );
 }
 
-/** 最近请求明细（分页）。 */
-export function fetchOpenCodeRequests(limit = 50, offset = 0) {
-  return fetchProviderRequests("opencode", limit, offset);
+/** 最近请求明细（分页 + 筛选 + 排序）。 */
+export function fetchOpenCodeRequests(
+  limit = 50,
+  offset = 0,
+  query: RequestQuery = REQUEST_QUERY_DEFAULT,
+) {
+  return fetchProviderRequests("opencode", limit, offset, query);
 }
 
 /** 用量图表时间范围：今日 / 7 天 / 14 天 / 30 天（默认 7 天）。 */
@@ -313,11 +365,18 @@ export interface WorkBuddyAccount {
   cooldown_kind: string;
   breaker_count: number;
   breaker_until_ms: number;
-  model_cooldowns: Record<string, { until_ms: number; kind: string }>;
+  /** 模型级冷却：kind = 6004（上游限流，带重置墙钟）/ model_blocked（11102 负缓存） */
+  model_cooldowns: Record<string, { until_ms: number; kind: string; hits?: number; reason?: string }>;
   consecutive_failures: number;
   credits_total: number | null;
   credits_remain: number | null;
   credits_updated_ms: number;
+  /** 快过期积分：窗口（7 天）内会到期的那部分余额，是 credits_remain 的子集 */
+  credits_expiring: number;
+  /** 最近一批到期包的到期时刻（毫秒）；0 = 没有带期限的包 */
+  credits_earliest_at_ms: number;
+  /** 最近一批到期包里的剩余积分 */
+  credits_earliest_remaining: number;
   used_seq: number;
   idle_boost: number;
   last_error: string;
@@ -414,6 +473,66 @@ export function runWorkBuddyCheckinAll(): Promise<WorkBuddyCheckinSummary> {
   return request<WorkBuddyCheckinSummary>("/api/workbuddy/checkin/run-all", { method: "POST" });
 }
 
+// ─── WorkBuddy 定时任务（签到 / 活跃上报 / 猫猫旅行 / token 保活）────
+
+/** 任务类型：与后端 schedule 段的键一一对应。 */
+export type WorkBuddyTaskKind = "checkin" | "activity" | "travel" | "keepalive";
+
+export interface WorkBuddyScheduleTask {
+  kind: WorkBuddyTaskKind;
+  /** 中文名（后端下发，前端不再维护第二份翻译表） */
+  label: string;
+  enabled: boolean;
+  /** 5 字段 cron（分 时 日 月 周，北京时间），如 `7 9,21 * * *` */
+  cron: string;
+  /** 后端给的人话说明（"每天 9,21 点 7 分（北京时间）"）；翻不出来的形态为空串 */
+  describe: string;
+  /** 下次触发时刻毫秒；0 = 未启用或不触发 */
+  next_ms: number;
+  running: boolean;
+  /** 上次运行结果（进程内，重启清零） */
+  last: {
+    at_ms: number;
+    elapsed_ms: number;
+    ok: boolean;
+    text: string;
+    error: string;
+  } | null;
+}
+
+export interface WorkBuddySchedule {
+  now_ms: number;
+  timezone: string;
+  tasks: WorkBuddyScheduleTask[];
+}
+
+/** 定时任务排程快照（四类任务各自独立开关 + 时点 + 下次触发 + 上次结果）。 */
+export function fetchWorkBuddySchedule(): Promise<WorkBuddySchedule> {
+  return request<WorkBuddySchedule>("/api/workbuddy/schedule");
+}
+
+/** 保存定时任务开关/时点（保存即生效，落盘重启保留）。 */
+export function saveWorkBuddySchedule(
+  patch: Partial<Record<WorkBuddyTaskKind, { enabled?: boolean; cron?: string }>>,
+): Promise<WorkBuddySchedule> {
+  return request<WorkBuddySchedule>("/api/workbuddy/schedule", {
+    method: "POST",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** 任务汇总（四类任务返回结构不同，展示「上次结果」只需要 summary 文本）。 */
+export interface WorkBuddyTaskSummary {
+  total?: number;
+  summary?: string;
+  [key: string]: unknown;
+}
+
+/** 立即运行一类定时任务（与自动排程同一条管线；任务在跑时后端返回 409）。 */
+export function runWorkBuddyTask(kind: WorkBuddyTaskKind): Promise<WorkBuddyTaskSummary> {
+  return request<WorkBuddyTaskSummary>(`/api/workbuddy/tasks/${kind}/run`, { method: "POST" });
+}
+
 export interface WorkBuddyLoginStart {
   url: string;
   state: string;
@@ -448,9 +567,13 @@ export function pollWorkBuddyLogin(state: string): Promise<WorkBuddyLoginPoll> {
   );
 }
 
-/** WorkBuddy 最近请求明细（分页）。 */
-export function fetchWorkBuddyRequests(limit = 50, offset = 0) {
-  return fetchProviderRequests("workbuddy", limit, offset);
+/** WorkBuddy 最近请求明细（分页 + 筛选 + 排序）。 */
+export function fetchWorkBuddyRequests(
+  limit = 50,
+  offset = 0,
+  query: RequestQuery = REQUEST_QUERY_DEFAULT,
+) {
+  return fetchProviderRequests("workbuddy", limit, offset, query);
 }
 
 // ─── Codex 号池 ────────────────────────────────────────
@@ -594,8 +717,12 @@ export function fetchCodexAccounts(): Promise<CodexAccount[]> {
 }
 
 /** Codex 最近请求明细（分页）。 */
-export function fetchCodexRequests(limit = 50, offset = 0) {
-  return fetchProviderRequests("codex", limit, offset);
+export function fetchCodexRequests(
+  limit = 50,
+  offset = 0,
+  query: RequestQuery = REQUEST_QUERY_DEFAULT,
+) {
+  return fetchProviderRequests("codex", limit, offset, query);
 }
 
 export function deleteCodexAccount(uid: string): Promise<{ deleted: string }> {
@@ -692,28 +819,13 @@ export interface CodexImportSummary {
   imported: number;
   updated: number;
   skipped: number;
-  /** 导入时用 refresh_token 换票成功的条数（所有权已归本系统） */
-  claimed: number;
-  /** 换票失败的条数：仍入库，但只剩 access_token 可用，到期需重新授权 */
-  unverified: number;
   errors: string[];
-  /** 软告警：分区回退、凭据与文件不符、只剩 access_token 可用之类 */
-  warnings: string[];
 }
 
-/**
- * 从 CPA / codex2api 形状的 JSON 导入账号（宽容解析：单对象 / 数组 / {"accounts":[]}）。
- *
- * claim=true（默认）对每条 refresh_token 做一次「校验+认领」：用它换一次新票。
- * 好处是当场暴露已被上游作废的 RT、并把所有权拿到本系统；代价是与源系统抢票
- * （Codex 的 RT 单次使用+轮换，谁先刷谁持有），源系统还要继续跑时传 false。
- */
-export function importCodexAccounts(
-  json: string,
-  claim = true,
-): Promise<CodexImportSummary> {
+/** 从 CPA / codex2api 形状的 JSON 导入账号（宽容解析：单对象 / 数组 / {"accounts":[]}）。 */
+export function importCodexAccounts(json: string): Promise<CodexImportSummary> {
   return request<CodexImportSummary>("/api/codex/accounts/import", {
     method: "POST",
-    body: JSON.stringify({ json, claim }),
+    body: JSON.stringify({ json }),
   });
 }

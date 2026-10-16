@@ -144,3 +144,108 @@
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }
+
+/* ── 请求明细的筛选条与可排序表头 ──────────────────────────
+   筛选条挂在面板头右侧（.gw-panel-head 是 flex 行），不进表格内部：
+   表格自己横向滚动，筛选控件跟着滚会让人找不到。
+   窄屏（<900px）整条换行到标题下方并占满宽度——13 列请求表本来就要横滚，
+   筛选控件再挤在标题同一行只会互相压。 */
+.req-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+/* 三个下拉的定宽：选中项长度差很大（"全部状态" vs "oc:deepseek-v4.1-flash-free"），
+   不定宽的话整排控件会跟着选中项一起伸缩，面板头每换一个筛选项就跳一次。
+   宽度按各自最长内容给，超出由 SelectTrigger 自带的 line-clamp-1 截断，
+   完整值在 aria-label / title 上。 */
+.req-filter-trigger {
+  height: 28px;
+}
+.req-filter-trigger.is-status {
+  width: 124px;
+}
+.req-filter-trigger.is-model {
+  width: 216px;
+}
+.req-filter-trigger.is-account {
+  width: 176px;
+}
+.req-filter-reset {
+  height: 28px;
+  padding-inline: 8px;
+  color: var(--muted-foreground);
+}
+/* 账号下拉的两行选项：上名字、下 uid（与账号表 凭证 列同一口径） */
+.req-filter-opt {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.req-filter-opt-main {
+  font-size: var(--fs-sm);
+}
+.req-filter-opt-sub {
+  /* uid 是 36 字符的 uuid，整条摆出来会把菜单撑到 300px 宽；限定宽度 + 截断，
+     完整值仍在 DOM 里（可选中复制）与 title 上 */
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-subtle);
+}
+@media (max-width: 900px) {
+  .gw-panel-head:has(.req-filters) {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+  .req-filters {
+    margin-left: 0;
+    width: 100%;
+  }
+  /* 窄屏三个下拉等分一行（放不下就换行），不再用定宽：
+     flex-basis 0 让三者等宽——按内容定宽时"全部状态"和"全部模型"宽度不同，
+     一排控件左边缘参差不齐。min-width 兜住极窄屏，逼它换行而不是压扁。 */
+  .req-filter-trigger.is-status,
+  .req-filter-trigger.is-model,
+  .req-filter-trigger.is-account {
+    flex: 1 1 0;
+    min-width: 5.5rem;
+    width: auto;
+  }
+}
+
+/* 可排序表头：整格可点（热区跟着列头走），活动列显示方向箭头。
+   内边距从 th 挪到按钮上（th 清零 + 按钮自带 14px = TableHead 的 px-3.5）：
+   两边都留会让列头文字比数据列多缩一截，左边缘也对不齐。
+   箭头取 size-3 且继承文字色——不用主色，避免表头出现第二种强调色。 */
+.req-sort-head {
+  padding: 0;
+}
+.req-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  height: 100%;
+  padding: 0 14px;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+.req-sort-btn:hover {
+  color: var(--foreground);
+}
+.req-sort-btn:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 3px var(--ring);
+  border-radius: 4px;
+}

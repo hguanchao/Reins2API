@@ -7,22 +7,23 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
+import sqlite3
 import sys
 import tempfile
 import time
 from pathlib import Path
-from urllib.parse import parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.settings import CODEX_CLIENT_ID, CODEX_ORIGINATOR, CODEX_REDIRECT_URI
+from core.settings import CODEX_CLIENT_ID, CODEX_REDIRECT_URI
 from gateway.base import RequestIDs
 from providers.codex import classify, oauth, shape
 from providers.codex import upstream as cx_upstream
 from providers.codex.pool import Pool
 from providers.codex.provider import CodexProvider, _Catalog
-from providers.codex.store import AUTH_MODE_SIWC, Account, CodexStore
+from providers.codex.store import Account, CodexStore
 
 # ── 工具 ──
 
@@ -54,6 +55,25 @@ def _seed_account(store: CodexStore, uid: str = "acc-1", **kw) -> Account:
     )
     store.upsert_account(account)
     return account
+
+
+@contextlib.contextmanager
+def _patched(target, name: str, value):
+    """临时替换模块/对象属性（刷新路径的测试要同时打桩 oauth 与 store 上的方法）。"""
+    original = getattr(target, name)
+    setattr(target, name, value)
+    try:
+        yield
+    finally:
+        setattr(target, name, original)
+
+
+class _TokenResp:
+    """token 端点响应桩（只用到 _post_token 读的两个字段）。"""
+
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.text = text
 
 
 # ── OAuth ──
@@ -979,7 +999,7 @@ def test_refresh_expiring_only_touches_expiring_accounts():
             provider = CodexProvider(store=store)
             calls: list[str] = []
 
-            def fake_refresh(refresh_token, *, timeout_s=None):
+            def fake_refresh(refresh_token):
                 calls.append(refresh_token)
                 return cx_oauth.TokenData(access_token="AT2", refresh_token="RT2",
                                           id_token="", expires_in=3600)
@@ -1013,7 +1033,7 @@ def test_refresh_lock_serializes_and_rereads_db():
             provider = CodexProvider(store=store)
             seen: list[str] = []
 
-            def fake_refresh(refresh_token, *, timeout_s=None):
+            def fake_refresh(refresh_token):
                 seen.append(refresh_token)
                 return cx_oauth.TokenData(access_token="AT2", refresh_token="RT-new",
                                           id_token="", expires_in=3600)
@@ -1034,6 +1054,408 @@ def test_refresh_lock_serializes_and_rereads_db():
                 assert seen == ["RT-newer"]
             finally:
                 cx_oauth.refresh = original
+        finally:
+            store.close()
+
+
+# ── token 刷新健壮性（失败分类 / 落库不可丢 / 请求用新票；取舍对照 codex2api）──
+
+
+def test_oauth_refresh_failure_classification():
+    """换票失败分两类：上游明确拒绝（终局）vs 结果不确定（网络/5xx/响应畸形）。
+
+    判据只认错误体里的 code（白名单照 codex2api isNonRetryable）——CF/网页拦截
+    那种没有 code 的 4xx 必须归到"不确定"，否则一次拦截抖动就会把好号判死。
+    """
+    import providers.codex.oauth as cx_oauth
+
+    cases = [
+        (400, '{"error":"invalid_grant"}', cx_oauth.TokenRejected),
+        (400, '{"error":{"code":"refresh_token_reused"}}', cx_oauth.TokenRejected),
+        (403, "<html>blocked by edge</html>", cx_oauth.RefreshUncertain),
+        (500, "upstream boom", cx_oauth.RefreshUncertain),
+        (200, "not json", cx_oauth.RefreshUncertain),
+        (200, '{"token_type":"bearer"}', cx_oauth.RefreshUncertain),
+    ]
+    for status, body, expected in cases:
+        def _respond(*_a, _status=status, _body=body, **_kw):
+            return _TokenResp(_status, _body)
+
+        with _patched(cx_oauth.crequests, "post", _respond):
+            try:
+                cx_oauth.refresh("RT-secret")
+            except Exception as exc:
+                assert isinstance(exc, expected), f"{status} {body}: {type(exc).__name__}"
+            else:
+                raise AssertionError(f"{status} {body} 应当抛 {expected.__name__}")
+
+    def _transport_boom(*_a, **_kw):
+        raise cx_oauth.crequests.RequestsError("curl 56 recv failure")
+
+    with _patched(cx_oauth.crequests, "post", _transport_boom):
+        try:
+            cx_oauth.refresh("RT-secret")
+        except cx_oauth.RefreshUncertain:
+            pass
+        else:
+            raise AssertionError("传输失败应当抛 RefreshUncertain")
+
+
+def test_oauth_error_message_redacts_credential():
+    """上游把 refresh_token 原样回显在错误体里时，异常消息必须抹掉它。
+
+    这些消息会进日志、也会回给前端（手动导入/授权兑换的报错），凭证不能跟着走。
+    """
+    import providers.codex.oauth as cx_oauth
+
+    body = '{"error":"invalid_grant","refresh_token":"RT-secret","detail":"RT-secret 已失效"}'
+
+    def _echo(*_a, **_kw):
+        return _TokenResp(400, body)
+
+    with _patched(cx_oauth.crequests, "post", _echo):
+        try:
+            cx_oauth.refresh("RT-secret")
+        except Exception as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("应当抛异常")
+    assert "RT-secret" not in message
+    assert "[REDACTED]" in message and "invalid_grant" in message
+
+
+def test_refresh_persist_retry_recovers():
+    """换票成功后落库瞬时失败（库被锁/抖动）：重试一次就恢复，账号照常可用。"""
+    import providers.codex.oauth as cx_oauth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1", refresh_token="RT-old",
+                          token_expires_ms=int(time.time() * 1000) + 1_000)
+            provider = CodexProvider(store=store)
+            real_update = store.update_tokens
+            calls: list[int] = []
+
+            def flaky(*args, **kwargs):
+                calls.append(1)
+                if len(calls) == 1:
+                    raise sqlite3.OperationalError("database is locked")
+                return real_update(*args, **kwargs)
+
+            fresh_tokens = cx_oauth.TokenData(access_token="AT2", refresh_token="RT2",
+                                              id_token="", expires_in=3600)
+            with _patched(cx_oauth, "refresh", lambda _rt: fresh_tokens), \
+                 _patched(store, "update_tokens", flaky):
+                assert provider._try_refresh(store.get_account("acc-1"), wait=False) is True
+
+            assert len(calls) == 2
+            fresh = store.get_account("acc-1")
+            assert (fresh.access_token, fresh.refresh_token) == ("AT2", "RT2")
+            assert fresh.status == "active"
+        finally:
+            store.close()
+
+
+def test_refresh_persist_failure_disables_and_stops_reusing_old_rt():
+    """换票成功但落库彻底失败：停用该号，绝不再拿库里那张废票去换。
+
+    这是真能把号玩死的一条路：上游已经把 RT 轮换走了，库里还是旧的；再拿旧票去换
+    只会拿到 invalid_grant（还可能被上游判成重放）。取舍照 codex2api 的
+    "新 Token 保存失败，已停止重复消费旧 RT"。
+    """
+    import providers.codex.oauth as cx_oauth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1", refresh_token="RT-old",
+                          token_expires_ms=int(time.time() * 1000) + 1_000)
+            provider = CodexProvider(store=store)
+            seen: list[str] = []
+            persisted: list[int] = []
+
+            def fake_refresh(refresh_token):
+                seen.append(refresh_token)
+                return cx_oauth.TokenData(access_token="AT2", refresh_token="RT2",
+                                          id_token="", expires_in=3600)
+
+            def broken(*_a, **_kw):
+                persisted.append(1)
+                raise sqlite3.OperationalError("disk I/O error")
+
+            with _patched(cx_oauth, "refresh", fake_refresh), \
+                 _patched(store, "update_tokens", broken):
+                assert provider._try_refresh(store.get_account("acc-1"), wait=False) is False
+                assert len(persisted) == 3        # 重试到上限就放弃
+                assert provider.refresh_expiring() == 0
+
+            assert seen == ["RT-old"]             # 旧票只被消费这一次
+            dead = store.get_account("acc-1")
+            assert dead.status == "disabled"
+            assert "persist failed" in dead.status_reason
+        finally:
+            store.close()
+
+
+def test_refresh_rejected_rt_disables_account():
+    """上游明确拒绝这张 RT：直接停用待人工重新授权，不再按连败阶梯慢慢爬。"""
+    import providers.codex.oauth as cx_oauth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1", refresh_token="RT-dead",
+                          token_expires_ms=int(time.time() * 1000) + 1_000)
+            provider = CodexProvider(store=store)
+            calls: list[str] = []
+
+            def rejected(refresh_token):
+                calls.append(refresh_token)
+                raise cx_oauth.TokenRejected("token 端点 HTTP 400 code=invalid_grant")
+
+            with _patched(cx_oauth, "refresh", rejected):
+                assert provider._try_refresh(store.get_account("acc-1"), wait=False) is False
+                assert provider.refresh_expiring() == 0
+
+            assert calls == ["RT-dead"]           # 停用后巡检不再拿死票去打上游
+            dead = store.get_account("acc-1")
+            assert dead.status == "disabled"
+            assert "invalid_grant" in dead.status_reason
+        finally:
+            store.close()
+
+
+def test_refresh_uncertain_failure_keeps_account():
+    """结果不确定（超时/5xx）不判死：账号保持可用，下一轮拿同一张票再试。
+
+    与"明确拒绝"分开的意义：一次网络抖动不该让好号被停用；真死了下一轮会拿到
+    invalid_grant，自会收敛到停用。
+    """
+    import providers.codex.oauth as cx_oauth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1", refresh_token="RT-maybe",
+                          token_expires_ms=int(time.time() * 1000) + 1_000)
+            provider = CodexProvider(store=store)
+            attempts: list[str] = []
+
+            def uncertain(refresh_token):
+                attempts.append(refresh_token)
+                raise cx_oauth.RefreshUncertain("token 端点传输失败: curl 28 timeout")
+
+            with _patched(cx_oauth, "refresh", uncertain):
+                assert provider._try_refresh(store.get_account("acc-1"), wait=False) is False
+
+            alive = store.get_account("acc-1")
+            assert alive.status == "active"
+            assert alive.refresh_token == "RT-maybe"
+            assert attempts == ["RT-maybe"]
+        finally:
+            store.close()
+
+
+def test_patrol_isolates_unexpected_account_exception():
+    """巡检里某个号抛意外异常，不该让排在它后面的号这轮全被跳过。"""
+    import providers.codex.oauth as cx_oauth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            soon = int(time.time() * 1000) + 1_000
+            _seed_account(store, "acc-1", refresh_token="RT-1", token_expires_ms=soon)
+            _seed_account(store, "acc-2", refresh_token="RT-2", token_expires_ms=soon)
+            provider = CodexProvider(store=store)
+            seen: list[str] = []
+
+            def fake_refresh(refresh_token):
+                seen.append(refresh_token)
+                if refresh_token == "RT-1":
+                    raise RuntimeError("意外的库异常")
+                return cx_oauth.TokenData(access_token="AT2", refresh_token="RT2",
+                                          id_token="", expires_in=3600)
+
+            with _patched(cx_oauth, "refresh", fake_refresh):
+                refreshed = provider.refresh_expiring()
+
+            assert sorted(seen) == ["RT-1", "RT-2"]   # 两个号都被照看到
+            assert refreshed == 1                     # 只有换出票的那个算数
+            assert store.get_account("acc-2").access_token == "AT2"
+        finally:
+            store.close()
+
+
+def test_request_uses_rotated_token_after_expiry_refresh():
+    """请求路径刷新后必须用新 AT 发出去，不能拿刷新前那份过期快照去撞 401。
+
+    旧行为：_maybe_refresh 刷完仍用调用方手里的旧 AT 发请求，白挨一个 401，之后还
+    会被判 AUTH 再触发一次同号刷新——刚换出来的新票立刻被再轮换一次。
+    """
+    import providers.codex.oauth as cx_oauth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1", access_token="AT-old", refresh_token="RT-old",
+                          token_expires_ms=int(time.time() * 1000) + 30_000)
+            provider = _provider_with_catalog(store, ["gpt-5-codex"])
+
+            class _Resp:
+                status_code = 200
+
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {"content-type": "text/event-stream"}
+
+                def iter_content(self, chunk_size: int = 8192):
+                    yield b"data: {}\n\n"
+
+                def close(self) -> None:
+                    pass
+
+            seen: list[str] = []
+
+            def fake_request(account, body, session_id, turn_state=""):
+                seen.append(account.access_token)
+                return _Resp()
+
+            fresh_tokens = cx_oauth.TokenData(access_token="AT-new", refresh_token="RT-new",
+                                              id_token="", expires_in=3600)
+            outbound = {"model": "gpt-5-codex", "input": [], "store": True}
+            provider.shape(outbound, "responses")
+            with _patched(cx_oauth, "refresh", lambda _rt: fresh_tokens), \
+                 _patched(cx_upstream, "responses_request", fake_request):
+                provider.send(
+                    provider.route("cx:gpt-5-codex"),
+                    "responses",
+                    json.dumps(outbound).encode(),
+                    RequestIDs(session="ses-1", request="r1", project="p"),
+                    stream=True,
+                )
+            assert seen == ["AT-new"]
+            persisted = store.get_account("acc-1")
+            assert (persisted.access_token, persisted.refresh_token) == ("AT-new", "RT-new")
+        finally:
+            store.close()
+
+
+def test_manual_add_reports_lost_credential_on_persist_failure():
+    """手动导入：兑换成功但落库失败，必须说清"票已作废、请重新导出"。"""
+    import providers.codex.oauth as cx_oauth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            provider = CodexProvider(store=store)
+            id_token = _make_id_token({
+                "email": "a@b.c",
+                "https://api.openai.com/auth": {"chatgpt_account_id": "acc-x"},
+            })
+
+            def broken(*_a, **_kw):
+                raise sqlite3.OperationalError("disk I/O error")
+
+            tokens = cx_oauth.TokenData(access_token="AT", refresh_token="RT2",
+                                        id_token=id_token, expires_in=3600)
+            with _patched(cx_oauth, "refresh", lambda _rt: tokens), \
+                 _patched(store, "upsert_account", broken):
+                try:
+                    provider.manual_add_account({"refresh_token": "RT-old"})
+                except ValueError as exc:
+                    message = str(exc)
+                else:
+                    raise AssertionError("应当抛 ValueError")
+            assert "重新导出" in message
+        finally:
+            store.close()
+
+
+def test_manual_add_reports_rejected_rt_clearly():
+    """手动导入撞上明确拒绝：报"已被上游拒绝"，而不是笼统的"校验失败"。"""
+    import providers.codex.oauth as cx_oauth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            provider = CodexProvider(store=store)
+
+            def rejected(_refresh_token):
+                raise cx_oauth.TokenRejected("HTTP 400 code=invalid_grant")
+
+            with _patched(cx_oauth, "refresh", rejected):
+                try:
+                    provider.manual_add_account({"refresh_token": "RT-old"})
+                except ValueError as exc:
+                    message = str(exc)
+                else:
+                    raise AssertionError("应当抛 ValueError")
+            assert "拒绝" in message and "重新授权" in message
+        finally:
+            store.close()
+
+
+def test_login_exchange_reports_lost_authorization_on_persist_failure():
+    """授权兑换成功但落库失败：报"授权码已作废、请重新发起"，别让用户反复贴同一段回调。"""
+    import providers.codex.oauth as cx_oauth
+    from providers.codex.login import LoginManager
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            manager = LoginManager(store)
+            session = manager.start()
+            id_token = _make_id_token({
+                "email": "a@b.c",
+                "https://api.openai.com/auth": {"chatgpt_account_id": "acc-y"},
+            })
+
+            def broken(*_a, **_kw):
+                raise sqlite3.OperationalError("disk I/O error")
+
+            tokens = cx_oauth.TokenData(access_token="AT", refresh_token="RT",
+                                        id_token=id_token, expires_in=3600)
+            with _patched(cx_oauth, "exchange_code", lambda _code, _verifier, _redirect="": tokens), \
+                 _patched(store, "upsert_account", broken):
+                try:
+                    manager.exchange(
+                        session["session_id"],
+                        f"http://localhost:1455/auth/callback?code=abc&state={session['state']}",
+                    )
+                except RuntimeError as exc:
+                    message = str(exc)
+                else:
+                    raise AssertionError("应当抛 RuntimeError")
+            assert "重新发起授权" in message
+            # 会话留在 pending 会让回调监听占着 1455 端口不放，标记掉让它自己释放
+            manager.fail(session["state"], "测试收尾")
+        finally:
+            store.close()
+
+
+def test_penalize_leaves_disabled_account_reason_intact():
+    """已判死的号再吃 401：只留错误证据，不覆盖状态与理由、也不再写冷却/连败。
+
+    请求路径判死之后本次请求仍会带着旧 AT 打出去，那个 401 会回到 _penalize——
+    它必须让位给"要重新授权"这个更具体的原因，而不是把它改写成笼统的连败文案。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            # 连败到阈值-1：没有守卫的话，这次 401 正好够到阈值并覆盖 status_reason
+            _seed_account(store, "acc-1", consecutive_failures=2)
+            provider = CodexProvider(store=store)
+            account = store.get_account("acc-1")
+            provider._mark_needs_reauth(account, "refresh_token rejected: invalid_grant")
+            provider._penalize(
+                account, classify.Classified(kind=classify.AUTH), "401 unauthorized"
+            )
+            after = store.get_account("acc-1")
+            assert after.status == "disabled"
+            assert "invalid_grant" in after.status_reason
+            assert after.consecutive_failures == 2 and after.cooldown_until_ms == 0
+            assert after.cooldown_kind == ""
+            assert "401" in after.last_error
         finally:
             store.close()
 
@@ -1116,10 +1538,7 @@ def test_expires_field_parsing():
 
 
 def test_import_roundtrip_and_skips_bad_entries():
-    """导出 → 导入应还原账号；坏条目只计入 skipped，不中断整批。
-
-    这里 claim=False：本用例只验证形状与落库，校验+认领另有专门用例（且会打上游）。
-    """
+    """导出 → 导入应还原账号；坏条目只计入 skipped，不中断整批。"""
     with tempfile.TemporaryDirectory() as tmp:
         store = CodexStore(Path(tmp) / "codex.db")
         try:
@@ -1132,7 +1551,7 @@ def test_import_roundtrip_and_skips_bad_entries():
             # 清空后重新导入
             store.delete_account("acc-1")
             payload = json.dumps(exported)
-            summary = provider.import_accounts(payload, claim=False)
+            summary = provider.import_accounts(payload)
             assert summary["imported"] == 1 and summary["updated"] == 0
             restored = store.get_account("acc-1")
             assert restored.email == "me@x.y"
@@ -1141,7 +1560,7 @@ def test_import_roundtrip_and_skips_bad_entries():
             assert restored.token_expires_ms == 1_800_000_000_000
 
             # 再导一次 = 更新（不是新增）
-            assert provider.import_accounts(payload, claim=False)["updated"] == 1
+            assert provider.import_accounts(payload)["updated"] == 1
 
             # 坏条目：缺凭据 / 缺标识 / 同批次重复
             mixed = json.dumps([
@@ -1150,7 +1569,7 @@ def test_import_roundtrip_and_skips_bad_entries():
                 {"refresh_token": "rt-2", "account_id": "a2"},
                 {"refresh_token": "rt-2", "account_id": "a2"},
             ])
-            summary = provider.import_accounts(mixed, claim=False)
+            summary = provider.import_accounts(mixed)
             assert summary["total"] == 4
             assert summary["imported"] == 1
             assert summary["skipped"] == 3
@@ -1333,536 +1752,6 @@ def test_zero_length_windows_are_placeholders_not_windows():
     )
     assert by_usage is not None and "primary" in by_usage
     assert "secondary" not in by_usage
-
-
-# ── SIWC（Sign in with ChatGPT，CPA auth 文件的 use_siwc 分区）──
-
-
-def test_siwc_entry_prefers_nested_credentials():
-    """凭据取嵌套 siwc 分区（实际在用的那套），身份/额度仍取外层。"""
-    from providers.codex import transfer
-
-    entry = {
-        "type": "codex", "email": "s@x.y", "plan_type": "plus", "account_id": "acc-s",
-        "access_token": "OUT-AT", "refresh_token": "OUT-RT", "id_token": "OUT-ID",
-        "expired": "2027-01-15T08:00:00Z",
-        "use_siwc": True,
-        "siwc": {
-            "access_token": "SIWC-AT", "refresh_token": "SIWC-RT", "id_token": "SIWC-ID",
-            "client_id": "dynamic_agent_client", "device_id": "dev-1",
-            "expired": "2027-02-01T00:00:00Z",
-            "scope": "openid profile email chatgpt.tokens.use.direct",
-        },
-    }
-    account, notes = transfer.to_account(entry)
-    assert notes == []
-    assert account.is_siwc
-    assert account.access_token == "SIWC-AT" and account.refresh_token == "SIWC-RT"
-    assert account.id_token == "SIWC-ID"
-    assert account.oauth_client_id == "dynamic_agent_client"
-    assert account.oauth_device_id == "dev-1"
-    assert account.email == "s@x.y" and account.account_id == "acc-s"
-    assert account.plan_type == "plus"
-    assert account.token_expires_ms == transfer._expires_ms("2027-02-01T00:00:00Z")
-
-    # use_siwc 为真但分区里没有凭据 → 回退外层，留备注
-    outer_only, notes = transfer.to_account(
-        {"refresh_token": "RT", "account_id": "a", "use_siwc": True}
-    )
-    assert not outer_only.is_siwc and outer_only.refresh_token == "RT"
-    assert notes and "回退" in notes[0]
-
-    # 分区有凭据但 use_siwc 不为真 → 以凭据为准，同样留备注
-    by_creds, notes = transfer.to_account(
-        {"refresh_token": "OUT-RT", "account_id": "a", "siwc": {"refresh_token": "S-RT"}}
-    )
-    assert by_creds.is_siwc and by_creds.refresh_token == "S-RT" and notes
-
-    # 少数导出把嵌套块塞成 JSON 字符串
-    as_text, _ = transfer.to_account(
-        {"refresh_token": "OUT-RT", "account_id": "a", "use_siwc": True,
-         "siwc": json.dumps({"refresh_token": "S-RT", "client_id": "c"})}
-    )
-    assert as_text.is_siwc and as_text.refresh_token == "S-RT"
-
-
-def test_siwc_export_roundtrip():
-    """SIWC 账号导出：use_siwc + 嵌套分区 + 外层镜像；再导入回来仍是 SIWC。"""
-    from providers.codex import transfer
-
-    account = Account(
-        uid="acc-s", account_id="acc-s", email="s@x.y", access_token="AT",
-        refresh_token="RT", id_token="ID", token_expires_ms=1_800_000_000_000,
-        auth_mode=AUTH_MODE_SIWC, oauth_client_id="dynamic_agent_client",
-        oauth_device_id="dev-1", updated_ms=1_800_000_000_000,
-    )
-    entry = transfer.export([account], "cpa")[0]
-    assert entry["use_siwc"] is True
-    assert entry["siwc"]["refresh_token"] == "RT"
-    assert entry["siwc"]["client_id"] == "dynamic_agent_client"
-    assert entry["siwc"]["device_id"] == "dev-1"
-    assert entry["siwc"]["expired"] == "2027-01-15T08:00:00Z"
-    assert entry["refresh_token"] == "RT"      # 外层镜像同一套票
-    back, notes = transfer.to_account(entry)
-    assert notes == []
-    assert back.is_siwc and back.oauth_client_id == "dynamic_agent_client"
-    assert back.oauth_device_id == "dev-1" and back.refresh_token == "RT"
-    # 外层账号不带这些键（omitempty 同款）
-    plain = transfer.export([Account(uid="u", refresh_token="rt")], "cpa")[0]
-    assert "use_siwc" not in plain and "siwc" not in plain
-
-
-def test_siwc_refresh_uses_own_endpoint_and_resource():
-    """SIWC 刷新走另一套端点，且必须带 resource（受众）：缺了票在 api.openai.com 不认。"""
-    import providers.codex.oauth as cx_oauth
-
-    captured: dict = {}
-
-    class FakeResponse:
-        status_code = 200
-        text = json.dumps({
-            "access_token": "AT2", "refresh_token": "RT2", "expires_in": 3600,
-            "scope": "openid profile email chatgpt.tokens.use.direct",
-        })
-
-    def fake_post(url, **kwargs):
-        captured["url"] = url
-        captured["data"] = kwargs["data"]
-        return FakeResponse()
-
-    original = cx_oauth.crequests.post
-    cx_oauth.crequests.post = fake_post
-    try:
-        tokens = cx_oauth.refresh_siwc("RT", "cli-1")
-    finally:
-        cx_oauth.crequests.post = original
-
-    assert captured["url"] == "https://auth.openai.com/api/accounts/oauth/token"
-    form = parse_qs(captured["data"])
-    assert form["grant_type"] == ["refresh_token"]
-    assert form["client_id"] == ["cli-1"]
-    assert form["refresh_token"] == ["RT"]
-    assert form["resource"] == ["https://api.openai.com/v1"]
-    assert tokens.access_token == "AT2" and tokens.refresh_token == "RT2"
-    assert tokens.scope.endswith("chatgpt.tokens.use.direct")
-
-    # 缺 client_id 本地就拒（上游只认签发时那个）
-    try:
-        cx_oauth.refresh_siwc("RT", "")
-        raise AssertionError("should have raised")
-    except ValueError:
-        pass
-
-
-def test_siwc_headers_drop_chatgpt_specific_fields():
-    """SIWC 账号：不带 ChatGPT 后端专用头，会话头换成 session_id，域换到 api.openai.com。"""
-    from providers.codex import upstream
-
-    account = Account(uid="acc-s", account_id="acc-s", access_token="AT",
-                      auth_mode=AUTH_MODE_SIWC, oauth_client_id="c")
-    headers = upstream.codex_headers(account, "sess-1")
-    assert "Chatgpt-Account-Id" not in headers
-    assert "Originator" not in headers and "Version" not in headers
-    assert "x-codex-beta-features" not in headers
-    assert headers["session_id"] == "sess-1"
-    assert headers["x-client-request-id"] == "sess-1"
-    assert "session-id" not in headers
-    assert headers["Authorization"] == "Bearer AT"
-    assert upstream.base_url(account) == "https://api.openai.com/v1"
-
-    outer = Account(uid="acc-o", account_id="acc-o", access_token="AT")
-    assert upstream.base_url(outer).endswith("chatgpt.com/backend-api/codex")
-    oh = upstream.codex_headers(outer, "sess-2")
-    assert oh["Chatgpt-Account-Id"] == "acc-o" and oh["Originator"] == CODEX_ORIGINATOR
-
-
-def test_siwc_models_parsed_from_standard_list():
-    """SIWC 的目录来自 api.openai.com/v1/models（标准 list 形状，无 client_version）。"""
-    from providers.codex import upstream
-
-    account = Account(uid="acc-s", access_token="AT", auth_mode=AUTH_MODE_SIWC,
-                      oauth_client_id="c")
-    captured: dict = {}
-
-    class FakeResponse:
-        status_code = 200
-
-        @staticmethod
-        def json():
-            return {"object": "list", "data": [
-                {"id": "gpt-5.1", "object": "model"},
-                {"id": "", "object": "model"},
-                {"object": "model"},
-                {"id": "text-embedding-3-small", "object": "model"},
-                {"id": "gpt-4o-mini-tts", "object": "model"},
-                {"id": "gpt-4o-realtime-preview", "object": "model"},
-                {"id": "dall-e-3", "object": "model"},
-            ]}
-
-    def fake_get(url, **kwargs):
-        captured["url"] = url
-        return FakeResponse()
-
-    original = upstream.crequests.get
-    upstream.crequests.get = fake_get
-    try:
-        entries = upstream.fetch_models(account)
-    finally:
-        upstream.crequests.get = original
-
-    assert captured["url"] == "https://api.openai.com/v1/models"
-    # 只留对话模型：embeddings / 语音 / realtime / 图像不进目录（它们打 /responses 必错）
-    assert entries == [{"id": "gpt-5.1", "name": "gpt-5.1"}]
-
-
-def test_trim_siwc_body_drops_unsupported_fields():
-    """SIWC 的 API 侧规则与外层相反：空的 instructions 要删，采样/长度参数不收。"""
-    from providers.codex import shape
-
-    body = {"model": "m", "instructions": "", "max_output_tokens": 100, "temperature": 0.5,
-            "max_completion_tokens": 10, "prompt_cache_options": {"x": 1}, "input": []}
-    assert shape.trim_siwc_body(body) is True
-    for key in ("instructions", "max_output_tokens", "temperature",
-                "max_completion_tokens", "prompt_cache_options"):
-        assert key not in body
-    assert body["input"] == []
-
-    # 真 instructions 留着；无可裁剪时返回 False
-    keep = {"instructions": "be nice"}
-    assert shape.trim_siwc_body(keep) is False
-    assert keep["instructions"] == "be nice"
-
-
-def test_store_migrates_siwc_columns():
-    """老库（缺 SIWC 三列）打开时补列：存量账号按外层凭证看待。"""
-    import sqlite3
-
-    from providers.codex.store import _DDL
-
-    keys = ("auth_mode", "oauth_client_id", "oauth_device_id")
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "codex.db"
-        old_ddl = "\n".join(
-            line for line in _DDL.splitlines() if not any(key in line for key in keys)
-        )
-        con = sqlite3.connect(path)
-        con.executescript(old_ddl.replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE"))
-        con.execute("INSERT INTO accounts (uid, created_ms, updated_ms) VALUES ('old', 1, 1)")
-        con.commit()
-        con.close()
-
-        store = CodexStore(path)
-        try:
-            account = store.get_account("old")
-            assert account.auth_mode == "" and account.oauth_client_id == ""
-            assert account.oauth_device_id == "" and not account.is_siwc
-            # 新列可写可读
-            store.update_runtime("old", plan_type="plus")     # 不碰新列
-            store.upsert_account(Account(uid="old", account_id="old", auth_mode=AUTH_MODE_SIWC,
-                                         oauth_client_id="cli-1", oauth_device_id="dev-1",
-                                         access_token="AT", refresh_token="RT"))
-            again = store.get_account("old")
-            assert again.is_siwc and again.oauth_client_id == "cli-1"
-        finally:
-            store.close()
-
-
-# ── 导入时的「校验+认领」──
-
-
-def test_import_claims_refresh_token_by_default():
-    """默认导入会用 RT 换一次新票：库里换成新票，摘要记 claimed。"""
-    import providers.codex.oauth as cx_oauth
-
-    with tempfile.TemporaryDirectory() as tmp:
-        store = CodexStore(Path(tmp) / "codex.db")
-        try:
-            provider = CodexProvider(store=store)
-            seen: list[str] = []
-
-            def fake_refresh(refresh_token, *, timeout_s=None):
-                seen.append(refresh_token)
-                return cx_oauth.TokenData(
-                    access_token="AT-NEW", refresh_token="RT-NEW", expires_in=3600,
-                    id_token=_make_id_token({
-                        "email": "a@b.c",
-                        "https://api.openai.com/auth": {"chatgpt_account_id": "a"},
-                    }),
-                )
-
-            original = cx_oauth.refresh
-            cx_oauth.refresh = fake_refresh
-            try:
-                summary = provider.import_accounts(json.dumps([{
-                    "refresh_token": "RT-OLD", "access_token": "AT-OLD", "account_id": "a",
-                    "expired": "2030-01-01T00:00:00Z",
-                }]))
-            finally:
-                cx_oauth.refresh = original
-
-            assert seen == ["RT-OLD"]
-            assert summary["imported"] == 1 and summary["claimed"] == 1
-            assert summary["unverified"] == 0 and summary["warnings"] == []
-            stored = store.get_account("a")
-            assert stored.access_token == "AT-NEW" and stored.refresh_token == "RT-NEW"
-        finally:
-            store.close()
-
-
-def test_import_keeps_account_when_refresh_token_rejected():
-    """RT 已被上游作废但 AT 未过期：号照常入库（能用到到期），摘要标 unverified。"""
-    import providers.codex.oauth as cx_oauth
-
-    with tempfile.TemporaryDirectory() as tmp:
-        store = CodexStore(Path(tmp) / "codex.db")
-        try:
-            provider = CodexProvider(store=store)
-
-            def fake_refresh(refresh_token, *, timeout_s=None):
-                raise cx_oauth.TokenRejected(401, json.dumps({
-                    "error": {"message": "Invalid refresh token.", "code": "invalid_refresh_token"}
-                }))
-
-            original = cx_oauth.refresh
-            cx_oauth.refresh = fake_refresh
-            try:
-                summary = provider.import_accounts(json.dumps([{
-                    "refresh_token": "RT-DEAD", "access_token": "AT", "account_id": "a",
-                    "expired": "2030-01-01T00:00:00Z",
-                }]))
-            finally:
-                cx_oauth.refresh = original
-
-            assert summary["imported"] == 1 and summary["skipped"] == 0
-            assert summary["claimed"] == 0 and summary["unverified"] == 1
-            assert "invalid_refresh_token" in summary["warnings"][0]
-            assert store.get_account("a").access_token == "AT"
-        finally:
-            store.close()
-
-
-def test_import_skips_entry_without_live_credential():
-    """RT 被拒 + AT 也过期/缺失：跳过（导进来只是占位，还要重新授权）。"""
-    import providers.codex.oauth as cx_oauth
-
-    def rejected(refresh_token, *, timeout_s=None):
-        raise cx_oauth.TokenRejected(401, json.dumps({"error": {"code": "invalid_refresh_token"}}))
-
-    with tempfile.TemporaryDirectory() as tmp:
-        store = CodexStore(Path(tmp) / "codex.db")
-        try:
-            provider = CodexProvider(store=store)
-            original = cx_oauth.refresh
-            cx_oauth.refresh = rejected
-            try:
-                summary = provider.import_accounts(json.dumps([
-                    {"refresh_token": "RT-DEAD", "access_token": "AT", "account_id": "expired",
-                     "expired": "2000-01-01T00:00:00Z"},
-                    {"refresh_token": "RT-DEAD2", "account_id": "no-at"},
-                ]))
-            finally:
-                cx_oauth.refresh = original
-
-            assert summary["skipped"] == 2 and summary["imported"] == 0
-            assert store.get_account("expired") is None
-            assert len(summary["errors"]) == 2
-        finally:
-            store.close()
-
-
-def test_import_keeps_account_on_transport_failure():
-    """传输失败不算"凭证已死"：号照常入库，只提示校验未完成（留给巡检/请求路径重试）。"""
-    import providers.codex.oauth as cx_oauth
-
-    with tempfile.TemporaryDirectory() as tmp:
-        store = CodexStore(Path(tmp) / "codex.db")
-        try:
-            provider = CodexProvider(store=store)
-
-            def flaky(refresh_token, *, timeout_s=None):
-                raise RuntimeError("token 端点 HTTP 502: bad gateway")
-
-            original = cx_oauth.refresh
-            cx_oauth.refresh = flaky
-            try:
-                summary = provider.import_accounts(json.dumps([{
-                    "refresh_token": "RT", "access_token": "AT", "account_id": "a",
-                    "expired": "2030-01-01T00:00:00Z",
-                }]))
-            finally:
-                cx_oauth.refresh = original
-
-            assert summary["imported"] == 1 and summary["skipped"] == 0
-            assert summary["unverified"] == 1
-            assert "校验未完成" in summary["warnings"][0]
-            assert store.get_account("a") is not None
-        finally:
-            store.close()
-
-
-def test_import_claim_can_be_disabled():
-    """claim=False：完全不做校验、不与源系统抢票，凭证照原样入库。"""
-    import providers.codex.oauth as cx_oauth
-
-    with tempfile.TemporaryDirectory() as tmp:
-        store = CodexStore(Path(tmp) / "codex.db")
-        try:
-            provider = CodexProvider(store=store)
-            calls: list[str] = []
-
-            def should_not_run(refresh_token, *, timeout_s=None):
-                calls.append(refresh_token)
-                raise AssertionError("claim 关掉后不该打上游")
-
-            original = cx_oauth.refresh
-            cx_oauth.refresh = should_not_run
-            try:
-                summary = provider.import_accounts(json.dumps([{
-                    "refresh_token": "RT", "access_token": "AT", "account_id": "a",
-                    "expired": "2000-01-01T00:00:00Z",   # 已过期也照收
-                }]), claim=False)
-            finally:
-                cx_oauth.refresh = original
-
-            assert calls == []
-            assert summary["imported"] == 1 and summary["skipped"] == 0
-            assert summary["claimed"] == 0 and summary["unverified"] == 0
-            assert store.get_account("a").refresh_token == "RT"
-        finally:
-            store.close()
-
-
-def test_import_siwc_account_claims_via_siwc_endpoint():
-    """SIWC 条目：认领走 SIWC 端点，client_id 取文件里的，形态住进库里。"""
-    import providers.codex.oauth as cx_oauth
-
-    with tempfile.TemporaryDirectory() as tmp:
-        store = CodexStore(Path(tmp) / "codex.db")
-        try:
-            provider = CodexProvider(store=store)
-            seen: dict = {}
-
-            def fake_siwc(refresh_token, client_id, *, timeout_s=None):
-                seen["rt"] = refresh_token
-                seen["client"] = client_id
-                return cx_oauth.TokenData(
-                    access_token="AT-S", refresh_token="RT-S", expires_in=600,
-                    scope="openid profile email chatgpt.tokens.use.direct",
-                )
-
-            def outer_not_used(refresh_token, *, timeout_s=None):
-                raise AssertionError("SIWC 账号不该走外层刷新")
-
-            original_siwc, original_outer = cx_oauth.refresh_siwc, cx_oauth.refresh
-            cx_oauth.refresh_siwc = fake_siwc
-            cx_oauth.refresh = outer_not_used
-            try:
-                summary = provider.import_accounts(json.dumps([{
-                    "type": "codex", "email": "s@x.y", "account_id": "acc-s",
-                    "access_token": "OUT-AT", "refresh_token": "OUT-RT",
-                    "expired": "2027-01-15T08:00:00Z", "use_siwc": True,
-                    "siwc": {"access_token": "S-AT", "refresh_token": "S-RT",
-                             "client_id": "cli-9", "device_id": "dev-9"},
-                }]))
-            finally:
-                cx_oauth.refresh_siwc, cx_oauth.refresh = original_siwc, original_outer
-
-            assert seen == {"rt": "S-RT", "client": "cli-9"}
-            assert summary["claimed"] == 1 and summary["unverified"] == 0
-            stored = store.get_account("acc-s")
-            assert stored.is_siwc and stored.oauth_client_id == "cli-9"
-            assert stored.oauth_device_id == "dev-9"
-            assert stored.access_token == "AT-S" and stored.refresh_token == "RT-S"
-            # API 可见视图带上形态；SIWC 的 AT 是短票，提前量按 5 分钟
-            assert stored.public_dict()["auth_mode"] == AUTH_MODE_SIWC
-            assert stored.refresh_ahead_ms(600) == 300_000
-        finally:
-            store.close()
-
-
-def test_import_keeps_live_stored_credentials_over_dead_file_token():
-    """重导一份旧导出：文件里的 RT 已死而库里那份还活着 → 保留库里的，不用死票覆盖。"""
-    import providers.codex.oauth as cx_oauth
-
-    with tempfile.TemporaryDirectory() as tmp:
-        store = CodexStore(Path(tmp) / "codex.db")
-        try:
-            future = int(time.time() * 1000) + 86_400_000
-            _seed_account(store, "a", refresh_token="RT-LIVE", access_token="AT-LIVE",
-                          token_expires_ms=future)
-            provider = CodexProvider(store=store)
-
-            def rejected(refresh_token, *, timeout_s=None):
-                raise cx_oauth.TokenRejected(401, json.dumps({
-                    "error": {"code": "invalid_refresh_token"}
-                }))
-
-            payload = json.dumps([{
-                "refresh_token": "RT-STALE", "access_token": "AT-STALE", "account_id": "a",
-                "expired": "2030-01-01T00:00:00Z",
-            }])
-            original = cx_oauth.refresh
-            cx_oauth.refresh = rejected
-            try:
-                summary = provider.import_accounts(payload)
-            finally:
-                cx_oauth.refresh = original
-
-            assert summary["updated"] == 1 and summary["claimed"] == 0
-            assert summary["unverified"] == 0
-            assert "保留库里的" in summary["warnings"][0]
-            kept = store.get_account("a")
-            assert kept.refresh_token == "RT-LIVE" and kept.access_token == "AT-LIVE"
-
-            # 库里那份的 AT 也过期时，没有"库里更活"的证据，照旧按文件落库并提示
-            store.update_tokens("a", "AT-OLD", "RT-OLD", 1)
-            original = cx_oauth.refresh
-            cx_oauth.refresh = rejected
-            try:
-                summary = provider.import_accounts(payload)
-            finally:
-                cx_oauth.refresh = original
-            assert summary["unverified"] == 1
-            assert store.get_account("a").refresh_token == "RT-STALE"
-        finally:
-            store.close()
-
-
-def test_import_skips_batch_duplicate_after_claim_reassigns_uid():
-    """认领后归属变了（凭据属于另一个账号）时，批内重复要在落库前拦住。"""
-    import providers.codex.oauth as cx_oauth
-
-    with tempfile.TemporaryDirectory() as tmp:
-        store = CodexStore(Path(tmp) / "codex.db")
-        try:
-            provider = CodexProvider(store=store)
-
-            def fake_refresh(refresh_token, *, timeout_s=None):
-                return cx_oauth.TokenData(
-                    access_token="AT-NEW", refresh_token="RT-NEW", expires_in=3600,
-                    id_token=_make_id_token({
-                        "https://api.openai.com/auth": {"chatgpt_account_id": "real"},
-                    }),
-                )
-
-            original = cx_oauth.refresh
-            cx_oauth.refresh = fake_refresh
-            try:
-                summary = provider.import_accounts(json.dumps([
-                    {"refresh_token": "RT-1", "access_token": "AT", "account_id": "file-1",
-                     "expired": "2030-01-01T00:00:00Z"},
-                    {"refresh_token": "RT-2", "access_token": "AT", "account_id": "file-2",
-                     "expired": "2030-01-01T00:00:00Z"},
-                ]))
-            finally:
-                cx_oauth.refresh = original
-
-            # 两条都认领成 real：第一条入库，第二条按重复跳过
-            assert summary["imported"] == 1 and summary["skipped"] == 1
-            assert store.get_account("real") is not None
-            assert "重复" in summary["errors"][0]
-        finally:
-            store.close()
 
 
 # ── 内建运行入口（无 pytest 环境直接跑）──

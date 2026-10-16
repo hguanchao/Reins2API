@@ -1,19 +1,11 @@
 """Codex 上游客户端：出站头族 + /responses 推理 + /models 目录。
 
-**两套上游**（按账号的凭证形态分叉，见 store.AUTH_MODE_*）：
-  - 外层（Codex CLI 凭证）：`chatgpt.com/backend-api/codex`，走 Codex CLI 身份头族。
-  - SIWC（Sign in with ChatGPT）：`api.openai.com/v1`，票的受众就是它，所以没有
-    `Chatgpt-Account-Id` / `Originator` / `Version` 这些 ChatGPT 后端专用头，
-    会话头也换成 `session_id`（依据：CLIProxyAPI codex_executor_auth.go 的
-    defaultOpenAISIWCBaseURL 与 applyCodexHeadersFromSources 的 siwc 分支）。
-
 HTTP 统一 curl_cffi `impersonate="chrome"` + net.proxy.proxies_for()（与全项目出口
 决策同一条路）。推理恒 stream=True（上游 SSE 是常态），短 RPC（目录）走 connect+read。
 """
 
 from __future__ import annotations
 
-import platform
 import time
 from typing import Any
 from urllib.parse import quote
@@ -25,8 +17,6 @@ from core.settings import (
     CODEX_BETA_FEATURES,
     CODEX_CLI_VERSION,
     CODEX_ORIGINATOR,
-    CODEX_SIWC_AGENT_NAME,
-    CODEX_SIWC_BASE,
     CODEX_TIMEOUT_CONNECT,
     CODEX_TIMEOUT_IDLE,
     CODEX_TIMEOUT_TTFB,
@@ -43,38 +33,12 @@ _MODELS_PATH = "/models"
 # core/src/client.rs:2461-2484 的回显），让同一段会话尽量落在同一个后端分片。
 TURN_STATE_HEADER = "x-codex-turn-state"
 
-# SIWC 出站身份：CPA 同位置放 `"<标识> (<GOOS>; <GOARCH>)"`（codexSIWCUserAgent），
-# 这里保持同一形状、用自己的标识——授权时的 agent_name_hint 不落在票上，上游
-# 在请求期并不校验它。
-_SIWC_USER_AGENT = (
-    f"{CODEX_SIWC_AGENT_NAME} ({platform.system().lower()}; {platform.machine().lower()})"
-)
-
-
-def base_url(account: Account) -> str:
-    """账号当前凭证对应的上游域（SIWC 的票只在 api.openai.com/v1 上认）。"""
-    return CODEX_SIWC_BASE if account.is_siwc else CODEX_BASE
-
-
 def codex_headers(account: Account, session_id: str) -> dict[str, str]:
     """出站头族（最小可信集，见设计文档 §3.2 / §5.4）。
 
     不发 `Connection`：HTTP/2 明令禁止 connection-specific 头，真实 Codex 客户端
     （reqwest）同样不发。
     """
-    if account.is_siwc:
-        # ChatGPT 后端那套身份头（Originator / Version / x-codex-beta-features /
-        # Chatgpt-Account-Id）在这里全不适用：票本身就是受众，多带反而指错后端。
-        headers = {
-            "Authorization": f"Bearer {account.access_token}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-            "User-Agent": _SIWC_USER_AGENT,
-        }
-        if session_id:
-            headers["session_id"] = session_id
-            headers["x-client-request-id"] = session_id
-        return headers
     headers = {
         "Authorization": f"Bearer {account.access_token}",
         "Content-Type": "application/json",
@@ -101,7 +65,7 @@ def responses_request(
     turn_state 非空时带上粘性路由令牌（只对签发它的同一个账号有意义，调用方按
     账号×会话取值，见 provider._turn_state_for）。
     """
-    url = f"{base_url(account)}{_RESPONSES_PATH}"
+    url = f"{CODEX_BASE}{_RESPONSES_PATH}"
     headers = codex_headers(account, session_id)
     if turn_state:
         headers[TURN_STATE_HEADER] = turn_state
@@ -288,10 +252,6 @@ def fetch_usage(account: Account) -> dict[str, Any] | None:
 
     响应头回填只在账号真跑过成功请求后才有数据，刚导入的号只能干等；这条
     （Codex CLI /status 用的同一接口）随时可查。返回 None = 上游没给额度段。
-
-    只对外层凭证成立：`/usage` 挂在 ChatGPT 后端的 Codex 域下（还要
-    Chatgpt-Account-Id），SIWC 的票到那个域不认、api.openai.com/v1 也没有对应接口，
-    所以 SIWC 账号的额度列只能空着（调用方 refresh_quota 会跳过它们）。
     """
     url = f"{CODEX_BASE}{_USAGE_PATH}"
     headers = {
@@ -319,17 +279,12 @@ def fetch_usage(account: Account) -> dict[str, Any] | None:
 
 
 def fetch_models(account: Account) -> list[dict[str, Any]]:
-    """GET {base}/models → 归一后的模型条目列表（含 id/name 等核心字段）。
+    """GET {base}/models?client_version=X → 归一后的模型条目列表。
 
-    两套上游给的形状不同，但都归一到 `list[dict]`（provider 侧只认 id/slug 与
-    可选的核心字段）：
-      - 外层：Codex manifest `{"models":[{slug,…}]}`，按账号权限下发，
-        需要 `client_version` 门控参数（版本低的客户端拿不到新模型）。
-      - SIWC：api.openai.com/v1 的标准 `{"data":[{id,…}]}`，没有 manifest 的
-        描述字段——条目只有 id/name，上下文等由 models.dev 目录回填。
+    上游返回的是 Codex manifest（`{"models":[{slug,…}]}`，非 OpenAI 兼容列表），
+    按账号权限下发。这里把 `slug` 映射成统一的 `id`，其余字段原样保留在条目里
+    供 provider 取用。
     """
-    if account.is_siwc:
-        return _fetch_models_siwc(account)
     url = f"{CODEX_BASE}{_MODELS_PATH}?client_version={quote(CODEX_CLI_VERSION)}"
     headers = {
         "Authorization": f"Bearer {account.access_token}",
@@ -365,57 +320,4 @@ def fetch_models(account: Account) -> list[dict[str, Any]]:
         item = dict(entry)
         item["id"] = slug
         out.append(item)
-    return out
-
-
-# SIWC 的目录来自标准 /v1/models，那里没有能力元数据，embeddings / 图像 / 语音这些
-# 也一起列出来——放进我们的模型目录就变成"能选、一发就错"的条目（本 provider 只打
-# Responses）。用明确的排除表挡掉已知的非对话族；其余一律保留（宁可多列一个，
-# 也不靠猜把能用的模型藏起来）。
-_SIWC_NON_CHAT_PREFIXES = (
-    "text-embedding", "tts", "whisper", "dall-e", "gpt-image",
-    "omni-moderation", "text-moderation", "sora",
-)
-_SIWC_NON_CHAT_MARKERS = ("-realtime", "-transcribe", "-tts")
-
-
-def _siwc_model_is_chat(model_id: str) -> bool:
-    lowered = model_id.lower()
-    if lowered.startswith(_SIWC_NON_CHAT_PREFIXES):
-        return False
-    return not any(marker in lowered for marker in _SIWC_NON_CHAT_MARKERS)
-
-
-def _fetch_models_siwc(account: Account) -> list[dict[str, Any]]:
-    """SIWC：api.openai.com/v1/models（标准列表形状，无 client_version 门控）。"""
-    url = f"{CODEX_SIWC_BASE}{_MODELS_PATH}"
-    headers = {
-        "Authorization": f"Bearer {account.access_token}",
-        "Accept": "application/json",
-        "User-Agent": _SIWC_USER_AGENT,
-    }
-    response = crequests.get(
-        url,
-        headers=headers,
-        timeout=(float(CODEX_TIMEOUT_CONNECT), float(CODEX_TIMEOUT_TTFB - CODEX_TIMEOUT_CONNECT)),
-        proxies=proxies_for(url),
-        impersonate="chrome",
-    )
-    if response.status_code != 200:
-        raise ValueError(f"codex(siwc) /models HTTP {response.status_code}: {response.text[:160]}")
-    payload = response.json()
-    if not isinstance(payload, dict):
-        raise ValueError("codex(siwc) /models 响应形状异常")
-    raw = payload.get("data")
-    if not isinstance(raw, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            continue
-        model_id = str(entry.get("id") or "").strip()
-        if not model_id or not _siwc_model_is_chat(model_id):
-            continue
-        # 标准列表没有显示名/模态/上下文，给最小核心字段；provider 侧按 id 建目录条目。
-        out.append({"id": model_id, "name": str(entry.get("name") or model_id)})
     return out

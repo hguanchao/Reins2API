@@ -100,6 +100,9 @@ def main() -> None:
         workbuddy = WorkBuddyProvider()
         registry.register(workbuddy)
         init_stores(registry.names)  # workbuddy.db（requests + accounts 表）
+        # 定时任务排程（签到 / 活跃上报 / 猫猫旅行 / token 保活）：时点与四类开关
+        # 见 config.json 的 schedule 段。daemon 线程，四类全关时不空转。
+        workbuddy.scheduler.start()
 
     if CODEX_ENABLED:
         from providers.codex import CodexProvider

@@ -17,6 +17,7 @@ import json
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,7 +30,6 @@ from providers.account_store import (
 )
 
 __all__ = [
-    "AUTH_MODE_SIWC",
     "STATUS_ACTIVE",
     "STATUS_DISABLED",
     "STATUS_PAUSED",
@@ -37,12 +37,8 @@ __all__ = [
     "CodexStore",
     "default_store",
     "valid_uid",
+    "write_with_retry",
 ]
-
-# 凭证形态：**只认这一个非空取值**。空串 = Codex CLI 客户端的外层 PKCE 凭证（老库的
-# 存量行也都是它），siwc = Sign in with ChatGPT（CPA auth 文件的 use_siwc 分区）。
-# 不给外层也定义一个常量：同一个状态有两种写法，迟早有人拿它做 == 比较然后漏掉空串。
-AUTH_MODE_SIWC = "siwc"
 
 _UID_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,96}$")
 
@@ -58,10 +54,6 @@ CREATE TABLE IF NOT EXISTS accounts (
     refresh_token        TEXT NOT NULL DEFAULT '',
     id_token             TEXT NOT NULL DEFAULT '',
     token_expires_ms     INTEGER NOT NULL DEFAULT 0,
-    -- 凭证形态（见 AUTH_MODE_*）：外层为空串与 'outer' 同义，siwc 才换域换端点
-    auth_mode            TEXT NOT NULL DEFAULT '',
-    oauth_client_id      TEXT NOT NULL DEFAULT '',
-    oauth_device_id      TEXT NOT NULL DEFAULT '',
     -- 生命周期状态（冷却走时间字段，不占状态）
     status               TEXT NOT NULL DEFAULT 'active',
     status_reason        TEXT NOT NULL DEFAULT '',
@@ -87,15 +79,11 @@ CREATE TABLE IF NOT EXISTS accounts (
 # 后加列的补列清单（CREATE TABLE IF NOT EXISTS 不会给已存在的表加列）。
 _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("rate_limit", "TEXT NOT NULL DEFAULT '{}'"),
-    ("auth_mode", "TEXT NOT NULL DEFAULT ''"),
-    ("oauth_client_id", "TEXT NOT NULL DEFAULT ''"),
-    ("oauth_device_id", "TEXT NOT NULL DEFAULT ''"),
 )
 
 _ACCOUNT_COLUMNS = (
     "uid", "account_id", "label", "email", "plan_type", "access_token", "refresh_token",
-    "id_token", "token_expires_ms", "auth_mode", "oauth_client_id", "oauth_device_id",
-    "status", "status_reason",
+    "id_token", "token_expires_ms", "status", "status_reason",
     "cooldown_until_ms", "cooldown_kind", "breaker_count", "breaker_until_ms",
     "consecutive_failures", "used_seq", "idle_boost", "last_error", "rate_limit",
     "created_ms", "updated_ms",
@@ -126,10 +114,6 @@ class Account:
     refresh_token: str = ""
     id_token: str = ""
     token_expires_ms: int = 0
-    # 凭证形态（AUTH_MODE_*）：'' 与 'outer' 同义（老库的存量行都是外层凭证）
-    auth_mode: str = ""
-    oauth_client_id: str = ""
-    oauth_device_id: str = ""
     status: str = STATUS_ACTIVE
     status_reason: str = ""
     cooldown_until_ms: int = 0
@@ -150,18 +134,6 @@ class Account:
 
     def breaker_open(self, now_ms: int) -> bool:
         return self.breaker_until_ms > now_ms
-
-    @property
-    def is_siwc(self) -> bool:
-        """当前持的是不是 Sign in with ChatGPT 那套凭证（决定刷新端点与服务域）。"""
-        return self.auth_mode == AUTH_MODE_SIWC
-
-    def refresh_ahead_ms(self, default_ahead_s: int) -> int:
-        """到期前主动刷新的提前量。SIWC 的 AT 是短票，用更小的窗口（见 settings）。"""
-        from core.settings import CODEX_SIWC_REFRESH_AHEAD_S
-
-        ahead_s = CODEX_SIWC_REFRESH_AHEAD_S if self.is_siwc else default_ahead_s
-        return ahead_s * 1000
 
     def token_expiring(self, now_ms: int, ahead_ms: int) -> bool:
         """凭证是否已到期或将在 ahead_ms 内到期（0 = 未知过期时间，视为需刷新）。"""
@@ -192,7 +164,6 @@ class Account:
             "status_reason": self.status_reason,
             "has_access_token": bool(self.access_token),
             "has_refresh_token": bool(self.refresh_token),
-            "auth_mode": self.auth_mode,
             "token_expires_ms": self.token_expires_ms,
             "cooldown_until_ms": self.cooldown_until_ms,
             "cooldown_kind": self.cooldown_kind,
@@ -238,9 +209,6 @@ class CodexStore(AccountStore):
             refresh_token=str(data.get("refresh_token") or ""),
             id_token=str(data.get("id_token") or ""),
             token_expires_ms=int(data.get("token_expires_ms") or 0),
-            auth_mode=str(data.get("auth_mode") or ""),
-            oauth_client_id=str(data.get("oauth_client_id") or ""),
-            oauth_device_id=str(data.get("oauth_device_id") or ""),
             status=str(data.get("status") or STATUS_ACTIVE),
             status_reason=str(data.get("status_reason") or ""),
             cooldown_until_ms=int(data.get("cooldown_until_ms") or 0),
@@ -280,6 +248,31 @@ class CodexStore(AccountStore):
 
 _default_store: CodexStore | None = None
 _default_lock = threading.Lock()
+
+
+def write_with_retry(write: Callable[[], Any], *, attempts: int = 3, base_delay_s: float = 0.2) -> Any:
+    """执行一次「必须落地」的写：调用方刚把一次性 refresh_token 换成了新票。
+
+    这种写失败与普通写失败完全不同——票已经在上游轮换过了，库里那份是废票，
+    静默当成"这次刷新失败"会让下一轮拿旧票再去换（换不出票，还可能被上游判成
+    重放）。所以：先重试几次抗瞬时锁竞争/抖动（对照 codex2api 落库失败重试 4 次
+    的做法），仍失败就把异常抛给调用方，由它明确标状态、要求人工重新授权。
+    """
+    last: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return write()
+        except Exception as exc:
+            last = exc
+            if attempt + 1 >= attempts:
+                break
+            logger.warning(
+                f"[accounts] 凭据落库失败，重试 {attempt + 1}/{attempts - 1}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            time.sleep(base_delay_s * (attempt + 1))
+    assert last is not None  # attempts >= 1 时循环至少跑过一次
+    raise last
 
 
 def default_store() -> CodexStore:

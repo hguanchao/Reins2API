@@ -56,14 +56,18 @@ import {
   pollCodexLogin,
   refreshProviderModels,
   startCodexLogin,
+  toggleRequestSort,
+  REQUEST_QUERY_DEFAULT,
   type CodexAccount,
   type CodexLoginStart,
   type CodexOps,
+  type RequestQuery,
   type RequestRow,
   type UsageRange,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
+import { RequestsFilters } from "@/components/requests/RequestsFilters";
 import { CodexAccountList } from "@/components/accounts/CodexAccountList";
 import {
   CodexExportDialog,
@@ -102,6 +106,8 @@ export function CodexPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
+  /** 最近请求的筛选与排序（服务端执行；空值 = 不筛） */
+  const [query, setQuery] = useState<RequestQuery>(REQUEST_QUERY_DEFAULT);
   /** 用量图表时间范围(今日/7天/14天/30天,默认 7 天) */
   const [usageRange, setUsageRange] = useState<UsageRange>("7d");
   const seq = useRef(0);
@@ -121,7 +127,7 @@ export function CodexPage() {
       const [opsData, accountData, requestPage] = await Promise.all([
         fetchCodexOps(),
         fetchCodexAccounts(),
-        fetchCodexRequests(pageSize, (page - 1) * pageSize),
+        fetchCodexRequests(pageSize, (page - 1) * pageSize, query),
       ]);
       // 丢弃过期响应：轮询与账号动作触发的刷新可能同时在飞（与 OpenCode 页同一套守卫）。
       if (id !== seq.current) return;
@@ -141,7 +147,7 @@ export function CodexPage() {
         setLoadError(error instanceof ApiError ? error.message : String(error));
       }
     }
-  }, [page, pageSize]);
+  }, [page, pageSize, query]);
 
   const changePage = useCallback((next: number) => {
     setPage(Math.max(1, next));
@@ -149,6 +155,12 @@ export function CodexPage() {
 
   const changePageSize = useCallback((next: number) => {
     setPageSize(next);
+  }, []);
+
+  /** 改筛选/排序后回到第 1 页：页码是服务端 offset 的输入，留在旧页会落空 */
+  const patchQuery = useCallback((patch: Partial<RequestQuery>) => {
+    setQuery((prev) => ({ ...prev, ...patch }));
+    setPage(1);
   }, []);
 
   useEffect(() => {
@@ -258,7 +270,7 @@ export function CodexPage() {
           <div className="mission-strip mission-strip-gw" role="group" aria-label="Codex 池 KPI">
             <div className="metric">
               <div className="metric-k">
-                <CircleUserRound className="metric-ico" strokeWidth={1.6} />
+                <CircleUserRound className="metric-ico ico-green" strokeWidth={1.6} />
                 可用号
               </div>
               <div className="metric-v is-ok">{pool?.active ?? 0}</div>
@@ -266,7 +278,7 @@ export function CodexPage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Pause className="metric-ico" strokeWidth={1.6} />
+                <Pause className="metric-ico ico-amber" strokeWidth={1.6} />
                 冷却 / 熔断
               </div>
               <div
@@ -283,7 +295,7 @@ export function CodexPage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Cpu className="metric-ico" strokeWidth={1.6} />
+                <Cpu className="metric-ico ico-cyan" strokeWidth={1.6} />
                 在途
               </div>
               <div className="metric-v">{pool?.in_flight ?? 0}</div>
@@ -291,7 +303,7 @@ export function CodexPage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <KeyRound className="metric-ico" strokeWidth={1.6} />
+                <KeyRound className="metric-ico ico-indigo" strokeWidth={1.6} />
                 模型
               </div>
               <div className="metric-v">{ops?.status.models ?? 0}</div>
@@ -303,7 +315,7 @@ export function CodexPage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Send className="metric-ico" strokeWidth={1.6} />
+                <Send className="metric-ico ico-blue" strokeWidth={1.6} />
                 24h 请求
               </div>
               <div className="metric-v">{fmtInt(totals?.requests ?? 0)}</div>
@@ -313,7 +325,7 @@ export function CodexPage() {
             </div>
             <div className="metric">
               <div className="metric-k">
-                <Activity className="metric-ico" strokeWidth={1.6} />
+                <Activity className="metric-ico ico-violet" strokeWidth={1.6} />
                 24h Tokens
               </div>
               <div className="metric-v">
@@ -329,7 +341,7 @@ export function CodexPage() {
           <div className="gw-grid gw-grid-1">
             <section className="gw-panel">
               <div className="gw-panel-head">
-                <CircleUserRound className="size-3.5" strokeWidth={1.6} aria-hidden />
+                <CircleUserRound className="size-3.5 ico-green" strokeWidth={1.6} aria-hidden />
                 <h2 className="gw-panel-title">账号池({accounts.length})</h2>
                 <div className="gw-head-actions">
                   <Button
@@ -366,7 +378,7 @@ export function CodexPage() {
             {/* ── 左：模型列表 ── */}
             <section className="gw-panel">
               <div className="gw-panel-head">
-                <Boxes className="size-3.5" strokeWidth={1.6} aria-hidden />
+                <Boxes className="size-3.5 ico-indigo" strokeWidth={1.6} aria-hidden />
                 <h2 className="gw-panel-title">模型列表({ops?.models.length ?? 0})</h2>
                 {/* 目录不再自动刷新：这是唯一的常规获取入口（三页同一枚图标按钮） */}
                 <Button
@@ -440,7 +452,7 @@ export function CodexPage() {
             {/* ── 右：用量趋势 ── */}
             <section className="gw-panel">
               <div className="gw-panel-head">
-                <Activity className="size-3.5" strokeWidth={1.6} aria-hidden />
+                <Activity className="size-3.5 ico-violet" strokeWidth={1.6} aria-hidden />
                 <h2 className="gw-panel-title">Token 用量与请求次数</h2>
                 <UsageRangeSelect value={usageRange} onChange={setUsageRange} className="ml-auto" />
               </div>
@@ -451,10 +463,21 @@ export function CodexPage() {
           {/* ── 最近请求 ── */}
           <section className="gw-panel">
             <div className="gw-panel-head">
-              <Inbox className="size-3.5" strokeWidth={1.6} aria-hidden />
+              <Inbox className="size-3.5 ico-blue" strokeWidth={1.6} aria-hidden />
               <h2 className="gw-panel-title">最近请求</h2>
+              <RequestsFilters
+                value={query}
+                onPatch={patchQuery}
+                models={ops?.models.map((m) => m.id) ?? []}
+                accounts={accounts.map((a) => ({ uid: a.uid, label: a.label || a.uid }))}
+              />
             </div>
-            <RequestsTable rows={requests} accountLabelFor={(uid) => accountLabels.get(uid)} />
+            <RequestsTable
+              rows={requests}
+              accountLabelFor={(uid) => accountLabels.get(uid)}
+              query={query}
+              onSortChange={(key) => patchQuery(toggleRequestSort(query, key))}
+            />
             <div className="gw-panel-foot">
               <Pagination
                 page={page}
