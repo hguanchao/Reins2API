@@ -16,6 +16,14 @@
     "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas,
     "Liberation Mono", monospace;
 
+  /* 字号尺度里 Tailwind 没有同值内置档的两档（见下方 :root 的六档表）：
+       text-2xs = 10px · text-md = 13.5px
+     11px / 15px 没有内置同值档，用 text-[11px] / text-[15px] 写（同一套尺度上）。
+     **刻意不覆盖 text-xs/sm/lg**：把框架内置档改成别的值会让复制进来的
+     shadcn 片段静默变形，比多写两个任意值危险得多。 */
+  --text-2xs: var(--fs-2xs);
+  --text-md: var(--fs-md);
+
   /* 圆角三档收敛：卡片/按钮/弹窗 12 · 输入框/分段控件 10 · 小控件 8 */
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -55,20 +63,50 @@
 
 /* ── 与主题无关的尺度令牌（字号）─────────────────
    此前 UI 里同时在用 10 / 10.5 / 11 / 11.5 / 12 / 12.5 / 13 / 13.5 八种字号，
-   其中 10–11.5 挤了四个几乎一样的值——那是漂移，不是尺度。收敛成四档：
-     xs 表头 / 脚注 / 图表轴标签 · sm 副行 / 标签 · md 正文 · lg 强调
-   2026-10-16 补 2xs：三级提示（已有语义色、又必须比副行再退一档的信息，
-   如账号表积分列的快过期提示）。这是**有意的第五档**，不是把 10.5/11.5 那些
-   中间值放回来——新加的尺寸要么落在这五档上，要么先改这里。
-   字号与主题无关，故放在 :root（两套主题都命中）。 */
+   其中 10–11.5 挤了四个几乎一样的值——那是漂移，不是尺度。收敛成六档：
+
+     2xs   10px  三级提示（已有语义色、又必须比副行再退一档的信息）
+     xs    11px  表头 / 脚注 / 图表轴标签 / 时间戳
+     sm    12px  副行 / 标签 / 徽章
+     md    13.5px 正文（表格单元格 / 表单控件 / 对话正文）
+     lg    15px  面板标题 / 弹窗标题
+     display 24px 页面标题 / KPI 大数字
+
+   新加的尺寸要么落在这六档上，要么先改这里——没有第七档。
+
+   Tailwind 侧的写法（v4：`--text-*` 生成 text-* 工具类）：
+     text-2xs 10 · text-[11px] 11 · text-xs 12 · text-md 13.5 · text-[15px] 15
+   xs/sm 用的是 Tailwind 内置档（12/14px），本项目只需要 12 —— 14 已全量
+   改写成 text-md；11 与 15 没有内置同值档，直接用任意值写法（可 grep）。
+   字号与主题无关，故放在 :root（两套主题都命中）。
+
+   text-2xs / text-md 只设 font-size（不带配套 line-height）：行高交给
+   leading-* 与上下文继承，与 styles/*.css 里 var(--fs-*) 的用法一致——
+   内置档 text-xs 自带 1.333 行高，混用两种行为反而更难预期。 */
 :root {
   --fs-2xs: 10px;
   --fs-xs: 11px;
   --fs-sm: 12px;
   --fs-md: 13.5px;
   --fs-lg: 15px;
+  --fs-display: 24px;
 }
 
+/* ── 间距约定（8px 系统 + 2px 子网格）────────────
+   版式节奏一律 8 的倍数（块间距 / 容器内边距 / 面板与卡片间隔），
+   需要更细时可退到 4 的倍数（12 / 20 —— 表格行内、控件内部）。
+   **只允许 2px 子网格用于光学微调**（图标与标签之间的间隙、行内分隔符、
+   胶囊落位空间、≤640px 的移动端压缩），这与 Tailwind 的分数档
+   （0.5/1.5/2.5/3.5 = 2/6/10/14px）落在同一套刻度上——CSS 与 TSX 才是一套。
+   1px 保留给细线（border / hairline / 1px 光学校正）。
+   除以上四种，没有第五种取值：3/5/7/9/11/18/22/26/30px 都是漂移。 */
+/* ── 控件高度词表（4px 子网格）────────────────────
+   24 紧凑图标钮 / 头像 · 28 行内控件（分页钮、表格图标钮、窄输入）
+   32 常规控件（导航项、标准输入、小号按钮）· 36 主按钮
+   同排并处的控件必须同一档：分页行里"页码钮 28 / 省略号 30 / 每页选择 30"
+   那种 2px 错位，肉眼看不出差在哪，只觉得"这排没对齐"。
+   一排放不下两种档位时，**以该排里最大的那个控件为准**（如定时任务行的
+   输入框取 32 去配 sm 按钮，而不是让按钮缩到 28）。 */
 /* ── 浅色（默认）─────────────────────────────── */
 :root,
 [data-theme="light"] {
@@ -139,15 +177,20 @@
 
   /* 表格 */
   --table-header: #f9fafb;
-  --table-cell: #ffffff;
   --table-hover: #f9fafb;
   --table-selected: #e8f6f1;
   /* 表头行下边框：数据行之间是更浅的 --hairline，表头要压得住它 */
   --table-border: #e5e7eb;
-  --table-sticky-shadow: rgba(17, 24, 39, 0.12);
 
-  /* 顶栏 */
-  --header-bg: color-mix(in srgb, #f9fafb 88%, transparent);
+  /* 顶栏：玻璃拟态底——真的半透明（80% 页面底色），磨砂由 base.css 的
+     backdrop-filter 出。占比不能更低：顶栏上直接压着品牌名与四个导航项的文字，
+     backdrop-filter 只把背后内容糊开、给不了确定性的对比度，兜底只能靠底色占比。 */
+  --header-bg: color-mix(in srgb, var(--background) 80%, transparent);
+  /* 顶栏导航项的未选中字色：普通 muted（gray-500）在白底上只有 4.6:1，
+     玻璃磨砂把最坏底色再压暗一档后实测跌破 4.5（Chrome 无头实测 4.0–4.46）。
+     导航是常驻文字、还得随时支着底下滑过的内容，提到 gray-600 给足余量；
+     选中态仍用 foreground + 字重，层级不变。深色本就 5.4+，沿用 muted。 */
+  --nav-tab-fg: #4b5563;
 
   /* 阴影：两级高度且必须单调（卡片 < 浮层）。
      landing 原值只有 4% 黑，白卡在灰底上浮不起来、多面板堆叠像线框图；
@@ -188,9 +231,11 @@
   --info-border: #e5e7eb;
   --info-text: #6b7280;
 
-  --grid-line: rgba(17, 24, 39, 0.04);
   --top-h: 56px;
-  --rail-w: 380px;
+  /* 顶栏总占位高（含 1px 底边框——.main 让位时要一丝不差，差 1px 每页都错半格）：
+     顶栏绝对定位后不再占布局高度，.main 靠这个值让出顶部。
+     窄屏顶栏折成两行，覆盖值写在 base.css 的 900px 断点里。 */
+  --top-h-total: calc(var(--top-h) + 1px);
 }
 
 /* ── 深色：同灰阶反相 ────────────────────────── */
@@ -244,13 +289,13 @@
   --input: #4b5563;
 
   --table-header: #1a2334;
-  --table-cell: #1f2937;
   --table-hover: #263242;
   --table-selected: #24352f;
   --table-border: #374151;
-  --table-sticky-shadow: rgba(0, 0, 0, 0.45);
 
-  --header-bg: color-mix(in srgb, #111827 88%, transparent);
+  /* 同浅色一套配方，底色换成深色的 --background；未选中字色深色下 5.4+ 无需提档 */
+  --header-bg: color-mix(in srgb, var(--background) 80%, transparent);
+  --nav-tab-fg: var(--muted-foreground);
 
   --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px -8px rgba(0, 0, 0, 0.45);
   --shadow-pop: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 16px 40px -8px rgba(0, 0, 0, 0.5);
@@ -280,5 +325,4 @@
   --info-border: #374151;
   --info-text: #9ca3af;
 
-  --grid-line: rgba(249, 250, 251, 0.04);
 }

@@ -1,7 +1,6 @@
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
-import * as LabelPrimitive from "@radix-ui/react-label";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import * as TabsPrimitive from "@radix-ui/react-tabs";
 import * as ToggleGroupPrimitive from "@radix-ui/react-toggle-group";
@@ -24,7 +23,7 @@ import { cn } from "@/lib/utils";
 // ---------- Button ----------
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[10px] text-[13.5px] font-medium disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-3.5 shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-ring transition-[color,background-color,border-color,opacity,transform,box-shadow] duration-150 ease-out",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[10px] text-md font-medium disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-3.5 shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-ring transition-[color,background-color,border-color,opacity,transform,box-shadow] duration-150 ease-out",
   {
     variants: {
       variant: {
@@ -42,8 +41,8 @@ const buttonVariants = cva(
       },
       size: {
         default: "h-9 px-3.5",
-        sm: "h-[30px] rounded-lg px-2.5 text-[12.5px]",
-        icon: "size-[30px] rounded-lg",
+        sm: "h-8 rounded-lg px-2.5 text-xs",
+        icon: "size-8 rounded-lg",   /* 词表：常规控件 32（与 sm 按钮 / 输入框同档） */
       },
     },
     defaultVariants: {
@@ -80,7 +79,7 @@ const badgeVariants = cva(
     /* gap 5px 对齐 demo（原本 gap-1=4px）：徽章里有点标时这 1px 看得出来 */
     "group/badge inline-flex h-[21px] w-fit shrink-0 items-center justify-center gap-[5px]",
     "overflow-hidden rounded-full border border-transparent px-2 py-0.5",
-    "text-[11.5px] font-medium whitespace-nowrap",
+    "text-[11px] font-medium whitespace-nowrap",
     "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
     "has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5",
     "aria-invalid:border-destructive aria-invalid:ring-destructive/20",
@@ -161,7 +160,7 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "ap-dialog-overlay fixed inset-0 z-[70] bg-black/50",
+        "ap-dialog-overlay fixed inset-0 z-[70]",
         className,
       )}
       {...props}
@@ -239,7 +238,7 @@ function DialogTitle({
     <DialogPrimitive.Title
       data-slot="dialog-title"
       className={cn(
-        "text-base leading-none font-semibold tracking-tight",
+        "text-[15px] leading-none font-semibold tracking-tight",
         className,
       )}
       {...props}
@@ -279,7 +278,7 @@ function Empty({
           <Icon className="size-6 opacity-70" strokeWidth={1.6} />
         </div>
       ) : null}
-      <p className="text-muted-foreground text-sm">{text}</p>
+      <p className="text-muted-foreground text-md">{text}</p>
       {action ? <div className="mt-1">{action}</div> : null}
     </div>
   );
@@ -297,27 +296,9 @@ function Input({
       type={type}
       data-slot="input"
       className={cn(
-        "file:text-foreground placeholder:text-muted-foreground flex h-8 w-full min-w-0 rounded-md border border-input bg-background px-2.5 py-1 text-[13px] outline-none font-mono",
+        "file:text-foreground placeholder:text-muted-foreground flex h-8 w-full min-w-0 rounded-md border border-input bg-background px-2.5 py-1 text-md outline-none font-mono",
         "focus-visible:border-primary/50 focus-visible:ring-1 focus-visible:ring-primary/20",
         "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
-// ---------- Label ----------
-
-function Label({
-  className,
-  ...props
-}: React.ComponentProps<typeof LabelPrimitive.Root>) {
-  return (
-    <LabelPrimitive.Root
-      data-slot="label"
-      className={cn(
-        "flex items-center gap-2 text-sm text-muted-foreground leading-none select-none group-data-[disabled=true]:pointer-events-none group-data-[disabled=true]:opacity-50",
         className,
       )}
       {...props}
@@ -500,8 +481,8 @@ function SelectTrigger({
         "focus-visible:border-ring focus-visible:ring-ring/30 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
         "flex items-center justify-between gap-1.5 rounded-md border bg-background whitespace-nowrap outline-none focus-visible:ring-1 focus-visible:ring-primary/20 focus-visible:border-primary/50",
         "disabled:cursor-not-allowed disabled:opacity-50",
-        "data-[size=default]:h-8 data-[size=default]:w-full data-[size=default]:gap-2 data-[size=default]:px-2.5 data-[size=default]:text-[13px]",
-        "data-[size=sm]:h-[30px] data-[size=sm]:w-auto data-[size=sm]:min-w-0 data-[size=sm]:gap-1.5 data-[size=sm]:px-2.5 data-[size=sm]:py-0 data-[size=sm]:text-xs data-[size=sm]:rounded-md data-[size=sm]:shadow-none",
+        "data-[size=default]:h-8 data-[size=default]:w-full data-[size=default]:gap-2 data-[size=default]:px-2.5 data-[size=default]:text-md",
+        "data-[size=sm]:h-7 data-[size=sm]:w-auto data-[size=sm]:min-w-0 data-[size=sm]:gap-1.5 data-[size=sm]:px-2.5 data-[size=sm]:py-0 data-[size=sm]:text-xs data-[size=sm]:rounded-md data-[size=sm]:shadow-none",
         "*:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-1.5",
         "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
         "hover:bg-secondary/50",
@@ -566,7 +547,7 @@ function SelectItem({
     <SelectPrimitive.Item
       data-slot="select-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex w-full cursor-default items-center gap-2 rounded-lg py-2 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
+        "focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex w-full cursor-default items-center gap-2 rounded-lg py-2 pr-8 pl-2 text-md outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
         className,
       )}
       {...props}
@@ -668,7 +649,7 @@ function Table({
   const table = (
     <table
       data-slot="table"
-      className={cn("w-full caption-bottom text-[13px]", className)}
+      className={cn("w-full caption-bottom text-md", className)}
       {...props}
     />
   );
@@ -726,7 +707,7 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
       className={cn(
         /* 不做 uppercase：本项目列头中英混排（「7d 请求」「24h Tokens」），
            强制大写会渲染成「7D 请求」这种半截大写的怪样子 */
-        "text-fg-subtle h-9 bg-[var(--table-header)] px-3.5 text-left align-middle text-[11.5px] font-semibold whitespace-nowrap",
+        "text-fg-subtle h-9 bg-[var(--table-header)] px-3.5 text-left align-middle text-[11px] font-semibold whitespace-nowrap",
         "[&:has([role=checkbox])]:w-10 [&:has([role=checkbox])]:pr-0 [&:has([role=checkbox])]:pl-3",
         className,
       )}
@@ -813,7 +794,7 @@ function TabsTrigger({
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
       className={cn(
-        "inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded px-3 text-[13px] font-medium whitespace-nowrap",
+        "inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded px-3 text-md font-medium whitespace-nowrap",
         "data-[state=active]:bg-sidebar-accent data-[state=active]:text-foreground",
         "text-muted-foreground hover:text-foreground",
         className,
@@ -827,7 +808,7 @@ function TabsTrigger({
 
 const toggleVariants = cva(
   [
-    "inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium",
+    "inline-flex items-center justify-center gap-2 rounded-md text-md font-medium",
     "whitespace-nowrap transition-colors outline-none select-none",
     "text-muted-foreground hover:bg-muted hover:text-foreground",
     "disabled:pointer-events-none disabled:opacity-50",
@@ -980,7 +961,7 @@ function DropdownMenuItem({
       data-slot="dropdown-menu-item"
       data-variant={variant}
       className={cn(
-        "relative flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-hidden select-none",
+        "relative flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-md outline-hidden select-none",
         "focus:bg-accent focus:text-accent-foreground",
         "data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive",
         "data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
@@ -1090,7 +1071,6 @@ export {
   DialogTitle,
   Empty,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,

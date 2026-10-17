@@ -18,6 +18,7 @@ import {
   type UsageSummary,
 } from "@/lib/api";
 import { Empty, ToggleGroup, ToggleGroupItem } from "@/components/ui";
+import { AUTO_REFRESH_MS } from "@/lib/countdown";
 import { fmtCompact, fmtInt } from "@/lib/utils";
 
 /** 面积/线配色走 CSS 变量（见 tokens.css 的 --chart-*），深浅主题各自一套。
@@ -47,7 +48,6 @@ const RANGE_OPTIONS: ReadonlyArray<{ value: UsageRange; label: string }> = [
 ];
 
 /** 与页面数据轮询同频 */
-const AUTO_REFRESH_MS = 10_000;
 
 /** 时间范围切换(今日/7天/14天/30天):放在面板头部标题右侧,与标题同一行 */
 export function UsageRangeSelect({
@@ -427,7 +427,8 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
               <div className="gw-chart-tip-models">
                 {hoverModels.map((s) => (
                   <div key={s.model} className="gw-chart-tip-row">
-                    {/* 模型名用别名（与最近请求表同一套名字），过长省略、悬停看全名 */}
+                    {/* 模型名用别名（与最近请求表同一套名字），全名展示不省略；
+                        超长的在浮层上限内换行，title 留着给窄屏兜底 */}
                     <span className="gw-chart-tip-model" title={s.model}>
                       {s.model}
                     </span>

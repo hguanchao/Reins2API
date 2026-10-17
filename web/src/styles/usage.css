@@ -23,7 +23,7 @@
 .usage-stream {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
 }
@@ -162,7 +162,7 @@
    宽度按各自最长内容给，超出由 SelectTrigger 自带的 line-clamp-1 截断，
    完整值在 aria-label / title 上。 */
 .req-filter-trigger {
-  height: 28px;
+  height: 28px;   /* 与 SelectTrigger size=sm 的默认同档（行内控件 28） */
 }
 .req-filter-trigger.is-status {
   width: 124px;
@@ -230,7 +230,7 @@
 .req-sort-btn {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   width: 100%;
   height: 100%;
   padding: 0 14px;

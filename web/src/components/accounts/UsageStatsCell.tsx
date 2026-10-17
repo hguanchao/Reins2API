@@ -1,4 +1,5 @@
 import { Activity, CircleCheck, Send, Zap } from "lucide-react";
+import type { AccountUsageStats } from "@/lib/api";
 import { cn, fmtCompact } from "@/lib/utils";
 
 /** 四个图标各带一个分类色（请求蓝 / Token 紫 / 缓存琥珀 / 成功绿，映射表见
@@ -16,13 +17,7 @@ const ICON = { className: "size-3.5", strokeWidth: 1.6 } as const;
  * 取的是**全时段累计**（stats_total），Codex 与 WorkBuddy 账号表共用同一格——
  * 两列同名就该同口径。数值与相邻列一致用紧凑写法（1K / 2.3M），不做悬停提示。
  */
-export interface AccountUsageStats {
-  requests: number;
-  failed: number;
-  input_tokens: number;
-  output_tokens: number;
-  cached_tokens: number;
-}
+export type { AccountUsageStats };
 
 /** 格子里的一格：图标 + 紧凑数值。tone 是分类色（见 styles/icons.css 的映射表）。 */
 function Stat({ icon, tone, value }: { icon: React.ReactNode; tone: string; value: string }) {
@@ -34,7 +29,7 @@ function Stat({ icon, tone, value }: { icon: React.ReactNode; tone: string; valu
   );
 }
 
-export function UsageStatsCell({ total }: { total?: AccountUsageStats }) {
+export function UsageStatsCell({ total }: { total?: AccountUsageStats | null }) {
   const requests = total?.requests ?? 0;
   const failed = total?.failed ?? 0;
   const tokens = (total?.input_tokens ?? 0) + (total?.output_tokens ?? 0);

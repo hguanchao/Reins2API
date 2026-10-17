@@ -65,7 +65,7 @@ const isOk = (item: AccountRecentRequest) => item.http_status >= 200 && item.htt
 function FailureDetail({ item }: { item: AccountRecentRequest }) {
   return (
     <div className="w-[15.5rem]">
-      <div className="text-fg-subtle mb-1.5 font-mono text-[11.5px]">
+      <div className="text-fg-subtle mb-1.5 font-mono text-[11px]">
         {fmtStampFull(item.created_ms)}
       </div>
       <div className="grid grid-cols-[auto_1fr] items-baseline gap-x-3.5 gap-y-1">

@@ -235,8 +235,8 @@ export function AppShell() {
         </div>
       </header>
 
-      {/* main 是唯一的滚动容器:滚动条只出现在 header 之下,
-          内容列的最大宽度与居中由 .main 的内边距实现(见 base.css)。 */}
+      {/* main 是唯一的滚动容器：内容从它的顶上滚过去、钻到 header（绝对定位，
+          见 base.css）的磨砂底下；内容列的最大宽度与居中由 .main 的内边距实现。 */}
       <main className="main" ref={mainRef}>
         <PageEnter>
           <Outlet />

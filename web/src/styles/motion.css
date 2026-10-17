@@ -5,7 +5,6 @@
   --ap-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ap-dur-fast: 140ms;
   --ap-dur: 220ms;
-  --ap-dur-slow: 320ms;
   /* 控制台比落地页要快一档：落地页 600ms/20px 是给"读一屏文案"的节奏，
      表格页每 10s 轮询，动画拖长了会显得迟滞 */
   --ap-reveal-dur: 460ms;

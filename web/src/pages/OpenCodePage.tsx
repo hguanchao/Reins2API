@@ -39,7 +39,6 @@ import {
   ApiError,
   fetchOpenCodeOps,
   fetchOpenCodeRequests,
-  refreshProviderModels,
   toggleRequestSort,
   REQUEST_QUERY_DEFAULT,
   type ModelInfo,
@@ -51,11 +50,12 @@ import {
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
 import { RequestsFilters } from "@/components/requests/RequestsFilters";
-import { catalogTimeLabel, fmtLimit, fmtSeconds, modelRefreshOutcome, protocolTone } from "@/lib/format";
+import { useCatalogRefresh } from "@/lib/useCatalogRefresh";
+import { AUTO_REFRESH_MS } from "@/lib/countdown";
+import { catalogTimeLabel, fmtLimit, fmtSeconds, protocolTone } from "@/lib/format";
 import { cn, fmtCompact } from "@/lib/utils";
 
 /** 自动刷新间隔 */
-const AUTO_REFRESH_MS = 10_000;
 
 /** 最近请求默认每页条数 */
 const DEFAULT_PAGE_SIZE = 20;
@@ -178,7 +178,6 @@ export function OpenCodePage() {
   const [ops, setOps] = useState<OpenCodeOps | null>(null);
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [reloading, setReloading] = useState(false);
   /** 最近请求分页（服务端 limit/offset，total 由接口返回） */
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -257,21 +256,10 @@ export function OpenCodePage() {
   }, []);
 
   /** 手动重新拉取上游模型目录（唯一的常规刷新路径），完成后静默刷新页面数据 */
-  const reloadCatalog = useCallback(async () => {
-    if (reloading) return;
-    setReloading(true);
-    try {
-      const result = await refreshProviderModels("opencode");
-      const outcome = modelRefreshOutcome(result);
-      if (outcome.ok) toast.success(outcome.text);
-      else toast.error(outcome.text);
-      await load(true, true);
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "拉取模型目录失败");
-    } finally {
-      setReloading(false);
-    }
-  }, [reloading, load]);
+  const { busy: reloading, refresh: reloadCatalog } = useCatalogRefresh(
+    "opencode",
+    () => load(true, true),
+  );
 
   const usage = ops?.usage;
   const totals = usage?.totals;

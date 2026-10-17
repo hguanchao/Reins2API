@@ -1,4 +1,30 @@
 /* ══════════════════════════════════════════════
+   Dialog 遮罩：磨砂玻璃
+   ──────────────────────────────────────────────
+   全站唯一"背后真有内容可糊"的整屏表面（顶栏没有内容从它下面经过，见 base.css）。
+   底色按主题取背景色做半透明，而不是盖一块死黑：底下是表格时，糊掉一层比压黑更
+   干净、压迫感更小，也是玻璃拟态在这套扁平语言里唯一站得住的位置。
+   玻璃拟态只放两处：这里（整屏遮罩）与档位徽章（账号表的 plan-badge）。
+   ─────────────────────────────────────────────────────────── */
+.ap-dialog-overlay {
+  background: color-mix(in srgb, var(--background) 42%, transparent);
+  backdrop-filter: blur(6px) saturate(1.06);
+}
+/* 不支持 backdrop-filter：退回同色实底（视觉上只是"更不透明"，不出现灰糊） */
+@supports not (backdrop-filter: blur(1px)) {
+  .ap-dialog-overlay {
+    background: color-mix(in srgb, var(--background) 74%, transparent);
+  }
+}
+/* 系统开了"降低透明度"的用户：不糊，直接给实底（这类不适是真实的，不是偏好） */
+@media (prefers-reduced-transparency: reduce) {
+  .ap-dialog-overlay {
+    background: color-mix(in srgb, var(--background) 74%, transparent);
+    backdrop-filter: none;
+  }
+}
+
+/* ══════════════════════════════════════════════
    Sonner toast — 右上角，Aperture 样式
    ══════════════════════════════════════════════ */[data-sonner-toaster] {
   --width: 356px;
@@ -49,7 +75,7 @@
   border-color: var(--info-border) !important;
   color: var(--info-text) !important;
 }[data-sonner-toast] [data-title], .ap-toast-title {
-  font-weight: 550 !important;
+  font-weight: 600 !important;
   font-size: var(--fs-md) !important;
   color: inherit !important;
   line-height: 1.35 !important;
@@ -96,7 +122,7 @@
 }
 
 /* 有关闭按钮时给标题右侧留空 */[data-sonner-toast][data-styled="true"] [data-content] {
-  padding-right: 18px;
+  padding-right: 16px;
 }.ap-toast-action {
   background: var(--primary) !important;
   color: var(--primary-foreground) !important;

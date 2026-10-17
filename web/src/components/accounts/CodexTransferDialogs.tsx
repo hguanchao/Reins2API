@@ -130,7 +130,7 @@ export function CodexImportDialog({
           <DialogTitle>导入账号</DialogTitle>
         </DialogHeader>
 
-        <div className="grid gap-3 text-[13px]">
+        <div className="grid gap-3 text-md">
           <p className="text-muted-foreground leading-[1.6]">
             支持 <b>CLIProxyAPI(CPA)</b> 与 <b>codex2api</b> 导出的 JSON：单个账号对象、
             账号数组、或带 <span className="mono">accounts</span> 的迁移封装都可以。
@@ -192,7 +192,7 @@ export function CodexImportDialog({
           {result ? (
             <div
               className={cn(
-                "rounded-lg border px-3 py-2 text-[12px]",
+                "rounded-lg border px-3 py-2 text-xs",
                 result.imported + result.updated > 0
                   ? "border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success-text)]"
                   : "border-[var(--error-border)] bg-[var(--error-bg)] text-[var(--error-text)]",
@@ -204,8 +204,10 @@ export function CodexImportDialog({
               </div>
               {result.errors.length ? (
                 <ul className="mt-1.5 list-disc space-y-0.5 pl-4 opacity-90">
-                  {result.errors.map((item) => (
-                    <li key={item}>{item}</li>
+                  {result.errors.map((item, index) => (
+                    // 同一条错误会按账号重复出现（"invalid refresh_token" ×N），
+                    // 用文案当 key 会撞键 → 带上序号
+                    <li key={`${index}-${item}`}>{item}</li>
                   ))}
                 </ul>
               ) : null}
@@ -272,7 +274,7 @@ export function CodexExportDialog({
           <DialogTitle>导出账号</DialogTitle>
         </DialogHeader>
 
-        <div className="grid gap-2 text-[13px]">
+        <div className="grid gap-2 text-md">
           <p className="text-muted-foreground leading-[1.6]">
             导出 <b>{count}</b> 个账号的凭证（含 refresh_token，明文）。
           </p>
@@ -303,7 +305,7 @@ export function CodexExportDialog({
                   >
                     {active ? <span className="size-[6px] rounded-full bg-primary" /> : null}
                   </span>
-                  <span className="text-[13px] font-medium">{item.label}</span>
+                  <span className="text-md font-medium">{item.label}</span>
                 </div>
                 <p className="text-fg-subtle mt-1 pl-[22px] text-[11px] leading-[1.5]">
                   {item.hint}

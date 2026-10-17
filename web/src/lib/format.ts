@@ -46,14 +46,15 @@ export function statusTone(status: number): "success" | "destructive" {
   return status >= 200 && status < 300 ? "success" : "destructive";
 }
 
-/** 模型目录时间文案：本进程刷过给"刷新于"，只有缓存给"目录更新于"，都没有但列表非空
- *  时说明目录来自更早版本快照（没有内容时间戳）——不能写"尚未拉取目录"，那和数字自相矛盾。 */
+/** 模型目录时间文案（三页共用）：统一写"更新于 <时间>"——本进程刷过给刷新时刻，
+ *  只有缓存给快照记录的内容变更时间。都没有但列表非空时说明目录来自更早版本快照
+ *  （没有内容时间戳）——不能写"尚未拉取目录"，那和数字自相矛盾。 */
 export function catalogTimeLabel(
   status: { refreshed_at?: string | null; cached_at?: string | null },
   hasModels = false,
 ): { text: string; stale: boolean } {
-  if (status.refreshed_at) return { text: `刷新于 ${status.refreshed_at}`, stale: false };
-  if (status.cached_at) return { text: `目录更新于 ${status.cached_at}（缓存）`, stale: true };
+  if (status.refreshed_at) return { text: `更新于 ${status.refreshed_at}`, stale: false };
+  if (status.cached_at) return { text: `更新于 ${status.cached_at}`, stale: true };
   return hasModels
     ? { text: "目录来自上次快照（时间未知）", stale: true }
     : { text: "尚未拉取目录", stale: true };

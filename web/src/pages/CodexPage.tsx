@@ -12,16 +12,12 @@ import {
   Check,
   CircleUserRound,
   Copy,
-  Cpu,
   Download,
   Gauge,
   Inbox,
   Info,
-  KeyRound,
-  Pause,
   Plus,
   RefreshCw,
-  Send,
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -54,7 +50,6 @@ import {
   fetchCodexOps,
   fetchCodexRequests,
   pollCodexLogin,
-  refreshProviderModels,
   startCodexLogin,
   toggleRequestSort,
   REQUEST_QUERY_DEFAULT,
@@ -68,16 +63,17 @@ import {
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
 import { RequestsFilters } from "@/components/requests/RequestsFilters";
+import { PoolKpiStrip } from "@/components/accounts/PoolKpiStrip";
 import { CodexAccountList } from "@/components/accounts/CodexAccountList";
 import {
   CodexExportDialog,
   CodexImportDialog,
 } from "@/components/accounts/CodexTransferDialogs";
-import { catalogTimeLabel, fmtLimit, modelRefreshOutcome } from "@/lib/format";
-import { useSessionCountdown } from "@/lib/countdown";
-import { cn, fmtCompact, fmtInt } from "@/lib/utils";
+import { useCatalogRefresh } from "@/lib/useCatalogRefresh";
+import { fmtLimit } from "@/lib/format";
+import { AUTO_REFRESH_MS, useSessionCountdown } from "@/lib/countdown";
+import { cn } from "@/lib/utils";
 
-const AUTO_REFRESH_MS = 10_000;
 
 /** 最近请求默认每页条数 */
 const DEFAULT_PAGE_SIZE = 20;
@@ -100,7 +96,6 @@ export function CodexPage() {
   /** 全池额度补刷在途（面板头按钮的 loading） */
   const [quotaBusy, setQuotaBusy] = useState(false);
   /** 手动获取模型在途（模型面板头按钮的 loading） */
-  const [catalogBusy, setCatalogBusy] = useState(false);
   /** 最近请求分页（服务端 limit/offset，total 由接口返回） */
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [page, setPage] = useState(1);
@@ -131,16 +126,16 @@ export function CodexPage() {
       ]);
       // 丢弃过期响应：轮询与账号动作触发的刷新可能同时在飞（与 OpenCode 页同一套守卫）。
       if (id !== seq.current) return;
-      // 页码越界（记录变少）时回到第 1 页，避免停在空页
-      if (requestPage.items.length === 0 && requestPage.total > 0 && page > 1) {
-        setPage(1);
-        return;
-      }
       setOps(opsData);
       setAccounts(accountData);
       setRequests(requestPage.items);
       setTotal(requestPage.total);
       setLoadError(null);
+      // 页码越界（记录变少）时回到第 1 页，避免停在空页。**先落数据再改页码**：
+      // 直接 return 会把这一轮已经拿到的 ops/账号/排程一起丢掉，白拉一趟。
+      if (requestPage.items.length === 0 && requestPage.total > 0 && page > 1) {
+        setPage(1);
+      }
     } catch (error) {
       if (id !== seq.current) return;
       if (!soft) {
@@ -209,21 +204,10 @@ export function CodexPage() {
   };
 
   /** 手动获取模型目录：唯一的常规刷新路径（启动只读缓存，不再自动打上游）。 */
-  const reloadCatalog = async () => {
-    if (catalogBusy) return;
-    setCatalogBusy(true);
-    try {
-      const result = await refreshProviderModels("codex");
-      const outcome = modelRefreshOutcome(result);
-      if (outcome.ok) toast.success(outcome.text);
-      else toast.error(outcome.text);
-      await load(true);
-    } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "获取模型目录失败");
-    } finally {
-      setCatalogBusy(false);
-    }
-  };
+  const { busy: catalogBusy, refresh: reloadCatalog } = useCatalogRefresh(
+    "codex",
+    () => load(true),
+  );
 
   const removeAccount = async (account: CodexAccount) => {
     if (!window.confirm(`确认删除账号 ${account.label || account.uid}？`)) return;
@@ -266,76 +250,8 @@ export function CodexPage() {
             </div>
           ) : null}
 
-          {/* ── 池 KPI ── */}
-          <div className="mission-strip mission-strip-gw" role="group" aria-label="Codex 池 KPI">
-            <div className="metric">
-              <div className="metric-k">
-                <CircleUserRound className="metric-ico ico-green" strokeWidth={1.6} />
-                可用号
-              </div>
-              <div className="metric-v is-ok">{pool?.active ?? 0}</div>
-              <div className="metric-sub usage-metric-sub">共 {pool?.accounts ?? 0} 个账号</div>
-            </div>
-            <div className="metric">
-              <div className="metric-k">
-                <Pause className="metric-ico ico-amber" strokeWidth={1.6} />
-                冷却 / 熔断
-              </div>
-              <div
-                className={cn(
-                  "metric-v",
-                  ((pool?.cooldown ?? 0) + (pool?.breaker ?? 0)) > 0 && "is-warn",
-                )}
-              >
-                {(pool?.cooldown ?? 0) + (pool?.breaker ?? 0)}
-              </div>
-              <div className="metric-sub usage-metric-sub">
-                冷却 {pool?.cooldown ?? 0} · 熔断 {pool?.breaker ?? 0}
-              </div>
-            </div>
-            <div className="metric">
-              <div className="metric-k">
-                <Cpu className="metric-ico ico-cyan" strokeWidth={1.6} />
-                在途
-              </div>
-              <div className="metric-v">{pool?.in_flight ?? 0}</div>
-              <div className="metric-sub usage-metric-sub">粘性会话 {pool?.sticky_sessions ?? 0}</div>
-            </div>
-            <div className="metric">
-              <div className="metric-k">
-                <KeyRound className="metric-ico ico-indigo" strokeWidth={1.6} />
-                模型
-              </div>
-              <div className="metric-v">{ops?.status.models ?? 0}</div>
-              <div className="metric-sub usage-metric-sub">
-                {/* 目录现在只来自缓存或手动获取：本进程刷过给"刷新于"，只有缓存给
-                    "目录更新于 …（缓存）"，都没有才是"尚未拉取目录" */}
-                {catalogTimeLabel(ops?.status ?? {}, (ops?.status.models ?? 0) > 0).text}
-              </div>
-            </div>
-            <div className="metric">
-              <div className="metric-k">
-                <Send className="metric-ico ico-blue" strokeWidth={1.6} />
-                24h 请求
-              </div>
-              <div className="metric-v">{fmtInt(totals?.requests ?? 0)}</div>
-              <div className="metric-sub usage-metric-sub">
-                失败 {fmtInt(totals?.failed ?? 0)} · 成功率 {fmtCompact(totals?.success_rate ?? 100)}%
-              </div>
-            </div>
-            <div className="metric">
-              <div className="metric-k">
-                <Activity className="metric-ico ico-violet" strokeWidth={1.6} />
-                24h Tokens
-              </div>
-              <div className="metric-v">
-                {fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}
-              </div>
-              <div className="metric-sub usage-metric-sub">
-                入 {fmtCompact(totals?.input_tokens ?? 0)} · 出 {fmtCompact(totals?.output_tokens ?? 0)}
-              </div>
-            </div>
-          </div>
+          {/* ── 池 KPI（与 WorkBuddy 页共用一件组件，指标口径只有一份）── */}
+          <PoolKpiStrip label="Codex 池 KPI" pool={pool} ops={ops} totals={totals} />
 
           {/* ── 账号表 ── */}
           <div className="gw-grid gw-grid-1">
@@ -715,7 +631,7 @@ function AddCodexDialog({
               {/* 操作步骤：监听模式走「等待自动入池」，否则走手动粘贴 */}
               <ol className="grid gap-1.5 text-xs">
                 <li className="flex gap-2">
-                  <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                  <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-2xs font-semibold">
                     1
                   </span>
                   <span className="text-muted-foreground leading-relaxed">
@@ -724,7 +640,7 @@ function AddCodexDialog({
                 </li>
                 {session.listening ? (
                   <li className="flex gap-2">
-                    <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                    <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-2xs font-semibold">
                       2
                     </span>
                     <span className="text-muted-foreground leading-relaxed">
@@ -734,7 +650,7 @@ function AddCodexDialog({
                 ) : (
                   <>
                     <li className="flex gap-2">
-                      <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                      <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-2xs font-semibold">
                         2
                       </span>
                       <span className="text-muted-foreground leading-relaxed">
@@ -743,7 +659,7 @@ function AddCodexDialog({
                       </span>
                     </li>
                     <li className="flex gap-2">
-                      <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                      <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-2xs font-semibold">
                         3
                       </span>
                       <span className="text-muted-foreground leading-relaxed">

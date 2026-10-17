@@ -4,7 +4,7 @@
  * 结构：panel gw-workspace（与 OpenCode 同款卡片根）> gw-panel 表单区。
  * 保存走 POST /api/config，后端立即生效并落盘，无需重启。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link2, Monitor, Network, RefreshCw, Save, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { Button, Input } from "@/components/ui";
@@ -124,16 +124,27 @@ export function SettingsPage() {
     setUrl(next.proxy.url);
   }, []);
 
+  // 探测可能跑十几秒（三个 echo 依次兜底）：回来时组件可能已经不在了，
+  // 用 ref 记存活，别对已卸载的组件 setState（与 fetchConfig 的 alive 同一个道理）。
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
   const probeEgress = useCallback(async (force = false) => {
     setProbing(true);
     try {
-      setEgress(await fetchEgress(force));
+      const next = await fetchEgress(force);
+      if (aliveRef.current) setEgress(next);
     } catch (err) {
-      setEgress(null);
+      if (aliveRef.current) setEgress(null);
       // 首载探测失败只在卡片里显示，不弹提示；手动重探才打扰
       if (force) toast.error(err instanceof ApiError ? err.message : "探测出口 IP 失败");
     } finally {
-      setProbing(false);
+      if (aliveRef.current) setProbing(false);
     }
   }, []);
 
@@ -225,7 +236,7 @@ export function SettingsPage() {
           </div>
 
           <div className="flex flex-col gap-4 p-[18px]">
-            <p className="text-[12.5px] text-fg-subtle">
+            <p className="text-xs text-fg-subtle">
               代理用于请求上游（模型列表与推理流量），保存后立即生效，无需重启服务。
             </p>
 
@@ -265,7 +276,7 @@ export function SettingsPage() {
                     )}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-2 text-[13.5px] font-medium">
+                      <span className="inline-flex items-center gap-2 text-md font-medium">
                         <Icon
                           className={cn("size-4", active ? "text-primary" : option.tone)}
                           strokeWidth={1.9}
@@ -291,7 +302,7 @@ export function SettingsPage() {
                     <div className="mt-[5px] min-h-[22px]">
                       {showEgress ? (
                         <span
-                          className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11.5px] leading-[1.5] text-muted-foreground"
+                          className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] leading-[1.5] text-muted-foreground"
                           title={egressCaption}
                         >
                           出口 IP
@@ -356,7 +367,7 @@ export function SettingsPage() {
                             }}
                             title="点击修改代理地址"
                             className={cn(
-                              "mono block w-fit max-w-full cursor-text truncate text-left text-[11.5px] leading-[1.5] text-foreground outline-none",
+                              "mono block w-fit max-w-full cursor-text truncate text-left text-[11px] leading-[1.5] text-foreground outline-none",
                               "hover:text-primary focus-visible:ring-[3px] focus-visible:ring-ring",
                             )}
                           >
@@ -364,7 +375,7 @@ export function SettingsPage() {
                           </button>
                         )
                       ) : option.desc ? (
-                        <p className="text-[11.5px] leading-[1.5] text-muted-foreground">
+                        <p className="text-[11px] leading-[1.5] text-muted-foreground">
                           {option.desc}
                         </p>
                       ) : null}
@@ -376,16 +387,12 @@ export function SettingsPage() {
 
           </div>
 
-          {/* 页脚：保存按钮靠左、「当前生效」靠右（对齐 demo 的 .panel-foot）。
-              出口 IP 与重探按钮已挪进「跟随系统」卡片（选中时显示） */}
+          {/* 页脚只留保存按钮：代理实况在面板头，出口 IP 与重探按钮在「跟随系统」卡片里 */}
           <div className="gw-panel-foot">
             <Button size="sm" onClick={handleSave} disabled={saving || manualInvalid}>
               <Save className="size-3.5" aria-hidden />
               {saving ? "保存中…" : "保存配置"}
             </Button>
-            <span className="ml-auto text-[12.5px] text-muted-foreground">
-              当前生效：{config.proxy_status}
-            </span>
           </div>
         </section>
         </>

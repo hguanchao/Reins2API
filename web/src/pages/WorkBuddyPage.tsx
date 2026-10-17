@@ -15,16 +15,13 @@ import {
   CircleUserRound,
   Clock,
   Copy,
-  Cpu,
   Inbox,
-  KeyRound,
   MoreHorizontal,
   Pause,
   Play,
   Plus,
   RefreshCw,
   RotateCcw,
-  Send,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -63,7 +60,6 @@ import {
   fetchWorkBuddyRequests,
   fetchWorkBuddySchedule,
   pollWorkBuddyLogin,
-  refreshProviderModels,
   runWorkBuddyCheckin,
   runWorkBuddyCheckinAll,
   runWorkBuddyTask,
@@ -86,20 +82,14 @@ import {
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
 import { RequestsTable } from "@/components/requests/RequestsTable";
 import { RequestsFilters } from "@/components/requests/RequestsFilters";
+import { PoolKpiStrip } from "@/components/accounts/PoolKpiStrip";
 import { ActivityCell } from "@/components/accounts/ActivityCell";
 import { UsageStatsCell } from "@/components/accounts/UsageStatsCell";
-import { catalogTimeLabel, fmtLimit, modelRefreshOutcome } from "@/lib/format";
-import { useSessionCountdown } from "@/lib/countdown";
-import {
-  cn,
-  expiringHint,
-  fmtCompact,
-  fmtInt,
-  parseCreditFactor,
-  type ExpiringTone,
-} from "@/lib/utils";
+import { useCatalogRefresh } from "@/lib/useCatalogRefresh";
+import { fmtLimit } from "@/lib/format";
+import { AUTO_REFRESH_MS, useSessionCountdown } from "@/lib/countdown";
+import { cn, expiringHint, fmtCompact, parseCreditFactor, type ExpiringTone } from "@/lib/utils";
 
-const AUTO_REFRESH_MS = 10_000;
 const LOGIN_POLL_MS = 3_000;
 
 /** 最近请求默认每页条数 */
@@ -504,7 +494,6 @@ export function WorkBuddyPage() {
   /** 用量图表时间范围(今日/7天/14天/30天,默认 7 天) */
   const [usageRange, setUsageRange] = useState<UsageRange>("7d");
   /** 手动「获取模型」进行中 */
-  const [reloading, setReloading] = useState(false);
   /** 目录表点开的模型详情 */
   const [detail, setDetail] = useState<ModelInfo | null>(null);
   /** 详情弹窗开关。刻意与 detail 分开：关闭时若同时把 detail 置空，
@@ -533,17 +522,17 @@ export function WorkBuddyPage() {
       // 丢弃过期响应：10s 轮询与账号动作触发的刷新可能同时在飞，先发后到的旧结果
       // 不能覆盖新结果（与 OpenCodePage 同一套守卫）。
       if (id !== seq.current) return;
-      // 页码越界（记录变少）时回到第 1 页，避免停在空页
-      if (requestPage.items.length === 0 && requestPage.total > 0 && page > 1) {
-        setPage(1);
-        return;
-      }
       setOps(opsData);
       setAccounts(accountData);
       setRequests(requestPage.items);
       setTotal(requestPage.total);
       setSchedule(scheduleData);
       setLoadError(null);
+      // 页码越界（记录变少）时回到第 1 页，避免停在空页。**先落数据再改页码**：
+      // 直接 return 会把这一轮已经拿到的 ops/账号/排程一起丢掉，白拉一趟。
+      if (requestPage.items.length === 0 && requestPage.total > 0 && page > 1) {
+        setPage(1);
+      }
     } catch (error) {
       if (id !== seq.current) return;
       if (!soft) {
@@ -573,21 +562,10 @@ export function WorkBuddyPage() {
   }, [load]);
 
   /** 手动重新拉取上游模型目录（唯一的常规刷新路径），完成后静默刷新页面数据 */
-  const reloadCatalog = useCallback(async () => {
-    if (reloading) return;
-    setReloading(true);
-    try {
-      const result = await refreshProviderModels("workbuddy");
-      const outcome = modelRefreshOutcome(result);
-      if (outcome.ok) toast.success(outcome.text);
-      else toast.error(outcome.text);
-      await load(true);
-    } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "拉取模型目录失败");
-    } finally {
-      setReloading(false);
-    }
-  }, [reloading, load]);
+  const { busy: reloading, refresh: reloadCatalog } = useCatalogRefresh(
+    "workbuddy",
+    () => load(true),
+  );
 
   const runAccountAction = async (
     account: WorkBuddyAccount,
@@ -707,72 +685,8 @@ export function WorkBuddyPage() {
         </div>
       ) : null}
 
-      {/* ── 池 KPI ── */}
-      <div className="mission-strip mission-strip-gw" role="group" aria-label="WorkBuddy 池 KPI">
-        <div className="metric">
-          <div className="metric-k">
-            <CircleUserRound className="metric-ico ico-green" strokeWidth={1.6} />
-            可用号
-          </div>
-          <div className="metric-v is-ok">{pool?.active ?? 0}</div>
-          <div className="metric-sub usage-metric-sub">共 {pool?.accounts ?? 0} 个账号</div>
-        </div>
-        <div className="metric">
-          <div className="metric-k">
-            <Pause className="metric-ico ico-amber" strokeWidth={1.6} />
-            冷却 / 熔断
-          </div>
-          <div
-            className={cn(
-              "metric-v",
-              ((pool?.cooldown ?? 0) + (pool?.breaker ?? 0)) > 0 && "is-warn",
-            )}
-          >
-            {(pool?.cooldown ?? 0) + (pool?.breaker ?? 0)}
-          </div>
-          <div className="metric-sub usage-metric-sub">
-            冷却 {pool?.cooldown ?? 0} · 熔断 {pool?.breaker ?? 0}
-          </div>
-        </div>
-        <div className="metric">
-          <div className="metric-k">
-            <Cpu className="metric-ico ico-cyan" strokeWidth={1.6} />
-            在途
-          </div>
-          <div className="metric-v">{pool?.in_flight ?? 0}</div>
-          <div className="metric-sub usage-metric-sub">粘性会话 {pool?.sticky_sessions ?? 0}</div>
-        </div>
-        <div className="metric">
-          <div className="metric-k">
-            <KeyRound className="metric-ico ico-indigo" strokeWidth={1.6} />
-            模型
-          </div>
-          <div className="metric-v">{ops?.status.models ?? 0}</div>
-          <div className="metric-sub usage-metric-sub">
-            {catalogTimeLabel(ops?.status ?? {}, (ops?.status.models ?? 0) > 0).text}
-          </div>
-        </div>
-        <div className="metric">
-          <div className="metric-k">
-            <Send className="metric-ico ico-blue" strokeWidth={1.6} />
-            24h 请求
-          </div>
-          <div className="metric-v">{fmtInt(totals?.requests ?? 0)}</div>
-          <div className="metric-sub usage-metric-sub">
-            失败 {fmtInt(totals?.failed ?? 0)} · 成功率 {fmtCompact(totals?.success_rate ?? 100)}%
-          </div>
-        </div>
-        <div className="metric">
-          <div className="metric-k">
-            <Activity className="metric-ico ico-violet" strokeWidth={1.6} />
-            24h Tokens
-          </div>
-          <div className="metric-v">{fmtCompact((totals?.input_tokens ?? 0) + (totals?.output_tokens ?? 0))}</div>
-          <div className="metric-sub usage-metric-sub">
-            入 {fmtCompact(totals?.input_tokens ?? 0)} · 出 {fmtCompact(totals?.output_tokens ?? 0)}
-          </div>
-        </div>
-      </div>
+      {/* ── 池 KPI（与 Codex 页共用一件组件，指标口径只有一份）── */}
+      <PoolKpiStrip label="WorkBuddy 池 KPI" pool={pool} ops={ops} totals={totals} />
 
       {/* ── 账号表（全宽：7 列挤在半宽栅格里会不断折行）── */}
       <div className="gw-grid gw-grid-1">
@@ -811,7 +725,7 @@ export function WorkBuddyPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="col-acct">账号</TableHead>
-                    <TableHead className="col-avail">可用性</TableHead>
+                    <TableHead className="col-avail">状态</TableHead>
                     <TableHead className="col-credits">积分</TableHead>
                     <TableHead className="col-checkin">签到</TableHead>
                     <TableHead className="col-recent">最近请求</TableHead>
@@ -1424,7 +1338,7 @@ function AddAccountDialog({
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium">{option.label}</span>
+                    <span className="text-md font-medium">{option.label}</span>
                     <span
                       className={cn(
                         "grid size-4 shrink-0 place-items-center rounded-full border",
@@ -1483,7 +1397,7 @@ function AddAccountDialog({
               {/* 操作步骤 */}
               <ol className="grid gap-1.5 text-xs">
                 <li className="flex gap-2">
-                  <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                  <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-2xs font-semibold">
                     1
                   </span>
                   <span className="text-muted-foreground leading-relaxed">
@@ -1491,7 +1405,7 @@ function AddAccountDialog({
                   </span>
                 </li>
                 <li className="flex gap-2">
-                  <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-[10px] font-semibold">
+                  <span className="bg-primary/10 text-primary mt-px grid size-4 shrink-0 place-items-center rounded-full text-2xs font-semibold">
                     2
                   </span>
                   <span className="text-muted-foreground leading-relaxed">

@@ -70,29 +70,32 @@ function resetIn(resetAtMs: number | null | undefined): string {
 }
 
 /** 账号生命周期 + 冷却/熔断 → (文案, 色调)。副行固定显示调度权重，不再按状态换文案。 */
-function stateOf(account: CodexAccount): { label: string; tone: string } {
+function stateOf(account: CodexAccount): {
+  label: string;
+  tone: "success" | "warning" | "destructive";
+} {
   const now = Date.now();
   if (account.status === "disabled") {
-    return { label: "已禁用", tone: "is-bad" };
+    return { label: "已禁用", tone: "destructive" };
   }
   if (account.status === "paused") {
-    return { label: "已暂停", tone: "is-warn" };
+    return { label: "已暂停", tone: "warning" };
   }
   if (account.breaker_until_ms > now) {
-    return { label: "熔断中", tone: "is-bad" };
+    return { label: "熔断中", tone: "destructive" };
   }
   if (account.cooldown_until_ms > now) {
     // 额度用尽也走冷却（见后端 provider 的 QUOTA_COOLDOWN_KIND）：状态机一致，但文案必须
     // 分开——「冷却中」像是刚被罚过，「额度耗尽」是在等窗口重置，运维要看的是后者。
     if (account.cooldown_kind === "quota") {
-      return { label: "额度耗尽", tone: "is-bad" };
+      return { label: "额度耗尽", tone: "destructive" };
     }
-    return { label: "冷却中", tone: "is-warn" };
+    return { label: "冷却中", tone: "warning" };
   }
   if (!account.has_access_token) {
-    return { label: "缺凭证", tone: "is-bad" };
+    return { label: "缺凭证", tone: "destructive" };
   }
-  return { label: "可用", tone: "is-ok" };
+  return { label: "可用", tone: "success" };
 }
 
 /** 套餐档位 → 徽章档位色：免费中性灰、Plus 绿、Pro 品牌、组织档琥珀；未知档位回落灰。
@@ -261,7 +264,7 @@ export function CodexAccountList({
             <TableRow>
               <TableHead className="col-cred">凭证</TableHead>
               <TableHead className="col-plan">套餐</TableHead>
-              <TableHead className="col-state">可用状态</TableHead>
+              <TableHead className="col-state">状态</TableHead>
               <TableHead className="col-recent">最近请求</TableHead>
               <TableHead className="col-usage">历史用量</TableHead>
               <TableHead className="col-quota">额度</TableHead>
@@ -321,30 +324,31 @@ export function CodexAccountList({
                           {plan.label}
                         </Badge>
                       ) : (
-                        <span className="text-muted-foreground text-[12.5px]">—</span>
+                        <span className="text-muted-foreground text-xs">—</span>
                       )}
                     </TableCell>
 
-                    {/* 可用状态：只有状态与权重两行。有 last_error 时才包一层悬停，
-                        把上游原文挂上去——那是这一列唯一能看到真实报错的地方。 */}
+                    {/* 状态。徽章样式与 WorkBuddy 号池表格同款（圆点 + 药丸底）。
+                        有 last_error 时才包一层悬停，把上游原文挂上去
+                        ——那是这一列唯一能看到真实报错的地方。 */}
                     <TableCell>
                       {account.last_error ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <div className={cn("acct-state", state.tone, "cursor-help")}>
-                              <b>{state.label}</b>
-                              <small>权重 {account.idle_boost.toFixed(1)}</small>
-                            </div>
+                            <Badge variant={state.tone} className="cursor-help">
+                              <i className="badge-dot" aria-hidden />
+                              {state.label}
+                            </Badge>
                           </TooltipTrigger>
                           <TooltipContent side="top" tone="surface" className="max-w-xs">
                             {account.last_error}
                           </TooltipContent>
                         </Tooltip>
                       ) : (
-                        <div className={cn("acct-state", state.tone)}>
-                          <b>{state.label}</b>
-                          <small>权重 {account.idle_boost.toFixed(1)}</small>
-                        </div>
+                        <Badge variant={state.tone}>
+                          <i className="badge-dot" aria-hidden />
+                          {state.label}
+                        </Badge>
                       )}
                     </TableCell>
 

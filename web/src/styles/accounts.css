@@ -181,33 +181,8 @@
   --tier: var(--warn);
 }
 
-/* ── 可用状态 ── */
-.acct-state {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.acct-state b {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-}
-.acct-state small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--fs-xs);
-  color: var(--fg-subtle);
-}
-.acct-state.is-ok b {
-  color: var(--ok);
-}
-.acct-state.is-warn b {
-  color: var(--warning-text);
-}
-.acct-state.is-bad b {
-  color: var(--destructive);
-}
+/* ── 状态徽章：与 WorkBuddy 号池表格同款 Badge（圆点 + 药丸底，取组件库里
+   success / warning / destructive 三档语义色）——纯组件样式，无本地 CSS。 */
 
 /* ── 最近请求 + 请求结果条 ── */
 /* 外层收成 fit-content：柱排与上方时间戳两端对齐（宽度就取时间戳那一行文本的宽度），
@@ -234,7 +209,7 @@
   width: 100%;
   min-width: 28px;             /* 5 根柱（5×6−2）：外层 fit-content 不该被柱排拖得更窄 */
   height: 14px;
-  margin-top: 5px;
+  margin-top: 4px;
 }
 /* 窄柱均匀铺满整条：固定 4px 宽 + space-between，由**间距**吸收余量——柱子各自
    撑宽会把整条填成色块。柱数不写死：按时间戳宽度反解，5~14 根（见 ActivityCell.tsx）。 */
@@ -268,14 +243,14 @@
 .acct-stats {
   display: grid;
   grid-template-columns: 96px 96px;
-  gap: 5px 0;
+  gap: 4px 0;
   min-width: 0;
 }
 /* 图标与数值之间留 30px：数字贴着图标时会被当成图标的尾巴，认不出是两样东西 */
 .acct-stat {
   display: flex;
   align-items: center;
-  gap: 30px;
+  gap: 32px;
   min-width: 0;
 }
 /* 图标色由 components/accounts/UsageStatsCell 传进来的 .ico-* 决定（请求蓝 /
@@ -390,8 +365,8 @@
 .acct-act {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;   /* 词表：行内控件 28（与分页钮、筛选下拉同档） */
   border-radius: var(--radius-md);
   color: var(--fg-subtle);
   transition:
@@ -491,11 +466,14 @@
   min-width: 0;
 }
 .wb-task-cron {
-  height: 26px;
+  /* 与同排的"立即运行"（sm 按钮 32）取同一档：行内并处的控件必须等高，
+     否则一排里 26/28/30 混着来，看着就是"没对齐"。 */
+  height: 32px;
   padding-block: 0;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  text-align: center;
+  /* 左对齐：全站输入框都是左对齐，居中会让它与其下方的说明行错开轴线 */
+  text-align: left;
 }
 .wb-task-describe {
   font-size: var(--fs-2xs);

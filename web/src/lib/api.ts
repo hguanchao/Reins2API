@@ -306,16 +306,8 @@ export function fetchEgress(force = false): Promise<EgressInfo> {
 
 // ─── WorkBuddy 号池 ────────────────────────────────────
 
-export interface WorkBuddyPoolStatus {
-  accounts: number;
-  active: number;
-  paused: number;
-  disabled: number;
-  cooldown: number;
-  breaker: number;
-  in_flight: number;
-  sticky_sessions: number;
-}
+/** @deprecated 用 PoolStatus（同一个形状，两家共用）。 */
+export type WorkBuddyPoolStatus = PoolStatus;
 
 export interface WorkBuddyRealmStatus {
   models: number;
@@ -351,7 +343,7 @@ export interface AccountRecentRequest {
 }
 
 /** 账号一行（后端脱敏视图；统计由 requests 表按 account_uid 汇总并入）。 */
-export interface WorkBuddyAccount {
+export interface WorkBuddyAccount extends AccountTelemetry {
   uid: string;
   label: string;
   realm: string;
@@ -377,8 +369,6 @@ export interface WorkBuddyAccount {
   credits_earliest_at_ms: number;
   /** 最近一批到期包里的剩余积分 */
   credits_earliest_remaining: number;
-  used_seq: number;
-  idle_boost: number;
   last_error: string;
   /** 签到台账：last_checkin_day 是北京日期 YYYY-MM-DD（签到按 UTC+8 结算一天） */
   last_checkin_day: string;
@@ -387,21 +377,28 @@ export interface WorkBuddyAccount {
   checkin_updated_ms: number;
   created_ms: number;
   updated_ms: number;
-  stats_7d?: {
-    requests: number;
-    failed: number;
-    input_tokens: number;
-    output_tokens: number;
-    cached_tokens: number;
-  };
+}
+
+// ─── 号池公共面（workbuddy / codex 两家同形） ──────────────
+// 两家的端点路径只差 provider 名，信封与错误阶梯也完全一致（后端由同一批 _pool_*
+// 助手实现）。实现只写一份、按名字参数化；下面的 WorkBuddy* / Codex* 导出只是把
+// provider 名固定下来的薄壳，页面照旧按名字调用。
+
+/** 账号用量小计（近 7 天 / 全时段同口径，只是时间窗不同）。 */
+export interface AccountUsageStats {
+  requests: number;
+  failed: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+}
+
+/** 账号列表里由后端并入的遥测列（两家账号表同形，共用一个接口）。 */
+export interface AccountTelemetry {
+  /** 近 7 天小计；遥测库里没这个号的记录时为 null */
+  stats_7d?: AccountUsageStats | null;
   /** 全时段累计（口径同 stats_7d，只是不限时间窗） */
-  stats_total?: {
-    requests: number;
-    failed: number;
-    input_tokens: number;
-    output_tokens: number;
-    cached_tokens: number;
-  };
+  stats_total?: AccountUsageStats | null;
   last_used_ms?: number;
   /** 近 14 天逐日请求数（最旧在前；按天口径） */
   daily_14d?: number[];
@@ -409,18 +406,58 @@ export interface WorkBuddyAccount {
   recent_14?: AccountRecentRequest[];
 }
 
+/** 号池状态（/ops 与 /state 的 status.pool 段；两家字段一致）。 */
+export interface PoolStatus {
+  accounts: number;
+  active: number;
+  paused: number;
+  disabled: number;
+  cooldown: number;
+  breaker: number;
+  in_flight: number;
+  sticky_sessions: number;
+}
+
+/** 运维快照（模型目录 + 池状态 + 近 24h 用量）。 */
+export function fetchPoolOps<T>(provider: string): Promise<T> {
+  return request<T>(`/api/${provider}/ops`);
+}
+
+/** 账号列表（含后端并入的遥测统计列）。 */
+export function fetchPoolAccounts<T>(provider: string): Promise<T[]> {
+  return request<T[]>(`/api/${provider}/accounts`);
+}
+
+/** 删号（有在途请求时后端回 409）。 */
+export function deletePoolAccount(provider: string, uid: string): Promise<{ deleted: string }> {
+  return request<{ deleted: string }>(
+    `/api/${provider}/accounts/${encodeURIComponent(uid)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** 账号动作：pause / resume / disable / revive / refresh（+ codex 的 quota）。 */
+export function poolAccountAction<T>(
+  provider: string,
+  uid: string,
+  action: string,
+): Promise<T> {
+  return request<T>(`/api/${provider}/accounts/${encodeURIComponent(uid)}/action`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+}
+
 export function fetchWorkBuddyOps(): Promise<WorkBuddyOps> {
-  return request<WorkBuddyOps>("/api/workbuddy/ops");
+  return fetchPoolOps<WorkBuddyOps>("workbuddy");
 }
 
 export function fetchWorkBuddyAccounts(): Promise<WorkBuddyAccount[]> {
-  return request<WorkBuddyAccount[]>("/api/workbuddy/accounts");
+  return fetchPoolAccounts<WorkBuddyAccount>("workbuddy");
 }
 
 export function deleteWorkBuddyAccount(uid: string): Promise<{ deleted: string }> {
-  return request<{ deleted: string }>(`/api/workbuddy/accounts/${encodeURIComponent(uid)}`, {
-    method: "DELETE",
-  });
+  return deletePoolAccount("workbuddy", uid);
 }
 
 /** 账号动作：pause / resume / disable / revive / refresh（刷新 token 时后端顺带拉积分）。 */
@@ -428,10 +465,7 @@ export function workBuddyAccountAction(
   uid: string,
   action: "pause" | "resume" | "disable" | "revive" | "refresh",
 ): Promise<WorkBuddyAccount> {
-  return request<WorkBuddyAccount>(
-    `/api/workbuddy/accounts/${encodeURIComponent(uid)}/action`,
-    { method: "POST", body: JSON.stringify({ action }) },
-  );
+  return poolAccountAction<WorkBuddyAccount>("workbuddy", uid, action);
 }
 
 /** 单号签到结论（state 为 error 时 message 是失败原因，其余都是正常结论）。 */
@@ -578,16 +612,8 @@ export function fetchWorkBuddyRequests(
 
 // ─── Codex 号池 ────────────────────────────────────────
 
-export interface CodexPoolStatus {
-  accounts: number;
-  active: number;
-  paused: number;
-  disabled: number;
-  cooldown: number;
-  breaker: number;
-  in_flight: number;
-  sticky_sessions: number;
-}
+/** @deprecated 用 PoolStatus（同一个形状，两家共用）。 */
+export type CodexPoolStatus = PoolStatus;
 
 export interface CodexOps {
   service: string;
@@ -616,7 +642,7 @@ export interface RateLimitWindow {
 }
 
 /** Codex 账号一行（后端脱敏视图；用量由 requests 表按 account_uid 汇总并入）。 */
-export interface CodexAccount {
+export interface CodexAccount extends AccountTelemetry {
   uid: string;
   account_id: string;
   label: string;
@@ -634,31 +660,10 @@ export interface CodexAccount {
   breaker_count: number;
   breaker_until_ms: number;
   consecutive_failures: number;
-  used_seq: number;
-  idle_boost: number;
   last_error: string;
   created_ms: number;
   updated_ms: number;
-  stats_7d?: {
-    requests: number;
-    failed: number;
-    input_tokens: number;
-    output_tokens: number;
-    cached_tokens: number;
-  };
-  /** 全时段用量（历史用量列；不限于 7 天） */
-  stats_total?: {
-    requests: number;
-    failed: number;
-    input_tokens: number;
-    output_tokens: number;
-    cached_tokens: number;
-  };
   last_used_ms?: number;
-  /** 近 14 天逐日请求数（最旧在前；按天口径） */
-  daily_14d?: number[];
-  /** 最近 14 次请求（最旧在前，最后一根最新）——账号行柱状图与悬停详情 */
-  recent_14?: AccountRecentRequest[];
   /**
    * 上游限流窗口快照。窗口数据由每次成功响应头回填；下面几个只有主动查 `/usage`
    * 才有的字段（响应头不带）会一直沿用到下次主动查询。
@@ -709,11 +714,11 @@ export interface CodexAccount {
 }
 
 export function fetchCodexOps(): Promise<CodexOps> {
-  return request<CodexOps>("/api/codex/ops");
+  return fetchPoolOps<CodexOps>("codex");
 }
 
 export function fetchCodexAccounts(): Promise<CodexAccount[]> {
-  return request<CodexAccount[]>("/api/codex/accounts");
+  return fetchPoolAccounts<CodexAccount>("codex");
 }
 
 /** Codex 最近请求明细（分页）。 */
@@ -726,9 +731,7 @@ export function fetchCodexRequests(
 }
 
 export function deleteCodexAccount(uid: string): Promise<{ deleted: string }> {
-  return request<{ deleted: string }>(`/api/codex/accounts/${encodeURIComponent(uid)}`, {
-    method: "DELETE",
-  });
+  return deletePoolAccount("codex", uid);
 }
 
 /** 账号动作：pause / resume / disable / revive / refresh（刷新 token 走上游 RT 兑换）、
@@ -737,10 +740,7 @@ export function codexAccountAction(
   uid: string,
   action: "pause" | "resume" | "disable" | "revive" | "refresh" | "quota",
 ): Promise<CodexAccount> {
-  return request<CodexAccount>(`/api/codex/accounts/${encodeURIComponent(uid)}/action`, {
-    method: "POST",
-    body: JSON.stringify({ action }),
-  });
+  return poolAccountAction<CodexAccount>("codex", uid, action);
 }
 
 /** 全池额度补刷（逐号查上游 /usage）。 */

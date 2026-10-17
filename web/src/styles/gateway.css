@@ -14,7 +14,7 @@
 }
 .gw-page-title {
   margin: 0;
-  font-size: 24px;
+  font-size: var(--fs-display);
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--foreground);
@@ -57,7 +57,7 @@
 .banner {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
+  gap: 8px;
   flex-shrink: 0;
   margin-bottom: 16px;
   padding: 10px 14px;
@@ -79,16 +79,6 @@
   border-color: var(--error-border);
   background: var(--error-bg);
   color: var(--error-text);
-}
-.banner.is-warn {
-  border-color: var(--warning-border);
-  background: var(--warning-bg);
-  color: var(--warning-text);
-}
-.banner.is-ok {
-  border-color: var(--success-border);
-  background: var(--success-bg);
-  color: var(--success-text);
 }
 
 /* 状态徽章内的圆点：有圆点的是「状态」（可用/暂停/禁用），
@@ -151,7 +141,7 @@
 .mark {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-size: var(--fs-sm);
   color: var(--fg-subtle);
 }
@@ -225,13 +215,17 @@
    ② 宽度：吃满面板的可用宽度，表体照旧 w-full 铺满卡片。
    ③ 外观：1px 边框 + 圆角 + 表头灰带。上边距 0——卡片紧贴页头，边框本身就是标题
       与表体的分界；左右与下方各 8px，让卡片和面板边缘、页脚分开。
-   ④ 卡片自己不滚，滚动交给内层的 .gw-table-scroll，且**不画滚动条**（见下）。 */
+   ④ 卡片自己不滚，滚动交给内层的 .gw-table-scroll，横竖滚动条画在它里面（见下）。 */
 .gw-table-card {
   /* 左右内缩取面板头的水平内边距（.gw-panel-head 是 18px），表格左边缘才和面板
      标题、图标落在同一条竖线上；取 8px 时卡片边框比标题多缩 10px，看着就是没对齐。
      宽度不能写 width: 100%——那等于面板全宽，再加上左右外边距会顶出 36px，
      面板的裁剪会把右边框和圆角切掉；按「100% - 左右外边距」算才严丝合缝 */
   --gw-table-inset: 18px;
+  /* 列头行高（实测两种表都 36px）：下面 ::after 盖片要用。列头样式一变这里跟着改 */
+  --gw-head-h: 36px;
+  /* ::after 盖片的定位基准 */
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -244,37 +238,50 @@
   overflow: clip;
 }
 
+/* 竖滚动条的槽是从滚动容器顶贯穿到底的（列头是表内 sticky 行，跟数据行共用
+   容器，槽躲不开它），滑到顶时拇指正好趴在列头旁边，很怪。
+   这里用一块列头同色盖片把槽的顶段盖掉：
+   ① 高度 = 列头行高，宽度 8px（Chrome 槽宽 6px，余量 2px 溢进列头带——
+      溢出部分与列头同色，看不出接缝；列头那条底部细线由盖片的 inset 阴影
+      续上，否则这条线在右端会断 8px）；
+   ② 卡片 overflow: clip 会把它裁进右上圆角，与列头带同样的切角；
+   ③ pointer-events 不设 none——盖片是伪元素、事件落在卡片上，不影响 thumb
+      在可见段的拖动；藏在盖片下的那小段拖不到（拇指很短，够不成问题）。
+   视觉结果：竖滚动条从列头下缘才开始，只属于数据行。 */
+.gw-table-card::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: var(--gw-head-h);
+  background: var(--table-header);
+  box-shadow: inset 0 -1px 0 var(--table-border);
+}
+
 /* 真正的滚动容器：占满卡片高度，内容超出时在内部滚。
    卡片是纵向 flex，所以这里要 flex: 1 1 auto + min-height: 0 才会被 max-height 压住。
-   ── 滚动条整条隐藏：这条内滚条不该出现在表头旁边，也不该占掉列宽，
-   所以干脆不画（原生滑块没法只画一半高度，遮罩/轨道内缩那几套都是绕）。
-   滚动本身不受影响：滚轮、触控板、拖拽选择都照常；列头吸附时下方浮出的那条投影
-   （见文件末尾的 scroll-driven animation）就是"还能继续滚"的提示。
-   用标准属性 scrollbar-width: none 打底（Chrome 121+ / Firefox 都认），
-   再补 ::-webkit-scrollbar 的老写法给更早的 Chromium。 */
+   ── 滚动条横竖都画：收细到 6px（全局 8px 是给页面级的，卡内空间更紧），
+   圆头、透明轨道、muted 拇指的配色沿用 base.css；拇指的透明描边全局给的是 2px，
+   6px 槽里只剩 2px 可见，这里收到 1px。竖向 scrollbar-gutter: stable 常驻沟槽：
+   行数有多有少，不常驻的话加载后滑条一出现，所有列整体往左缩 6px、平移一下；
+   常驻则列宽恒定。横向的按原生出现（垫高 6px 只发生在真溢出的表上）。
+   槽顶段的"趴在列头上"观感由 .gw-table-card::after 的同色盖片解决（见上）。
+   （曾有装饰——列头吸附投影、左右渐隐的"还能滚"提示——都在滚动条可见后删了：
+   滑条本身就是"还能滚"的说明，再叠阴影就是重复着墨。） */
 .gw-table-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  scrollbar-width: none;
-  /* 横向"还能滚"的常驻提示：左右各一道渐隐阴影。
-     滚动条被藏了（见上），而列头那条投影只在支持 animation-timeline 的浏览器里
-     出现——Firefox / Safari 此前没有任何线索，13 列的请求表在窄屏上无从察觉。
-     用 background-attachment 的 local / scroll 组合做到"滚到头就消失"：
-     scroll 层是钉在边缘的阴影，local 层是同色的"盖子"、随内容滚动；滚到末端时
-     盖子移进视野把阴影盖住，所以表格不溢出时不会显示假提示。 */
-  background-image:
-    linear-gradient(to right, var(--card) 40%, transparent),
-    linear-gradient(to left, var(--card) 40%, transparent),
-    linear-gradient(to right, var(--table-sticky-shadow), transparent 70%),
-    linear-gradient(to left, var(--table-sticky-shadow), transparent 70%);
-  background-position: left center, right center, left center, right center;
-  background-size: 36px 100%, 36px 100%, 16px 100%, 16px 100%;
-  background-repeat: no-repeat;
-  background-attachment: local, local, scroll, scroll;
+  /* 竖向滚动条常驻占位（见上）：行数变化不让列宽跳 */
+  scrollbar-gutter: stable;
 }
 .gw-table-scroll::-webkit-scrollbar {
-  display: none;
+  width: 6px;
+  height: 6px;
+}
+.gw-table-scroll::-webkit-scrollbar-thumb {
+  border-width: 1px;
 }
 
 /* 列头吸附：th 上写 sticky 即生效，吸附范围就是上面这个滚动容器。两条硬要求：
@@ -294,32 +301,6 @@
    两条线各画各的、看着粗一档；而且行边框不跟 sticky 走。行这一侧直接归零。 */
 .gw-table-card [data-slot="table-header"] [data-slot="table-row"] {
   border-bottom-width: 0;
-}
-
-/* 滚动起来之后，列头下方浮出一条投影，表示"表头飘在内容之上"。
-   开关用 scroll-driven animation 的滚动进度，不需要 JS 监听 scroll：
-   0 → 32px 的滚动量映射成投影的透明 → 实色（滚动不足 32px 就按比例给一部分）。
-   包在 @supports 里是必须的：不支持 animation-timeline 的浏览器会把它当成普通
-   0s 动画，fill: both 直接停在末帧——投影会常驻。 */
-@supports (animation-timeline: scroll()) {
-  @keyframes gw-table-head-lift {
-    from {
-      box-shadow:
-        inset 0 -1px 0 var(--table-border),
-        0 4px 8px -4px transparent;
-    }
-    to {
-      box-shadow:
-        inset 0 -1px 0 var(--table-border),
-        0 4px 8px -4px var(--table-sticky-shadow);
-    }
-  }
-  .gw-table-card [data-slot="table-head"] {
-    animation: gw-table-head-lift linear both;
-    /* 必须在 animation 简写之后：简写会把 animation-timeline 重置回 auto */
-    animation-timeline: scroll(nearest block);
-    animation-range: 0 32px;
-  }
 }
 
 /* 页头/页脚的通栏分隔线取消：卡片自带边框，再叠两道通栏线就是三条平行横线。
@@ -363,11 +344,11 @@
 
 /* 图表面板体：撑满面板剩余高度（面板在网格里是确定行高，这里有"剩余"可撑），
    内边距由图表段自己带（面板 padding 已归零）。
-   数值照抄 demo：panel-body 18px + .chart 的 8px 4px 0 → 上 26 / 左右 22 / 下 18 */
+   数值：panel-body 16px + .chart 的 8px 8px 0 → 上 24 / 左右 24 / 下 16（8px 网格）*/
 .gw-chart {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 26px 22px 18px;
+  padding: 24px 24px 16px;
   /* 切换时间范围时图表直接换一批数、没有任何过渡。组件按 range 作 key 重挂，
      于是这里的一次淡入就等于"数据集换了"的过渡（首屏挂载时同样受益）。
      只做 opacity：图里全是绝对定位的 SVG，transform 会牵动坐标换算。 */
@@ -402,7 +383,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 18px;
+  gap: 16px;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--hairline);
@@ -410,7 +391,7 @@
 .gw-legend-item {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }
@@ -431,12 +412,16 @@
   color: var(--fg-subtle);
 }
 
-/* 悬停浮层：250px 宽 / 11px 13px 内边距 / shadow-pop（demo 浮层卡片的原尺寸） */
+/* 悬停浮层：内边距 11px 13px / shadow-pop。宽度不再定死——模型名要全名展示
+   （见 .gw-chart-tip-model），250px 老定宽必然省略；改成随内容 250–340 自适应，
+   超长模型名在 340 上限内换行。浮层 pointer-events: none，随内容变宽不会挡交互。 */
 .gw-chart-tip {
   position: absolute;
   z-index: 10;
-  width: 250px;
-  padding: 11px 13px;
+  width: max-content;
+  min-width: 250px;
+  max-width: 340px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background: var(--popover);
@@ -444,14 +429,14 @@
   pointer-events: none;
 }
 .gw-chart-tip-date {
-  margin-bottom: 7px;
+  margin-bottom: 8px;
   font-size: var(--fs-sm);
   color: var(--fg-subtle);
 }
 .gw-chart-tip-grid {
   display: grid;
   grid-template-columns: auto auto;
-  gap: 3px 14px;
+  gap: 4px 14px;
   font-size: var(--fs-sm);
 }
 .gw-chart-tip-grid > .k {
@@ -470,18 +455,19 @@
 .gw-chart-tip-row {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 10px;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-2xs); /* 10px 最小档：模型名全名展示是这里的硬要求，字号让位 */
+  line-height: 1.45;
 }
 .gw-chart-tip-row + .gw-chart-tip-row {
-  margin-top: 3px;
+  margin-top: 4px;
 }
-/* 模型名可能是 28 字符的长别名：定宽左格省略，右格数字不缩 */
+/* 模型名全名展示：不省略、不裁剪；极端长的 token（无空格连续段）靠
+   overflow-wrap 在卡片上限内换行，配合同排的 baseline 对齐。 */
 .gw-chart-tip-model {
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
 }
 .gw-chart-tip-val {
@@ -512,7 +498,7 @@
   flex-shrink: 0;
   align-items: center;
   gap: 8px;
-  padding: 14px 18px;
+  padding: 16px;
   border-bottom: 1px solid var(--hairline);
   color: var(--muted-foreground);
 }
@@ -522,7 +508,7 @@
 }
 .gw-panel-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--foreground);
@@ -543,7 +529,7 @@
   align-items: center;
   justify-content: center;
   margin-top: 0;
-  padding: 12px 18px;
+  padding: 12px 16px;
   border-top: 1px solid var(--hairline);
 }
 
@@ -604,9 +590,9 @@
   /* 大数字改走正文字体 + 等宽数字：landing 的语言里没有第二套字体，
      tabular-nums 已经保证列对齐 */
   font-family: var(--font-sans);
-  font-size: 26px;
+  font-size: var(--fs-display);
   font-weight: 600;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
 }
@@ -620,7 +606,7 @@
   color: var(--destructive);
 }
 .mission-strip .metric-sub {
-  margin-top: 3px;
+  margin-top: 4px;
   font-size: var(--fs-sm);
   color: var(--fg-subtle);
 }
@@ -644,7 +630,7 @@
 .gw-workspace .metric-k {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 .gw-workspace .metric-ico {
   width: 12px;
@@ -665,7 +651,7 @@
 .gw-skeleton {
   flex: 1 1 auto;
   min-height: 160px;
-  margin: 16px 18px 18px;
+  margin: 16px;
   border-radius: var(--radius-md);
   background: linear-gradient(
     90deg,
