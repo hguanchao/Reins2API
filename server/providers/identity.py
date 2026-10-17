@@ -93,6 +93,13 @@ def canonical_session_id(signal: str) -> str:
     与官方 Identifier.descending() 同构（低 12 位落在 ffe）。时间戳不是真实时钟，
     它只用来通过上游的编码校验；会话身份由 base62 随机段承载，而随机段同样由
     signal 的哈希决定，所以同一信号恒得同一个 session。
+
+    **这层机器的存在依据（2026-10-17 复测仍成立）**：上游按编码拦截——同模型下
+    正式编码的请求进到配额层（429 FreeUsageLimitError），而"形态对但计数器区
+    漂移"与"随机尾巴"两种非官方编码全部 403 FreeTierError（"free tier can only
+    be used from within OpenCode"）。若有日上游放开校验，本函数连同
+    is_official_session 一并可以删（session 直接透传信号即可）——删除前提见
+    README 的复测约定。
     """
     digest = hashlib.sha256(f"ses\x00{signal}".encode()).digest()
     return f"ses_{_descending_time_part(digest[:6])}{_base62_fixed(digest[6:16], 14)}"

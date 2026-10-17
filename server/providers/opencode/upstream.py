@@ -20,6 +20,7 @@ from typing import Any
 
 from core.logger import logger
 from core.settings import (
+    OPENCODE_CLI_VERSION,
     OPENCODE_TRANSPORT_ATTEMPTS,
     OPENCODE_TRANSPORT_BACKOFF_MAX_S,
     OPENCODE_TRANSPORT_BACKOFF_S,
@@ -45,7 +46,8 @@ PUBLIC_KEY = "public"
 # 本地不设超时（见 send_upstream 的 timeout=None），长生成完全由上游决定。
 # 声称的版本号本身上游不校验，但 UA 里不带 "opencode/<…>" 会 403——旧形态
 # "opencode/1.18.31 <runtime 描述>" 与官方现形态不同，这里对齐官方。
-USER_AGENT = "opencode/latest/2.0.29/cli"
+# 版本号不只是指纹：工具定义逐字段比对与目录门控都以它对账，见 settings 与 tools。
+USER_AGENT = f"opencode/latest/{OPENCODE_CLI_VERSION}/cli"
 
 
 def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str, str]:
@@ -54,7 +56,9 @@ def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str
     过必要性）。会话身份头的粒度见 identity.py：session 每会话一个；request 只留在
     本地（响应头与日志），不再出网。
 
-    实测的硬性要求，少一处就是 403 FreeTierError：
+    实测的硬性要求，少一处就是 403 FreeTierError（2026-10-17 复测：官方编码的请求
+    被放行到配额层报 429 FreeUsageLimitError，"形态对但计数器区漂移"与"随机尾巴"
+    两种非官方编码仍精确吃 403——编码校验在服务端，只会变严不会自动松）：
       * 不能带 x-opencode-request —— 网关自己的关联头，上游明确拒收；
       * 必须带 x-opencode-session-id（只要 x-opencode-session 不够），且值是官方
         descending 编码；

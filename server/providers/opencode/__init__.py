@@ -8,14 +8,17 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 from core.logger import logger
+from core.settings import OPENCODE_CATALOG_TTL_S
 from gateway.base import ModelInfo, RequestIDs, Route, UpstreamResponse
 from providers import models_dev, profiles
 from providers.capabilities import as_flag, capability_block
 from providers.common import refresh_result, stamp, stamp_now
 from providers.identity import derive_request_ids
+from providers.opencode import tools
 from providers.opencode.discovery import discover
 from providers.opencode.routing import ModelIndex, ModelRecord, Router
 from providers.opencode.upstream import (
@@ -29,6 +32,10 @@ from providers.opencode.upstream import (
 class OpenCodeProvider:
     name = "opencode"
     upstream_url = INFERENCE_BASE
+    # 目录 TTL 自动刷新的 opt-in（main._warm_catalog 逐 provider 检查）：免费匿名
+    # 通道拉目录零风险，带账号的 provider 不 opt-in（刷新牵一发动 refresh_expiring，
+    # 那些目录交给既有的"启动快照恢复 + 手动刷新"路径）。
+    catalog_ttl_s = OPENCODE_CATALOG_TTL_S
 
     def __init__(self) -> None:
         self._index = ModelIndex()
@@ -38,6 +45,11 @@ class OpenCodeProvider:
         # 快照内容的最后变更时间（models.json 的 meta.updated_at_ms）；本进程从快照
         # 冷启动时它是唯一的时间线索，与 refreshed_at（本进程刷新时间）分开。
         self._cached_at_ms = 0
+        # 工具定义快照版本与出站 UA 版本对账：上游逐字段比对工具，版本漂移的
+        # 症状是整批 403 且难以当场归因，指纹级别的提醒在这里叫（一次）。
+        gap = tools.capture_gap()
+        if gap:
+            logger.error(f"[opencode] {gap}")
 
     # ── 目录 ──
 
@@ -87,8 +99,13 @@ class OpenCodeProvider:
         # 凭证可见清单随 meta 落盘：冷启动没有它就只能按"清单未知"兜底，会把凭证
         # 到不了的模型也对外声明。
         if snapshot_models:
+            # pulled_at_ms = **拉取**时间（目录 TTL 自动刷新的时钟，与内容是否变化
+            # 无关）；updated_at_ms 仍由 write 按内容变化维护，职责分开。pulled_at
+            # 每次刷新都变，write 的"无变化跳过"随之失效——刷新频率本身低（手动 +
+            # TTL 兜底各一条触发线），mtime 抖动可接受。
             meta = {"available": available} if available is not None else None
-            written = models_snapshot.write("opencode", snapshot_models, meta)
+            meta_all = {**(meta or {}), "pulled_at_ms": int(time.time() * 1000)}
+            written = models_snapshot.write("opencode", snapshot_models, meta_all)
             cached_at_ms = int(models_snapshot.read_meta("opencode").get("updated_at_ms") or 0)
             with self._lock:
                 self._cached_at_ms = cached_at_ms

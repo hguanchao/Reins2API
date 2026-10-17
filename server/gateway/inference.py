@@ -537,6 +537,16 @@ def _copy_upstream_error(
     retry_after = result.header("retry-after")
     if retry_after:
         extra["retry-after"] = retry_after
+    # opencode 免费档身份门的点名告警（2026-10-17 复测确凿）：官方编码的请求会进
+    # 到配额层（429 FreeUsageLimitError），只有非官方会话编码/缺官方头的请求吃
+    # 这条 FreeTierError——它的价值是把"突发成串 403"当场归因（编码校验突变或
+    # 工具定义比对收紧），而不是只留下一条别人看不懂的上游原文。
+    if result.status == 403 and "FreeTierError" in message:
+        logger.error(
+            f"[推理] request={record.id} opencode 免费档身份门拦截：会话编码非官方或"
+            f"缺官方头。若官方编码的请求也开始这样报，说明上游校验策略变了，"
+            f"identity 重编码层要复审"
+        )
     record.error_message = message[:255]
     logger.warning(f"[推理] request={record.id} 上游返回错误 status={result.status}: {message}")
     _send_error(handler, external, result.status, message, "upstream_error", extra)

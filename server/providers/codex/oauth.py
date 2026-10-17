@@ -214,8 +214,13 @@ def exchange_code(code: str, verifier: str, redirect_uri: str = CODEX_REDIRECT_U
     })
 
 
-def refresh(refresh_token: str) -> TokenData:
+def refresh(refresh_token: str, refresh_reason: str = "proactive_expiry") -> TokenData:
     """RT 换 AT（grant_type=refresh_token）。
+
+    refresh_reason 对齐官方 codex-rs 的 client.rs：`refresh_reason` 作为独立表单
+    字段随 grant 发出，值域 proactive_expiry / scheduled / unauthorized_recovery /
+    forced（我们今天的全部触发线都是"临期主动刷"，恒用 proactive_expiry；
+    scheduled 是官方 8 天保活的维护线程语义，网关没有这条线程）。
 
     失败抛 TokenRejected（这张票已死，终局）或 RefreshUncertain（交换可能已经
     发生但结果没拿到）——两者的后续处置完全不同，见 _post_token。
@@ -225,6 +230,9 @@ def refresh(refresh_token: str) -> TokenData:
         "client_id": CODEX_CLIENT_ID,
         "refresh_token": refresh_token,
         "scope": CODEX_REFRESH_SCOPES,
+        # 字段名与值域照抄官方（client.rs `refresh`）：多余在于伪装精确度，
+        # 缺失不会 400——但上游风控 SQL 里它就是官方客户端与非官方流量的分水岭。
+        "refresh_reason": refresh_reason,
     })
 
 

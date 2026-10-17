@@ -42,6 +42,18 @@ OPENCODE_TRANSPORT_ATTEMPTS = 4        # 发送次数上限（= 至多 3 次重�
 OPENCODE_TRANSPORT_BACKOFF_S = 0.3     # 首次重发前等待，之后逐次翻倍
 OPENCODE_TRANSPORT_BACKOFF_MAX_S = 2.0 # 单次等待上限（0.3/0.6/1.2/2.0…）
 
+# 出站伪装的 CLI 版本：进 UA（opencode/latest/<版本>/cli），同时是目录的门控参数与
+# 工具定义比对的参考版本——上游把请求带的工具定义与同版本 CLI 的官方定义逐字段
+# 比对，改 UA 版本而不换 opencode_tools.json 就是批量 403（tools.capture_gap()
+# 会在 provider 启动时对账喊出来）。
+OPENCODE_CLI_VERSION = "2.0.29"
+
+# 模型目录 TTL：快照拉取超过这个年龄，启动时自动补拉一次（官方客户端每次启动都拉；
+# 这里放宽到一天，省上游请求）。时钟源是 pulled_at_ms（refresh 写入的**拉取**时间），
+# 不是 updated_at_ms——后者只在目录内容变化时走，内容长期不变就永远触发不了。
+# 空目录 / 无 meta（老快照升级）视为过期，升级后自动补拉一次。
+OPENCODE_CATALOG_TTL_S = 86400
+
 # 流式"首包前"重发（网关层，全 provider 共用；见 gateway/stream/retry.py）：
 # 上游回了 2xx 但一个字节都没吐出来就断——下游还什么都没收到，重发零副作用。
 # 有字节吐给下游之后一律不重发：chat SSE 没有断点续传，重发等于让模型重新推理，
@@ -196,3 +208,5 @@ CODEX_REFRESH_AHEAD_S = 600    # token 到期前主动刷新窗口（请求路�
 # 权重
 CODEX_IDLE_BOOST_PER_HOUR = 0.5
 CODEX_IDLE_BOOST_MAX = 5.0
+
+

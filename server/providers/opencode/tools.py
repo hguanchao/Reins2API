@@ -6,6 +6,10 @@ schema 跟官方定义逐字段比对，只要有一处不同就 403 FreeTierErr
 （缺 shell/read 一类核心工具也算非 agent 会话形态）。所以这里落的是原样抓取的
 定义，注入缺失核心工具和替换客户端同名工具都只用它。
 
+复测注（2026-10-17）：改动 shell 工具描述的请求在**限流配额**下未触发工具 403
+（直接 429 FreeUsageLimitError）。不能据此断定比对已取消——配额检查可能先于
+工具比对，遮住了后者；保鲜机制（capture_gap 版本对账）按"比对仍在"保守运行。
+
 opencode_tools.json 保持与官方抓取结果字节一致：上游是逐字段比对，不欢迎任何
 "顺手美化"（重排、补默认值、改类型都会让它不再相等）。
 """
@@ -23,7 +27,25 @@ from gateway.types import PROTOCOL_ANTHROPIC, PROTOCOL_CHAT
 # bash 不再注入——上游认识 bash 且会校验其定义，而网关手上没有 bash 的官方定义。
 CORE_TOOLS = ("shell", "edit", "glob", "grep", "read")
 
+# 这份快照抓取自哪个官方 CLI 版本。上游按**同版本 CLI** 的工具定义逐字段比对，
+# 版本漂移（UA 升了、快照没重抓）= 定义过时 = 整批 403；capture_gap() 在 provider
+# 启动时对账。改 UA 版本（settings.OPENCODE_CLI_VERSION）时必须同步更新这里。
+CAPTURED_CLI_VERSION = "2.0.29"
+
 _TOOLS_FILE = Path(__file__).with_name("opencode_tools.json")
+
+
+def capture_gap() -> str | None:
+    """快照版本与出站 UA 版本一致返回 None，否则返回可直接告警的差异文案。"""
+    from core.settings import OPENCODE_CLI_VERSION
+
+    if CAPTURED_CLI_VERSION == OPENCODE_CLI_VERSION:
+        return None
+    return (
+        f"工具定义快照抓取自 CLI {CAPTURED_CLI_VERSION}，出站 UA 版本已是 "
+        f"{OPENCODE_CLI_VERSION}——上游按同版本 CLI 的定义逐字段比对工具，"
+        f"不重抓 opencode_tools.json 大概率整批 403"
+    )
 
 
 @lru_cache(maxsize=1)

@@ -42,6 +42,7 @@ def _warm_catalog(provider) -> None:
         loaded = 0
         logger.warning(f"[目录] provider={provider.name} 快照恢复失败: {type(exc).__name__}: {exc}")
     if loaded:
+        _auto_refresh_if_stale(provider)
         return
     logger.info(f"[目录] provider={provider.name} 无可用缓存, 启动兜底拉取一次")
     try:
@@ -51,6 +52,37 @@ def _warm_catalog(provider) -> None:
         provider.refresh()
     except Exception as exc:
         logger.warning(f"[目录] provider={provider.name} 启动兜底拉取失败: {type(exc).__name__}: {exc}")
+
+
+def _auto_refresh_if_stale(provider) -> None:
+    """目录 TTL 自动刷新的兜底：快照拉取时间超过 provider 自报的年龄（catalog_ttl_s，
+    只有 opt-in 的 provider 才有）就补拉一次。
+
+    与"无可用缓存兜底"的区别：缓存是好的、只是**数据老了**——不影响服务，只影响
+    模型清单与上游的同步程度。失败照旧只告警：旧目录仍可服务，断网启动不该因为
+    一次目录刷新被拖死。时钟用 meta.pulled_at_ms（refresh 写入的拉取时间）；没有
+    该字段（升级前的老快照）视为过期，升级后第一次启动补拉一次就续上。
+    """
+    ttl = getattr(provider, "catalog_ttl_s", None)
+    if ttl is None:
+        return
+    from providers import models_snapshot
+
+    try:
+        pulled = int(models_snapshot.read_meta(provider.name).get("pulled_at_ms") or 0)
+    except Exception as exc:
+        logger.warning(f"[目录] provider={provider.name} 读取快照 meta 失败: {type(exc).__name__}: {exc}")
+        return
+    age_s = (time.time() * 1000 - pulled) / 1000 if pulled else ttl + 1
+    if age_s <= ttl:
+        return
+    logger.info(
+        f"[目录] provider={provider.name} 快照拉取已 {int(age_s)}s，超过 TTL {ttl}s, 自动补拉"
+    )
+    try:
+        provider.refresh()
+    except Exception as exc:
+        logger.warning(f"[目录] provider={provider.name} 自动刷新失败: {type(exc).__name__}: {exc}")
 
 
 def _token_sweep_loop(provider) -> None:

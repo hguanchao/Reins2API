@@ -17,7 +17,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.settings import CODEX_CLIENT_ID, CODEX_REDIRECT_URI
+from core.settings import (
+    CODEX_CLIENT_ID,
+    CODEX_REDIRECT_URI,
+    CODEX_REFRESH_SCOPES,
+    CODEX_STICKY_TTL_S,
+)
 from gateway.base import RequestIDs
 from providers.codex import classify, oauth, shape
 from providers.codex import upstream as cx_upstream
@@ -224,6 +229,33 @@ def test_turn_state_header_helpers():
     assert cx_upstream.turn_state_of({"content-type": "text/event-stream"}) == ""
     headers = cx_upstream.codex_headers(account, "ses-9")
     assert cx_upstream.TURN_STATE_HEADER not in headers  # 无令牌不出现
+
+
+def test_turn_state_ttl_and_isolation():
+    """turn-state：同「账号×会话」回显且新值覆盖旧值；跨账号/跨会话隔离；
+    超过 TTL 过期清零（官方语义是 turn 级持有，网关放宽到会话级 + TTL 兜底）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        provider = CodexProvider(store=CodexStore(Path(tmp) / "codex.db"))
+        try:
+            account = Account(uid="acc-1", account_id="acc-1", access_token="AT")
+            headers = {cx_upstream.TURN_STATE_HEADER: "ts-1"}
+            provider._note_turn_state(account, "ses-1", headers)
+            assert provider._turn_state_for("acc-1", "ses-1") == "ts-1"
+            # 新值覆盖旧值
+            provider._note_turn_state(account, "ses-1",
+                                      {cx_upstream.TURN_STATE_HEADER: "ts-2"})
+            assert provider._turn_state_for("acc-1", "ses-1") == "ts-2"
+            # 跨账号 / 跨会话隔离（换号取不到旧令牌，与官方语义一致）
+            assert provider._turn_state_for("acc-2", "ses-1") == ""
+            assert provider._turn_state_for("acc-1", "ses-2") == ""
+            # TTL 过期：把时间戳拨到 TTL 之外 → 取不到且条目被清
+            stale_ms = int(time.time() * 1000) - (CODEX_STICKY_TTL_S + 5) * 1000
+            with provider._turn_states_lock:
+                provider._turn_states["acc-1\x00ses-1"] = ("ts-stale", stale_ms)
+            assert provider._turn_state_for("acc-1", "ses-1") == ""
+            assert "acc-1\x00ses-1" not in provider._turn_states
+        finally:
+            provider._store.close()
 
 
 # ── 错误分类 ──
@@ -1098,6 +1130,31 @@ def test_oauth_refresh_failure_classification():
             pass
         else:
             raise AssertionError("传输失败应当抛 RefreshUncertain")
+
+
+def test_oauth_refresh_grant_shape_matches_official():
+    """refresh grant 与官方 codex-rs 同形：基本五字段之外，`refresh_reason` 是独立
+    表单字段，值取 proactive_expiry（我们今天唯一的触发线就是临期主动刷；
+    scheduled 是官方 8 天保活线程的语义，网关没有那条线程）。"""
+    from urllib.parse import parse_qs
+
+    import providers.codex.oauth as cx_oauth
+
+    captured: dict[str, str] = {}
+
+    def _respond(_url, **kwargs):
+        captured.update({k: v[0] for k, v in parse_qs(kwargs["data"]).items()})
+        return _TokenResp(200, '{"access_token":"AT-2","refresh_token":"RT-2"}')
+
+    with _patched(cx_oauth.crequests, "post", _respond):
+        data = cx_oauth.refresh("RT-secret")
+
+    assert data.access_token == "AT-2"
+    assert captured["grant_type"] == "refresh_token"
+    assert captured["client_id"] == CODEX_CLIENT_ID
+    assert captured["refresh_token"] == "RT-secret"
+    assert captured["scope"] == CODEX_REFRESH_SCOPES
+    assert captured["refresh_reason"] == "proactive_expiry"
 
 
 def test_oauth_error_message_redacts_credential():
