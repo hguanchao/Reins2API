@@ -33,8 +33,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from curl_cffi import requests as crequests
-
+# crequests 指向出站会话复用层（每线程一条 keep-alive 连接，逐请求清 Cookie）：
+# 调用写法与 curl_cffi 顶层 API 同形，只是不再每次新建 Session。类型与异常
+# (RequestsError/Response) 在该模块内原样再导出。
+from net import outbound as crequests
 from net.proxy import proxies_for
 from providers.workbuddy.store import Account
 from providers.workbuddy.upstream import (

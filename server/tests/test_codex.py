@@ -170,11 +170,11 @@ def test_shape_strips_and_normalizes():
     assert shape.shape_codex_body(body, "") is False
 
 
-def test_shape_injects_session_cache_key():
+def test_shape_injects_client_cache_key():
     body = {"model": "m", "input": []}
-    assert shape.shape_codex_body(body, "ses-1") is True
-    assert body["prompt_cache_key"] == "ses-1"
-    assert shape.shape_codex_body(body, "ses-1") is False
+    assert shape.shape_codex_body(body, "cli-1") is True
+    assert body["prompt_cache_key"] == "cli-1"
+    assert shape.shape_codex_body(body, "cli-1") is False
 
 
 # ── 头族 ──
@@ -278,9 +278,6 @@ def test_store_crud_and_runtime():
             assert not hasattr(got, "bogus")
 
             assert store.count_by_status() == {"active": 1}
-            assert store.next_used_seq() == 1
-            store.update_runtime("acc-1", used_seq=store.next_used_seq())
-            assert store.next_used_seq() == 2
             assert store.delete_account("acc-1") is True
             assert store.get_account("acc-1") is None
         finally:
@@ -360,7 +357,7 @@ def test_provider_route_and_models():
             store.close()
 
 
-def test_send_injects_session_and_passes_through():
+def test_send_injects_client_cache_key_and_passes_session_through():
     import providers.codex.upstream as cx_upstream
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -391,14 +388,14 @@ def test_send_injects_session_and_passes_through():
             original = cx_upstream.responses_request
             cx_upstream.responses_request = fake_request
             try:
-                # 真实链路：inference 先调 shape()（静态归一），再调 send()（会话相关注入）
+                # 真实链路：inference 先调 shape()（静态归一），再调 send()（客户端键注入）
                 outbound = {"model": "gpt-5-codex", "input": [], "store": True}
                 provider.shape(outbound, "responses")
                 resp = provider.send(
                     provider.route("cx:gpt-5-codex"),
                     "responses",
                     json.dumps(outbound).encode(),
-                    RequestIDs(session="ses-42", request="r1", project="p"),
+                    RequestIDs(session="ses-42", request="r1", project="p", client="cli-42"),
                     stream=True,
                 )
             finally:
@@ -406,9 +403,11 @@ def test_send_injects_session_and_passes_through():
 
             assert resp.status == 200
             assert resp.account == "acc-1"
+            # 出站 session 头仍是会话键（粘性选号靠它）
             assert seen["session"] == "ses-42"
             body = seen["body"]
-            assert body["prompt_cache_key"] == "ses-42"
+            # prompt_cache_key 用客户端键：静态前缀跨会话共享
+            assert body["prompt_cache_key"] == "cli-42"
             assert body["store"] is False
             assert body["stream"] is True
             assert body["instructions"] == ""

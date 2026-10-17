@@ -2,9 +2,10 @@
 
 chat / responses / anthropic 三协议的双向转换实现按协议分在
 `gateway.protocols/`；本包只放与协议无关的部分。桥入口
-（prepare_request / convert_request / convert_response / encode_bridge_response）
-依赖 protocols，按 PEP 562 惰性导出——只 import 本包不会拉起 protocols，
-从而避免 protocols → bridge.content 与本包 __init__ 形成导入环。
+（prepare_request / convert_response）依赖 protocols，按 PEP 562 惰性导出——
+只 import 本包不会拉起 protocols，从而避免 protocols → bridge.content 与本包
+__init__ 形成导入环。桥内部的 convert_request / encode_bridge_response 不经本
+门面（protocols/convert 之间直连），不在这里转出。
 """
 
 from __future__ import annotations
@@ -46,9 +47,7 @@ from gateway.bridge.usage import (
 from gateway.errors import BridgeError
 
 _LAZY = (
-    "convert_request",
     "convert_response",
-    "encode_bridge_response",
     "prepare_request",
 )
 
@@ -58,10 +57,8 @@ def __getattr__(name: str):
         from gateway.bridge import convert
 
         return {
-            "convert_request": convert.convert_request,
             "convert_response": convert.convert_response,
             "prepare_request": convert.prepare_request,
-            "encode_bridge_response": convert.encode_bridge_response,
         }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -78,12 +75,10 @@ __all__ = [
     "canonical_chat_stop",
     "canonical_responses_incomplete",
     "chat_stop",
-    "convert_request",
     "convert_response",
     "decode_anthropic_usage",
     "decode_openai_usage",
     "decode_responses_reasoning",
-    "encode_bridge_response",
     "is_reasoning_vendor_identifier",
     "is_tool_stop",
     "normalize_effort_value",

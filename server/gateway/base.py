@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from gateway.jsonutil import close_quietly
 from gateway.types import protocol_path
 
 
@@ -48,6 +49,9 @@ class RequestIDs:
     request: str
     project: str
     parent_session: str = ""
+    # 客户端稳定键（ip+UA 哈希，跨会话不变）：prompt_cache_key 用它而不是会话键，
+    # 同一客户端的新会话第一发才能吃到上段静态前缀缓存（见 identity.client_cache_key）。
+    client: str = ""
 
 
 @dataclass(frozen=True)
@@ -143,10 +147,7 @@ class UpstreamResponse:
         return None
 
     def close(self) -> None:
-        try:
-            self._raw.close()
-        except Exception:
-            pass
+        close_quietly(self._raw)
 
 
 @runtime_checkable
@@ -166,8 +167,10 @@ class Provider(Protocol):
 
     def route(self, model: str) -> Route: ...
 
-    def derive_ids(self, headers: dict[str, str], body: dict[str, Any]) -> RequestIDs:
-        """从请求头与请求体派生稳定的会话/请求标识。"""
+    def derive_ids(
+        self, headers: dict[str, str], body: dict[str, Any], client_ip: str = ""
+    ) -> RequestIDs:
+        """从请求头/请求体/客户端地址派生会话、请求与客户端稳定标识。"""
 
     def shape(self, body: dict[str, Any], protocol: str) -> tuple[dict[str, Any], bool]:
         """上游侧请求塑形（免费档强制流式 + 核心工具集），返回 (塑形后, 是否改动)。"""
@@ -216,22 +219,18 @@ class Registry:
                 raise RuntimeError("no provider registered")
             return next(iter(self._providers.values()))
 
-    def resolve(self, model: str) -> Route:
-        """模型别名路由:oc:/cn:/glb: 按前缀表选 provider(provider 发上游前
-        自行剥前缀取裸名);旧式 provider/xxx 兼容;裸名交给默认 provider。"""
-        with self._lock:
-            providers = dict(self._providers)
-        target = self._alias_target(model, providers)
-        if target is not None:
-            return target.route(model)
-        if "/" in model:
-            target = providers.get(model.split("/", 1)[0])
-            if target is not None:
-                return target.route(model)
-        return self.default.route(model)
+    def owner(self, model: str) -> str:
+        """模型名归属的 provider 名（展示用 /v1/models 的 owned_by）。
+
+        与 route_target 同源：别名前缀 → 该 provider；provider/xxx → 该 provider；
+        裸名 → 默认 provider。未注册的前缀落到默认 provider（目录里的 id 都是
+        已注册 provider 产出的，这里只做展示，不承担拒绝职责）。
+        """
+        provider, unknown = self.route_target(model)
+        return provider.name if provider is not None and not unknown else self.default.name
 
     def route_target(self, model: str) -> tuple[Provider | None, str | None]:
-        """与 resolve 同源的只读路由预判:返回 (provider, 未知前缀)。
+        """只读路由预判:返回 (provider, 未知前缀)。
 
         裸名/无前缀 → (default, None);别名与 provider/xxx 命中 → (provider, None);
         形如 xxx:yyy 或 xxx/yyy 但前缀未注册(含别名指向的 provider 未注册)→
@@ -256,12 +255,6 @@ class Registry:
     @staticmethod
     def _alias_name(prefix: str) -> str | None:
         return ALIAS_PREFIXES.get(prefix)
-
-    def _alias_target(self, model: str, providers: dict[str, Provider]) -> Provider | None:
-        if ":" not in model:
-            return None
-        name = self._alias_name(model.split(":", 1)[0])
-        return providers.get(name) if name else None
 
     def list_models(self) -> list[ModelInfo]:
         with self._lock:

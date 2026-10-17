@@ -8,8 +8,8 @@
   客户端的协议约定归一字段（chat 的 max tokens 字段名、responses 的路由默认值），
   客户端要 JSON 仍由网关折叠流回。
 - send：单凭证（public）发送；"响应头之前"的传输失败重试一次，其余错误直接返回给
-  推理层透传——无换 key 轮换。responses 协议的会话级 prompt_cache_key 也在这里补
-  （shape 阶段还不知道会话，见 _with_session_cache_key）。
+  推理层透传——无换 key 轮换。responses 协议的客户端级 prompt_cache_key 也在这里补
+  （shape 阶段还不知道 ids，见 _with_client_cache_key）。
 """
 
 from __future__ import annotations
@@ -18,18 +18,20 @@ import json
 import time
 from typing import Any
 
-from curl_cffi import requests as crequests
-
 from core.logger import logger
 from core.settings import (
-    OPENCODE_TIMEOUT_CONNECT,
-    OPENCODE_TIMEOUT_IDLE,
     OPENCODE_TRANSPORT_ATTEMPTS,
+    OPENCODE_TRANSPORT_BACKOFF_MAX_S,
     OPENCODE_TRANSPORT_BACKOFF_S,
 )
 from gateway.base import RequestIDs, UpstreamResponse
 from gateway.jsonutil import is_object
 from gateway.types import PROTOCOL_ANTHROPIC, PROTOCOL_CHAT, PROTOCOL_RESPONSES, protocol_path
+
+# crequests 指向出站会话复用层（每线程一条 keep-alive 连接，逐请求清 Cookie）：
+# 调用写法与 curl_cffi 顶层 API 同形，只是不再每次新建 Session。类型与异常
+# (RequestsError/Response) 在该模块内原样再导出。
+from net import outbound as crequests
 from net.proxy import proxies_for
 from providers import parts, profiles
 from providers.identity import opencode_project_id
@@ -40,8 +42,7 @@ ZEN_BASE = "https://opencode.ai/zen"
 # /zen。发现与模型清单仍在 ZEN_BASE 上（两端点清单一致，实测 85 个模型）。
 INFERENCE_BASE = "https://opencode.ai/inference"
 PUBLIC_KEY = "public"
-# 本地超时只做兜底：静默容忍 ≈ OPENCODE_TIMEOUT_CONNECT + OPENCODE_TIMEOUT_IDLE
-# （换算与实测见 settings.py 该节），长生成由上游决定，不设总时长上限。
+# 本地不设超时（见 send_upstream 的 timeout=None），长生成完全由上游决定。
 # 声称的版本号本身上游不校验，但 UA 里不带 "opencode/<…>" 会 403——旧形态
 # "opencode/1.18.31 <runtime 描述>" 与官方现形态不同，这里对齐官方。
 USER_AGENT = "opencode/latest/2.0.29/cli"
@@ -241,11 +242,10 @@ def _tool_name(protocol: str, item: Any) -> str:
     return str(item.get("name") or "")
 
 
-# 可重发的传输失败码——判据还要合上"响应头没到"（见下），单看错误码不够。
-#   6  CURLE_COULDNT_RESOLVE_HOST / 7 CURLE_COULDNT_CONNECT
-#   28 CURLE_OPERATION_TIMEDOUT / 35 CURLE_SSL_CONNECT_ERROR
-#   52 CURLE_GOT_NOTHING / 56 CURLE_RECV_ERROR / 92 CURLE_HTTP2_STREAM
-_TRANSPORT_CODES = frozenset({6, 7, 28, 35, 52, 56, 92})
+# 可重发的传输失败——唯一判据是"响应头一个字节都没到"（见 _is_retryable_transport）。
+# 这里刻意不按错误码白名单：出口线路的故障码枚举不完（实测成串掐断里既有 35 也有
+# 56/92，换节点/换协议还会给 16/55/1），而"头没到"已经把"重发会不会让上游二次执行"
+# 这个真问题覆盖住了。
 
 
 def _is_retryable_transport(exc: Exception) -> bool:
@@ -257,24 +257,36 @@ def _is_retryable_transport(exc: Exception) -> bool:
     响应头一旦到过（status_code 有了），哪怕流还没吐第一个 chunk，也不重发：上游
     多半已经开始处理，重发等于让它二次执行。实测对照：连接被掐 = 56 + status 0；
     头先到再被掐 = 56 + status 200；体读到一半断 = 18 + status 200。
+
+    拿不到响应对象时保守不重发——判据不成立就不该赌。
     """
-    if getattr(exc, "code", None) not in _TRANSPORT_CODES:
-        return False
     response = getattr(exc, "response", None)
-    return getattr(response, "status_code", None) == 0
+    return response is not None and getattr(response, "status_code", None) == 0
 
 
-def _with_session_cache_key(protocol: str, body: bytes, session: str) -> bytes:
-    """responses 协议补会话级 prompt_cache_key（shape 阶段拿不到会话，放在发送前）。
+def _retry_backoff(attempt: int) -> float:
+    """第 attempt 次失败后的等待：几何退避，封顶 OPENCODE_TRANSPORT_BACKOFF_MAX_S。
+
+    成串掐断是出口线路的态，退避给上游一点时间；同一分钟里实测既能 0/12 全败，
+    也能 3/3 全通，所以"多试几次 + 拉开间隔"比"立刻重发一次"有效得多。
+    """
+    wait = OPENCODE_TRANSPORT_BACKOFF_S * (2 ** (attempt - 1))
+    return min(wait, OPENCODE_TRANSPORT_BACKOFF_MAX_S)
+
+
+def _with_client_cache_key(protocol: str, body: bytes, cache_key: str) -> bytes:
+    """responses 协议补客户端级 prompt_cache_key（shape 阶段拿不到 ids，放在发送前）。
 
     官方客户端把 prompt_cache_key 当请求的一部分签发：值 = 会话亲和
     （session/model-request.ts:295，亲和 = 父会话 ?? 分叉源 ?? 本会话），且
     responses 路线的 body 构建没有能力开关、恒发（open-responses.ts:798）；chat
     路线则因 Zen 没有 supportsPromptCacheKey 能力位而从不发——所以只在 responses
     上补。实测影响（2026-10-15，muse-spark-1.2-contributor-free，同前缀两连发）：
-    带会话键时 prompt 缓存命中 1777 tokens，不带时只有 113。
-    客户端自带键时不动它——与出站 session 头不同值也无妨，按会话隔离本来就是它
-    的语义。
+    带键时 prompt 缓存命中 1777 tokens，不带时只有 113。
+    我们补的键用**客户端稳定键**而不是会话键：会话键只保会话内命中，每个新会话的
+    第一发都要全量 prefill 整段静态前缀（~2 万 token，实测 +1.7s+）；客户端键让
+    同一客户端的所有会话共享同一段缓存，首发就命中。同会话内两者表现等价（都是
+    恒定键）。客户端自带键时不动它。
     """
     if protocol != PROTOCOL_RESPONSES:
         return body
@@ -282,9 +294,10 @@ def _with_session_cache_key(protocol: str, body: bytes, session: str) -> bytes:
         payload = json.loads(body.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return body
-    if not isinstance(payload, dict) or payload.get("prompt_cache_key"):
+    # 空键（极端情况下客户端键缺材料）宁可不补——空串键对上游是无意义的常量
+    if not isinstance(payload, dict) or payload.get("prompt_cache_key") or not cache_key:
         return body
-    payload["prompt_cache_key"] = session
+    payload["prompt_cache_key"] = cache_key
     # 入参已经过一次出站序列化（孤立代理项已清理），这次重编码不会引入新问题。
     return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
@@ -296,19 +309,20 @@ def send_upstream(
     *,
     stream: bool,
 ) -> UpstreamResponse:
-    """单凭证发送；响应头之前的传输失败重试一次。非 2xx 不在这里处理——推理层负责
-    透传；重试预算也用尽后原样抛 curl_cffi 的 RequestsError。
+    """单凭证发送；响应头之前的传输失败按预算重发（见 _retry_backoff）。非 2xx 不在
+    这里处理——推理层负责透传；重试预算也用尽后原样抛 curl_cffi 的 RequestsError。
 
     重试的必要性来自出口线路：同一台代理打 opencode.ai，新连接会间歇性在握手期被
-    掐断（curl 35，实测 8 次里 3 次，另有 0/12、1/8 的两轮），单凭证没有换号可换，
-    不重试就是客户端可见的 502（今天 24 条请求里 3 条倒在这上面）。重发最多多耗一次
-    上游额度，不会造成客户端可见的重复副作用（推理请求无写侧效应）；流一旦开始就
-    不在此列——那时错误由推理层按协议报给客户端。
+    掐断（curl 35/56），而且是**成串**的——实测同一分钟内 0/12 全败、几分钟后 3/3
+    全通。单凭证没有换号可换，不重试就是客户端可见的 502。重发最多多耗一次上游额度，
+    不会造成客户端可见的重复副作用（推理请求无写侧效应）；响应头一到就不再重发——
+    那时错误由推理层按协议报给客户端（流式还有"首包前"这一层，见
+    gateway/stream/retry.py）。
     """
     url = f"{INFERENCE_BASE.rstrip('/')}{protocol_path(protocol)}"
     headers = build_upstream_headers(protocol, PUBLIC_KEY, ids)
-    body = _with_session_cache_key(protocol, body, ids.session)
-    # 代理决策查一次就够：两次尝试相隔不到 1s，注册表/环境变量不会变（TTL 30s）。
+    body = _with_client_cache_key(protocol, body, ids.client)
+    # 代理决策查一次就够：几次尝试相隔只有几秒，注册表/环境变量不会变（TTL 30s）。
     proxies = proxies_for(url)
     for attempt in range(1, OPENCODE_TRANSPORT_ATTEMPTS + 1):
         try:
@@ -317,20 +331,21 @@ def send_upstream(
                 headers=headers,
                 data=body,
                 stream=stream,
-                # 不传 = curl_cffi 自带默认 30/30（连接 30s + 静默 30s 掐流），
-                # 会把免费档的正常长首字/推理静默当成故障。
-                timeout=(float(OPENCODE_TIMEOUT_CONNECT), float(OPENCODE_TIMEOUT_IDLE)),
+                # 显式传 None 才是“无超时”；省略会落回 curl_cffi 的默认 30/30。
+                timeout=None,
                 proxies=proxies,
                 impersonate="chrome",
             )
         except crequests.RequestsError as exc:
             if attempt >= OPENCODE_TRANSPORT_ATTEMPTS or not _is_retryable_transport(exc):
                 raise
+            wait = _retry_backoff(attempt)
             logger.warning(
-                f"[opencode] 响应头之前的传输失败，立即重试"
-                f"（{attempt}/{OPENCODE_TRANSPORT_ATTEMPTS - 1}）: {exc}"
+                f"[opencode] 响应头之前的传输失败, 退避后重发"
+                f" attempt={attempt}/{OPENCODE_TRANSPORT_ATTEMPTS - 1} "
+                f"backoff_ms={int(wait * 1000)}: {exc}"
             )
-            time.sleep(OPENCODE_TRANSPORT_BACKOFF_S)
+            time.sleep(wait)
             continue
         return UpstreamResponse(
             status=int(response.status_code),

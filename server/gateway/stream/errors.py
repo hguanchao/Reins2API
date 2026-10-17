@@ -32,15 +32,28 @@ class SseUnexpectedEof(Exception):
         super().__init__(message)
 
 
+class SseBufferOverflow(UpstreamStreamFailure):
+    """单条 SSE 记录超过上限（上游迟迟不发换行/分隔符）。
+
+    没有这道闸门时，一个坏掉的上游能把整条记录永远攒在内存里，直到进程被 OOM
+    杀掉——转发层最不该发生的失败方式。上限远高于任何真实 payload（见 sse.py），
+    触发即按"上游流失败"处理，客户端拿到错误帧而不是断在半句话上。
+    """
+
+
+class UpstreamHttpError(Exception):
+    """重试途中上游改判（非 2xx）：下游响应头已发出，只能以错误帧收尾。
+
+    str(self) 就是给客户端看的那句话（上游错误体原文），不是 repr ——这样
+    failure.py 不必再给它套一层"upstream SSE stream failed: "。
+    """
+
+
 def client_canceled(error: BaseException | None) -> bool:
     """客户端是否已经断开（TS errors.ts clientCanceled 的移植）。
 
-    TS 有两支：streamError.name === 'AbortError' 与 signal.aborted。signal 参数
-    随 AbortSignal 一并删除，socket 写错误（BrokenPipe / ConnectionReset /
-    ConnectionAborted）承担 aborted 的语义；name 分支保留，兼容仍以 AbortError
-    命名的异常。error 为 None 时（上游干净读完）恒为 False。
+    TS 的两支（name === 'AbortError' 与 signal.aborted）在 Python 里合并成一支：
+    客户端走掉表现为下游 socket 写失败（BrokenPipe / ConnectionReset /
+    ConnectionAborted）。error 为 None 时（上游干净读完）恒为 False。
     """
-    if isinstance(error, CLIENT_CANCELLED_ERRORS):
-        return True
-    # name 分支:兼容仍以 AbortError 命名的异常
-    return error is not None and getattr(error, "name", None) == "AbortError"
+    return isinstance(error, CLIENT_CANCELLED_ERRORS)

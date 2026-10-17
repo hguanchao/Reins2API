@@ -295,9 +295,8 @@ class AccountPool:
     def _weighted_choice(self, candidates: list[Any], weights: dict[str, float]) -> Any | None:
         if not candidates:
             return None
+        # 权重起手 1.0（见 _weight_of），抽签池恒非空权重——无需全零兜底
         draw = [max(weights.get(a.uid, 1.0), 0.0) for a in candidates]
-        if sum(draw) <= 0:
-            return _shuffle_rng.choice(candidates)
         return random.choices(candidates, weights=draw, k=1)[0]
 
     def _idle_boost(self, uid: str) -> float:
@@ -327,6 +326,12 @@ class AccountPool:
                 continue  # 完全健康的号在上面已返回；此处只收冷却中的
             if account.cooldown_kind not in eligible:
                 continue  # 不在白名单里的类别（如额度冷却）不顶班
+            if not self._healthy_extra(account, model, now_ms):
+                # 模型级冷却（11102 负缓存 / 6004 模型限流）也拦：顶班等于明知这个号
+                # 不服务这个模型还发出去，必然白撞一次上游、再记一笔失败。拦下后
+                # pick 返回 None，provider 才能判成"模型不可用"（400 model_unavailable）
+                # 而不是"号全挂了"（429 + 换号重试）。
+                continue
             if self._below_floor_blocked(account, model):
                 continue  # 兜底是最后一道：保底在这里也要拦，否则触底号被"捞回来"
             if fallback is None or account.cooldown_until_ms < fallback.cooldown_until_ms:

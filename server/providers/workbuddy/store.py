@@ -16,17 +16,16 @@ from __future__ import annotations
 
 import json
 import re
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.logger import logger
 from providers.account_store import (
     STATUS_ACTIVE,
     STATUS_DISABLED,
     STATUS_PAUSED,
     AccountStore,
+    write_with_retry,
 )
 
 __all__ = [
@@ -62,12 +61,10 @@ CREATE TABLE IF NOT EXISTS accounts (
     breaker_until_ms     INTEGER NOT NULL DEFAULT 0,
     model_cooldowns      TEXT NOT NULL DEFAULT '{}',
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    -- 调度权重
+    -- 余额台账
     credits_total        REAL,
     credits_remain       REAL,
     credits_updated_ms   INTEGER NOT NULL DEFAULT 0,
-    used_seq             INTEGER NOT NULL DEFAULT 0,
-    idle_boost           REAL NOT NULL DEFAULT 0,
     -- 运行态备忘（统计由 requests 表按 account_uid 汇总，见 docs §7.2）
     last_error           TEXT NOT NULL DEFAULT '',
     -- 签到台账（last_checkin_day = 北京日期 YYYY-MM-DD，见 checkin.py）
@@ -104,7 +101,7 @@ _ACCOUNT_COLUMNS = (
     "device_token", "token_expires_ms", "status", "status_reason",
     "cooldown_until_ms", "cooldown_kind", "breaker_count", "breaker_until_ms",
     "model_cooldowns", "consecutive_failures", "credits_total", "credits_remain",
-    "credits_updated_ms", "used_seq", "idle_boost", "last_error",
+    "credits_updated_ms", "last_error",
     "last_checkin_day", "checkin_streak", "checkin_total_credits", "checkin_updated_ms",
     "credits_expiring", "credits_earliest_at_ms", "credits_earliest_remaining",
     "created_ms", "updated_ms",
@@ -114,15 +111,11 @@ _ACCOUNT_COLUMNS = (
 _RUNTIME_FIELDS = frozenset({
     "cooldown_until_ms", "cooldown_kind", "breaker_count", "breaker_until_ms",
     "model_cooldowns", "consecutive_failures", "credits_total", "credits_remain",
-    "credits_updated_ms", "used_seq", "idle_boost", "last_error",
+    "credits_updated_ms", "last_error",
     "last_checkin_day", "checkin_streak", "checkin_total_credits", "checkin_updated_ms",
     "credits_expiring", "credits_earliest_at_ms", "credits_earliest_remaining",
     "status", "status_reason",
 })
-
-
-def valid_uid(uid: str) -> bool:
-    return isinstance(uid, str) and bool(_UID_RE.match(uid))
 
 
 @dataclass
@@ -148,8 +141,6 @@ class Account:
     credits_total: float | None = None
     credits_remain: float | None = None
     credits_updated_ms: int = 0
-    used_seq: int = 0
-    idle_boost: float = 0.0
     last_error: str = ""
     last_checkin_day: str = ""
     checkin_streak: int = 0
@@ -196,8 +187,6 @@ class Account:
             "credits_total": self.credits_total,
             "credits_remain": self.credits_remain,
             "credits_updated_ms": self.credits_updated_ms,
-            "used_seq": self.used_seq,
-            "idle_boost": self.idle_boost,
             "last_error": self.last_error,
             "last_checkin_day": self.last_checkin_day,
             "checkin_streak": self.checkin_streak,
@@ -251,8 +240,6 @@ class WorkBuddyStore(AccountStore):
             credits_total=data.get("credits_total"),
             credits_remain=data.get("credits_remain"),
             credits_updated_ms=int(data.get("credits_updated_ms") or 0),
-            used_seq=int(data.get("used_seq") or 0),
-            idle_boost=float(data.get("idle_boost") or 0.0),
             last_error=data.get("last_error") or "",
             last_checkin_day=data.get("last_checkin_day") or "",
             checkin_streak=int(data.get("checkin_streak") or 0),
@@ -267,7 +254,11 @@ class WorkBuddyStore(AccountStore):
 
     def update_tokens(self, uid: str, access_token: str, refresh_token: str,
                       expires_ms: int, domain: str = "") -> None:
-        """refresh 成功后的凭据写回（单事务原子）。"""
+        """refresh 成功后的凭据写回（单事务原子）。
+
+        走 write_with_retry：RT 已经在上游轮换过，这一笔写丢了库里就只剩废票
+        （与 codex 同口径，见 providers/account_store.write_with_retry）。
+        """
         now_ms = int(time.time() * 1000)
         sets: list[str] = ["access_token = ?", "token_expires_ms = ?", "updated_ms = ?"]
         values: list[Any] = [access_token, expires_ms, now_ms]
@@ -278,17 +269,18 @@ class WorkBuddyStore(AccountStore):
             sets.append("realm = ?")
             values.append("global" if domain.lower().endswith("workbuddy.ai") else "cn")
         values.append(uid)
-        self._write(f"UPDATE accounts SET {', '.join(sets)} WHERE uid = ?", tuple(values))
+        write_with_retry(
+            lambda: self._write(
+                f"UPDATE accounts SET {', '.join(sets)} WHERE uid = ?", tuple(values)
+            )
+        )
 
 
-_default_store: WorkBuddyStore | None = None
-_default_lock = threading.Lock()
+def valid_uid(uid: str) -> bool:
+    """uid 白名单校验（口径 = WorkBuddyStore.uid_re，实现见 account_store 基类）。"""
+    return WorkBuddyStore.valid_uid(uid)
 
 
 def default_store() -> WorkBuddyStore:
-    global _default_store
-    with _default_lock:
-        if _default_store is None:
-            _default_store = WorkBuddyStore()
-            logger.info(f"[workbuddy] 账号库就绪 path={_default_store._path}")
-        return _default_store
+    """进程内单例（面板与 provider 共用一条连接）。"""
+    return WorkBuddyStore.default()

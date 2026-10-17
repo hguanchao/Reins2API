@@ -28,8 +28,7 @@ def first_non_zero(*values: float) -> float:
 
 
 def parse_json_or_string(value: str) -> Any:
-    import json
-
+    """空串 → {}，合法 JSON → 解析值，坏 JSON → 原字符串。"""
     if value == "":
         return {}
     try:
@@ -159,6 +158,21 @@ def sanitize_surrogates(value: Any) -> Any:
             for key, item in value.items()
         }
     return value
+
+
+def close_quietly(target: Any) -> None:
+    """关掉上游连接/迭代器，失败静默。
+
+    释放失败绝不能盖住调用栈上真正的错误（客户端断连、上游截断），也不该让
+    "提前收工"这条路抛异常——所以这里吞掉一切。
+    """
+    close = getattr(target, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        pass
 
 
 def encode_json_body(value: Any) -> bytes:

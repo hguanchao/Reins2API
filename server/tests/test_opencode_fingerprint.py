@@ -37,6 +37,7 @@ def _ids() -> RequestIDs:
         session=identity.canonical_session_id("t"),
         request="msg_deadbeef",
         project=identity.opencode_project_id("global"),
+        client="cli_fp001",
     )
 
 
@@ -392,8 +393,9 @@ def test_shape_adds_official_responses_defaults():
     assert "store" not in chat and "include" not in chat
 
 
-def test_responses_send_injects_session_cache_key():
-    """responses 出站补会话级 prompt_cache_key；chat 不补；客户端自带键不覆盖。"""
+def test_responses_send_injects_client_cache_key():
+    """responses 出站补客户端级 prompt_cache_key（跨会话共享前缀缓存）；
+    chat 不补；客户端自带键不覆盖。"""
     captured: dict[str, bytes] = {}
     original = upstream.crequests.post
 
@@ -410,7 +412,7 @@ def test_responses_send_injects_session_cache_key():
         ids = _ids()
         body = json.dumps({"model": "muse", "input": []}).encode()
         upstream.send_upstream(PROTOCOL_RESPONSES, body, ids, stream=True)
-        assert json.loads(captured["data"])["prompt_cache_key"] == ids.session
+        assert json.loads(captured["data"])["prompt_cache_key"] == ids.client
         # chat 协议不注入（官方 opencode chat 路线没有 supportsPromptCacheKey）
         upstream.send_upstream(PROTOCOL_CHAT, body, ids, stream=True)
         assert "prompt_cache_key" not in json.loads(captured["data"])

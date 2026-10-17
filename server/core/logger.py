@@ -4,7 +4,7 @@
 每天午夜滚动为 yyyy-mm-dd.log（北京时间），保留 30 天。
 日志时间统一为北京时间（UTC+8），与数据库遥测时间戳一致。
 
-进程级 stdout/stderr 由启动脚本丢进空设备（见 start.ps1/start.sh）——
+进程级 stdout/stderr 由启动脚本丢进空设备（见 server/scripts/start.py）——
 server.log 是唯一日志落点，不另开 serve.err/serve.out。
 
 msg 文案规范（全仓库 logger 调用统一遵守）:
@@ -24,15 +24,15 @@ msg 文案规范（全仓库 logger 调用统一遵守）:
 import os
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import loguru._logger as _loguru_logger
 from loguru import logger
 from loguru._datetime import datetime as _loguru_datetime
 
+from core.settings import BEIJING_TZ as _BEIJING_TZ
 from core.settings import LOG_DIR
 
-_BEIJING_TZ = timezone(timedelta(hours=8))
 _DATED_LOG = re.compile(r"^(\d{4}-\d{2}-\d{2})\.log$")
 _LOGURU_STAMP = re.compile(
     r"^server\.(\d{4}-\d{2}-\d{2})_\d{2}-\d{2}-\d{2}_\d+\.log$"
@@ -102,10 +102,16 @@ logger.add(
     colorize=True,
 )
 
+# 文件行格式被 core/console_view.py 按固定形状解析（控制台请求流水）——改这里要同步改它：
+#   {时间(含毫秒)} | {级别:<8} | {模块:函数:行} - [域] 事件短语 key=value
+# 两侧的耦合由 tests/test_console_view.py::test_file_format_parses 钉住（格式一漂移就红）。
+FILE_LINE_FORMAT = (
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
+)
 logger.add(
     os.path.join(LOG_DIR, "server.log"),
     level="TRACE",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+    format=FILE_LINE_FORMAT,
     rotation="00:00",
     compression=_archive_rotated,
     retention=_retain_dated,

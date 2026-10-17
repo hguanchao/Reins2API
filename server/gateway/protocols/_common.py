@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from gateway.base import random_id
-from gateway.bridge.stop import is_tool_stop
+from gateway.bridge.stop import guard_phantom_tool_stop
 from gateway.errors import BridgeError
 from gateway.jsonutil import int_at, string_at
 from gateway.types import BridgeBlock, BridgeMessage, BridgeRequest, BridgeResponse
@@ -40,10 +40,8 @@ def prepare_response_for_encode(response: BridgeResponse) -> None:
     """
     if response.id == "":
         response.id = random_id("resp", 12)
-    if is_tool_stop(response.stop):
-        response.tools = usable_tool_blocks(response.tools)
-        if len(response.tools) == 0:
-            response.stop = "stop"
+    response.tools = usable_tool_blocks(response.tools)
+    response.stop = guard_phantom_tool_stop(response.stop, bool(response.tools))
 
 
 def usable_tool_blocks(tools: list[BridgeBlock]) -> list[BridgeBlock]:

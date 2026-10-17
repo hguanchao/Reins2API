@@ -10,8 +10,6 @@ import time
 from typing import Any
 from urllib.parse import quote
 
-from curl_cffi import requests as crequests
-
 from core.settings import (
     CODEX_BASE,
     CODEX_BETA_FEATURES,
@@ -22,6 +20,11 @@ from core.settings import (
     CODEX_TIMEOUT_TTFB,
     CODEX_USER_AGENT,
 )
+
+# crequests 指向出站会话复用层（每线程一条 keep-alive 连接，逐请求清 Cookie）：
+# 调用写法与 curl_cffi 顶层 API 同形，只是不再每次新建 Session。类型与异常
+# (RequestsError/Response) 在该模块内原样再导出。
+from net import outbound as crequests
 from net.proxy import proxies_for
 from providers.codex.store import Account
 

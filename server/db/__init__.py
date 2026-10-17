@@ -11,15 +11,14 @@ import sqlite3
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, fields
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from core.logger import logger
+from core.settings import BEIJING_TZ as _BEIJING_TZ
 from core.settings import DATA_DIR
 from db.schema import ACCOUNT_INDEX_SQL, ADDED_COLUMNS, DDL, LEGACY_INDEXES, RENAMED_COLUMNS
-
-_BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def beijing_now_ms() -> int:
@@ -225,13 +224,15 @@ class ProviderStore:
         where, values = request_where(status, model, account)
         column = _SORT_COLUMNS.get(sort or "time", _SORT_COLUMNS["time"])
         direction = "ASC" if not desc else "DESC"
+        # 主键本来就是 id：再叠一个 id 兜底会拼出 "ORDER BY id DESC, id DESC"。
+        tiebreak = "" if column == "id" else ", id DESC"
         try:
             with self._lock:
                 total = self._conn.execute(
                     f"SELECT COUNT(*) AS n FROM requests{where}", tuple(values)
                 ).fetchone()["n"]
                 rows = self._conn.execute(
-                    f"SELECT * FROM requests{where} ORDER BY {column} {direction}, id DESC"
+                    f"SELECT * FROM requests{where} ORDER BY {column} {direction}{tiebreak}"
                     " LIMIT ? OFFSET ?",
                     (*values, limit, offset),
                 ).fetchall()

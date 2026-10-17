@@ -6,11 +6,16 @@
 
 from __future__ import annotations
 
+from datetime import timedelta, timezone
 from pathlib import Path
 
 # server/ 根目录
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_DIR = BASE_DIR.parent
+
+# 全项目唯一时区口径：日志、遥测时间戳、签到结算、上游优惠判定一律北京时间。
+# 本机时区不参与任何计算——各模块从这里取，别再各自 timezone(timedelta(hours=8))。
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 # ── 网络 ──
 HOST = "127.0.0.1"
@@ -27,18 +32,22 @@ DATA_DIR = BASE_DIR / "data"                   # 分库遥测：data/<provider>.
 WEB_DIST_DIR = PROJECT_DIR / "web" / "dist"    # 前端构建产物（Vite 默认输出，SPA 托管）
 
 # ── OpenCode provider（单一 public 匿名凭证；免费档恒流式 + agent 工具集）──
-# 超时（秒）。curl_cffi 打流式请求时把 tuple 翻译成 CONNECTTIMEOUT=connect 与
-# LOW_SPEED（<1 B/s）上限 = connect+idle：静默到这个量级即掐流，不设总时长上限
-# （实测掐流点比其和还略晚，1.2~1.7 倍，所以这里是下限而非精确值）。
-# 这两个值**必须显式传**——不传时 curl_cffi 用它自带的默认 30/30，等于给免费档的
-# 长首字（实测 26k→48k 上下文的首字 2.4s~33.5s）和推理期静默设了条 30s 死线。
-OPENCODE_TIMEOUT_CONNECT = 15
-OPENCODE_TIMEOUT_IDLE = 300
 
 # 发送重试：单凭证没有换 key 这一路，但"响应头之前"的传输失败（出口线路会间歇性
-# 掐 TLS 握手，实测约 3/8 的新连接）重发是安全的——请求多半根本没送到上游。
-OPENCODE_TRANSPORT_ATTEMPTS = 2        # 发送次数上限（= 1 次重试）
-OPENCODE_TRANSPORT_BACKOFF_S = 0.4     # 重试前等待
+# 掐 TLS 握手）重发是安全的——请求多半根本没送到上游。这类失败是**成串**出现的
+# （2026-10-17 实测：同一分钟内 0/12 全被掐，几分钟后又 3/3 通），所以次数给足 +
+# 几何退避。判定依据是"响应头一个字节都没到"，不再按错误码白名单（见
+# opencode/upstream._is_retryable_transport）。
+OPENCODE_TRANSPORT_ATTEMPTS = 4        # 发送次数上限（= 至多 3 次重发）
+OPENCODE_TRANSPORT_BACKOFF_S = 0.3     # 首次重发前等待，之后逐次翻倍
+OPENCODE_TRANSPORT_BACKOFF_MAX_S = 2.0 # 单次等待上限（0.3/0.6/1.2/2.0…）
+
+# 流式"首包前"重发（网关层，全 provider 共用；见 gateway/stream/retry.py）：
+# 上游回了 2xx 但一个字节都没吐出来就断——下游还什么都没收到，重发零副作用。
+# 有字节吐给下游之后一律不重发：chat SSE 没有断点续传，重发等于让模型重新推理，
+# 客户端看到的就是"思考断掉又重新开始"。次数别给大：每次重发内部还有一轮发送重试。
+STREAM_RETRY_ATTEMPTS = 2              # 上游流尝试次数上限（= 至多 1 次重发）
+STREAM_RETRY_BACKOFF_S = 0.5           # 首包前重发的等待
 
 # ── WorkBuddy provider（写死参数，取舍依据见 docs/workbuddy-provider-design.md §9.2）──
 WB_ENABLED = True
@@ -67,12 +76,13 @@ WB_STICKY_ENABLED = True       # 会话粘性（ses_ → uid）
 WB_STICKY_TTL_S = 1800         # 粘性 TTL（滚动续期）
 WB_STICKY_GC_S = 300           # 粘性惰性 GC 周期
 
-# 冷却（秒）。HARDCOOLDOWN_HOUR：402 硬冷却至次日 04:00（北京时间，等签到回血）
+# 冷却（秒）
 WB_COOLDOWN_SOFT_BASE = 600    # 429/6004 软冷却基数，×2 指数
 WB_COOLDOWN_SOFT_MAX = 7200
 WB_COOLDOWN_404 = 60
 WB_COOLDOWN_WAF = 600
-WB_HARDCOOLDOWN_HOUR = 4
+# 402 的硬冷却不在这里：它冷却到"次日 04:00"（等签到回血），到期时刻由
+# providers/workbuddy/classify.hard_cooldown_until_ms 按北京时间算出。
 
 # 熔断与禁用
 WB_BREAKER_THRESHOLD = 3       # 连续失败次数
@@ -84,7 +94,6 @@ WB_SESSION_INVALID_LIMIT = 3   # refresh 后仍 session 失效的连续次数 �
 WB_IDLE_BOOST_PER_HOUR = 0.5   # 闲置补偿/小时
 WB_IDLE_BOOST_MAX = 5.0
 WB_CREDIT_FLOOR = 0            # credits_remain ≤ 该值不再派号（仅收费模型）；0 = 关闭
-WB_CREDITS_REFRESH_MIN = 30    # 余额刷新周期（分钟）
 # 11102「该后端无此模型」的 (uid,model) 负缓存：基础 6h，重复命中指数退避（×2^n），
 # 封顶 24h。11102 是账号-模型维度的**稳定属性**（不是瞬时故障），短 TTL 只会让同一个
 # 不可用的组合被反复重试（每次白打一遍上游再被拒）。

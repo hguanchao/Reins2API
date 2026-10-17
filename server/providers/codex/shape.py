@@ -4,7 +4,7 @@
   1. `instructions` 必须存在（缺省置 ""）；
   2. 不接受 `previous_response_id` / `prompt_cache_retention` / `safety_identifier` /
      `disable_response_storage` / 顶层 `type`——一律删除；
-  3. `prompt_cache_key` 用会话 id（会话级前缀缓存亲和）；
+  3. `prompt_cache_key` 用客户端键（跨会话的前缀缓存亲和，见 provider.send 注入处）；
   4. `store=false`（本网关不落上游侧存储），且恒 `stream=true`（上游 SSE 是常态，
      非流式客户端由网关 collapse_stream 折叠）。
 
@@ -31,8 +31,9 @@ _STRIP_FIELDS = (
 )
 
 
-def shape_codex_body(body: dict[str, Any], session_id: str) -> bool:
-    """就地归一，返回是否发生改动。"""
+def shape_codex_body(body: dict[str, Any], cache_key: str) -> bool:
+    """就地归一，返回是否发生改动。cache_key = 客户端键（见 identity.client_cache_key），
+    只在调用方已知 ids 时注入（provider.send 的轮换循环里）；shaped 早退路径传 ""。"""
     changed = False
     if "instructions" not in body:
         body["instructions"] = ""
@@ -41,8 +42,8 @@ def shape_codex_body(body: dict[str, Any], session_id: str) -> bool:
         if key in body:
             body.pop(key, None)
             changed = True
-    if session_id and body.get("prompt_cache_key") != session_id:
-        body["prompt_cache_key"] = session_id
+    if cache_key and body.get("prompt_cache_key") != cache_key:
+        body["prompt_cache_key"] = cache_key
         changed = True
     if body.get("store") is not False:
         body["store"] = False

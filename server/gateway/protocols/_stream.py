@@ -16,11 +16,16 @@ from typing import Any
 
 from gateway.base import random_id
 from gateway.bridge.reasoning import anthropic_redacted_thinking_placeholder
-from gateway.bridge.stop import ERROR_STOPS, is_tool_stop
+from gateway.bridge.stop import ERROR_STOPS, guard_phantom_tool_stop
 from gateway.jsonutil import first_non_empty, is_object, string_at
 from gateway.stream.errors import UpstreamStreamFailure
 from gateway.stream.sse import StreamSink
 from gateway.types import BridgeStreamEvent, Usage, merge_bridge_usage
+
+# parser 在没有 index 也没有 id 的 tool delta 上用空串当键（同一工具的连续 delta
+# 共用这一个键）；发射器必须映射到同一个稳定键，否则每个 delta 都会开出新工具块
+# ——与 collapse 的合并口径不一致（同一份流，流式与非流式结果不同）。
+_ANONYMOUS_TOOL_KEY = "__anonymous__"
 
 # 需要先补发起始握手的实质事件（start 本身不含下游动作）。
 _START_KINDS = (
@@ -32,7 +37,6 @@ _START_KINDS = (
 class EmitterTool:
     """一个下游工具调用的累积状态（对照 TS 的 EmitterTool 接口）。"""
 
-    key: str = ""
     id: str = ""
     item_id: str = ""
     name: str = ""
@@ -164,12 +168,11 @@ class StreamEmitterBase:
     # ── 共享累积与发射编排 ──
 
     def _tool(self, key: str) -> EmitterTool:
-        resolved = key if key != "" else f"tool-{len(self.order)}"
+        resolved = key if key != "" else _ANONYMOUS_TOOL_KEY
         existing = self.tools.get(resolved)
         if existing is not None:
             return existing
         tool = EmitterTool(
-            key=resolved,
             id=random_id("call", 12),
             item_id=random_id("fc", 12),
             index=len(self.order),
@@ -249,10 +252,8 @@ class StreamEmitterBase:
             self.start()
         if self.stop == "":
             self.stop = "tool_calls" if self.order else "stop"
-        if is_tool_stop(self.stop) and not self._any_tool_started():
-            # 与 encodeBridgeResponse 同款的幻影工具守卫：tool_use 停止原因配零个
-            # 工具内容块会让严格客户端无声地结束回合。
-            self.stop = "stop"
+        # 与编码路径（_common.prepare_response_for_encode）同一个幻影工具守卫。
+        self.stop = guard_phantom_tool_stop(self.stop, self._any_tool_started())
         self._finish_reasoning()
         self._finish_frames()
 

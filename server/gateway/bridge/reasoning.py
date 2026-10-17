@@ -212,23 +212,30 @@ def numeric_value(value: Any) -> NumericValue:
     return NumericValue(0, False)
 
 
-def budget_for_effort(value: Any) -> int:
-    """effort_forThinkingBudget 的逆：映射回同一档位的最小下界预算。
+# 档位 ↔ 预算：一张表两个方向，避免两套边界各自漂移。
+# (档位, 分桶下界, 该档代表预算)——分桶与代表值是两回事：medium 覆盖 (2048, 8192)，
+# 而"medium 该给多少预算"取 4096。顺序按分桶下界降序，取首个满足 budget >= 下界的档。
+_EFFORT_TIERS: tuple[tuple[str, int, int], ...] = (
+    ("max", 32768, 32768),
+    ("xhigh", 16384, 16384),
+    ("high", 8192, 8192),
+    ("medium", 2049, 4096),
+    ("low", 1, 1024),
+)
 
-    只有 "high" 及以上需要真实数字——Anthropic 要求 budget_tokens 至少 1024，
-    而区间顶部的预算本身就等于 "max"。
+
+def budget_for_effort(value: Any) -> int:
+    """effort_for_thinking_budget 的逆：映射回同一档位的代表预算。
+
+    只有 "high" 及以上需要真实数字——Anthropic 要求 budget_tokens 至少 1024。
+    minimal 视作 low；未知档位按 medium 的代表值（历史行为）。
     """
     text = value.strip().lower() if isinstance(value, str) else ""
-    if text in ("minimal", "low"):
-        return 1024
-    if text == "medium":
-        return 4096
-    if text == "high":
-        return 8192
-    if text == "xhigh":
-        return 16384
-    if text == "max":
-        return 32768
+    if text == "minimal":
+        text = "low"
+    for effort, _floor, budget in _EFFORT_TIERS:
+        if effort == text:
+            return budget
     return 4096
 
 
@@ -240,12 +247,7 @@ def effort_for_thinking_budget(budget: int) -> str:
     """
     if budget <= 0:
         return "high"
-    if budget >= 32768:
-        return "max"
-    if budget >= 16384:
-        return "xhigh"
-    if budget >= 8192:
-        return "high"
-    if budget > 2048:
-        return "medium"
+    for effort, floor, _budget in _EFFORT_TIERS:
+        if budget >= floor:
+            return effort
     return "low"

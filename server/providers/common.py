@@ -13,10 +13,12 @@ import，凡是两家以上共用的逻辑都必须上提到共享层。这里�
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Protocol
 
-BEIJING_TZ = timezone(timedelta(hours=8))
+# 时区口径的唯一出处是 core.settings；这里转出是为了让 provider 只依赖 providers/ 自身
+# （providers.common.BEIJING_TZ 沿用原名，各 provider 的 import 不必改）。
+from core.settings import BEIJING_TZ as BEIJING_TZ  # noqa: PLC0414
 
 _RETRY_AFTER_HEADERS = ("retry-after", "retry-after-ms", "x-ratelimit-reset")
 _RETRY_AFTER_SANITY_S = 2 * 3600  # 超过视为上游异常值丢弃（与软冷却封顶同量级）
@@ -33,6 +35,11 @@ def stamp(ms: int) -> str | None:
     if not ms:
         return None
     return datetime.fromtimestamp(ms / 1000, BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def stamp_now() -> str:
+    """此刻的北京时间字符串（与 stamp 同格式）；目录 refreshed_at 等"本次刷新时刻"用。"""
+    return datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def refresh_result(

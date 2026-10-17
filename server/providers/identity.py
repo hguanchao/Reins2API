@@ -49,7 +49,7 @@ _seq_ms = 0
 _seq_ctr = 0
 
 
-def _gen_suffix(desc: bool) -> str:
+def _gen_suffix() -> str:
     """26 字符：12 位时间戳 hex + 14 位 base62 随机。"""
     global _seq_ms, _seq_ctr
     with _seq_lock:
@@ -61,9 +61,6 @@ def _gen_suffix(desc: bool) -> str:
         _seq_ms = ms
         ctr = _seq_ctr
     value = ms * 0x1000 + ctr
-    if desc:
-        # 与 JS BigInt 的 ~ 同义（-v-1）；负值右移取字节靠算术移位，Python 一致。
-        value = ~value
     stamp = "".join(f"{(value >> (40 - 8 * i)) & 0xFF:02x}" for i in range(6))
     return stamp + "".join(_BASE62[b % 62] for b in secrets.token_bytes(14))
 
@@ -201,8 +198,23 @@ def _content_text(content: list) -> str:
     return "\n".join(parts)
 
 
-def derive_request_ids(headers: dict[str, str], body: dict) -> RequestIDs:
-    """session 每会话一个、request 每请求一个。"""
+def client_cache_key(client_ip: str, user_agent: str) -> str:
+    """客户端稳定键：prompt_cache_key 的粒度就是上游前缀缓存的共享面。
+
+    按"客户端"聚合而不是按会话：同一客户端的所有会话共享一个缓存命名空间，
+    会话头部的静态前缀（system + tools，约 2 万 token）跨会话命中——新会话的
+    第一发不再全量 prefill（实测 +1.7~2.7s）。材料用 ip+UA：同装同网的同一
+    客户端恒定不变，不同客户端互不干扰。IP 中途变换（移动切点）会让键漂移、
+    后续轮次丢命中——这是相对"会话键"唯一的倒退面，桌面固定网下几乎不发生。
+    """
+    material = f"{client_ip.strip()}|{user_agent.strip()}"
+    return "cli_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
+
+
+def derive_request_ids(
+    headers: dict[str, str], body: dict, client_ip: str = ""
+) -> RequestIDs:
+    """session 每会话一个、request 每请求一个、client 每客户端一个。"""
     client_session = first_string(
         header_value(headers, "x-opencode-session"),
         header_value(headers, "x-opencode-session-id"),
@@ -216,7 +228,7 @@ def derive_request_ids(headers: dict[str, str], body: dict) -> RequestIDs:
     )
     return RequestIDs(
         session=session,
-        request=f"msg_{_gen_suffix(False)}",
+        request=f"msg_{_gen_suffix()}",
         project=opencode_project_id("global"),
         parent_session=_parent_session_for(
             first_string(
@@ -227,6 +239,7 @@ def derive_request_ids(headers: dict[str, str], body: dict) -> RequestIDs:
                 string_at(body, "metadata", "parent_session_id"),
             )
         ),
+        client=client_cache_key(client_ip, header_value(headers, "user-agent")),
     )
 
 

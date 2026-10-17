@@ -13,10 +13,15 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator
 from typing import Protocol, runtime_checkable
 
-from gateway.stream.errors import SseUnexpectedEof
+from gateway.jsonutil import close_quietly
+from gateway.stream.errors import SseBufferOverflow, SseUnexpectedEof
 
 # 处理器签名：(eventName, data)。data 已把多行 data: 用 \n 拼好，可能是 "[DONE]"。
 SseHandler = Callable[[str, str], None]
+
+# 单条记录的字节上限：超过即认定上游坏了（不再无限攒缓冲）。取值远高于任何真实
+# 事件（最大的是一条塞满上下文的 response.completed 帧），与请求体上限同量级。
+MAX_RECORD_BYTES = 32 * 1024 * 1024
 
 
 @runtime_checkable
@@ -50,15 +55,24 @@ class SseLineDecoder:
     def push(self, chunk: bytes) -> None:
         self._buffer += chunk
         # 状态机主循环：只消费以 \n 结尾的完整行，剩下的半行留在缓冲里等下一块。
+        # 游标前进 + 收尾一次切片：逐行 `buffer = buffer[i+1:]` 是 O(n²)（大块多行
+        # 时每行都拷一遍剩余缓冲）。
+        start = 0
         while True:
-            index = self._buffer.find(b"\n")
+            index = self._buffer.find(b"\n", start)
             if index < 0:
                 break
-            line = self._buffer[:index]
-            self._buffer = self._buffer[index + 1 :]
+            line = self._buffer[start:index]
+            start = index + 1
             if line.endswith(b"\r"):
                 line = line[:-1]
             self._consume_line(_decode(line))
+        if start:
+            self._buffer = self._buffer[start:]
+        if len(self._buffer) > MAX_RECORD_BYTES:
+            raise SseBufferOverflow(
+                f"upstream SSE record exceeds {MAX_RECORD_BYTES // (1024 * 1024)}MB"
+            )
 
     # end processes a trailing line that arrived without a newline, then reports
     # an unterminated record as a truncated stream.
@@ -114,14 +128,22 @@ class SseFrameSplitter:
 
     def push(self, chunk: bytes) -> None:
         self._buffer += chunk
+        # 与 SseLineDecoder.push 同一套游标写法（避免逐帧重切缓冲区的 O(n²) 拷贝）。
+        start = 0
         while True:
-            boundary = _next_frame_boundary(self._buffer)
+            boundary = _next_frame_boundary(self._buffer, start)
             if boundary is None:
                 break
             index, width = boundary
-            frame = self._buffer[: index + width]
-            self._buffer = self._buffer[index + width :]
-            self._consume_frame(frame)
+            # 帧含尾部分隔符交给解码器：空行才是记录的结束信号。
+            self._consume_frame(self._buffer[start : index + width])
+            start = index + width
+        if start:
+            self._buffer = self._buffer[start:]
+        if len(self._buffer) > MAX_RECORD_BYTES:
+            raise SseBufferOverflow(
+                f"upstream SSE frame exceeds {MAX_RECORD_BYTES // (1024 * 1024)}MB"
+            )
 
     # end drops a trailing partial frame: an unterminated record is not a frame.
     def end(self) -> None:
@@ -134,10 +156,13 @@ class SseFrameSplitter:
         decoder.end()
 
 
-def _next_frame_boundary(data: bytes) -> tuple[int, int] | None:
-    """在字节层找帧边界：返回 (下标, 分隔符宽度)；没有完整帧返回 None。"""
-    lf = data.find(b"\n\n")
-    crlf = data.find(b"\r\n\r\n")
+def _next_frame_boundary(data: bytes, start: int = 0) -> tuple[int, int] | None:
+    """在字节层找帧边界：返回 (分隔符起始下标, 分隔符宽度)；没有完整帧返回 None。
+
+    从 start 起找，返回的是**绝对**下标——调用方按游标前进，不做缓冲区切片。
+    """
+    lf = data.find(b"\n\n", start)
+    crlf = data.find(b"\r\n\r\n", start)
     if lf < 0:
         return (crlf, 4) if crlf >= 0 else None
     if crlf >= 0 and crlf < lf:
@@ -173,10 +198,4 @@ def read_sse(chunks: Iterable[bytes], handler: SseHandler) -> None:
 
 def close_iterator(iterator: Iterator[bytes]) -> None:
     """等价于 TS 的 reader.cancel()：释放上游连接（异常路径上尤其重要）。"""
-    close = getattr(iterator, "close", None)
-    if callable(close):
-        try:
-            close()
-        except Exception:
-            # The upstream connection may already be gone; nothing to release.
-            pass
+    close_quietly(iterator)

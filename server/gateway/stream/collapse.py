@@ -95,10 +95,11 @@ class _CollapseAccumulator:
                 return
             self.reasoning_block().text += text
             if encrypted != "":
-                # 线上来了一个新 item：上一个 block 已经完成，密文另起一块。
-                self.reason = None
+                # 线上来了一个新 item：密文另起一块、且随即封口——后面的 reasoning
+                # 文本不该续进密文块。
+                self._seal_reasoning()
                 self.reasoning_block().encrypted += encrypted
-                self.reason = None
+                self._seal_reasoning()
             return
         if kind == "reasoning_signature":
             self.reasoning_block().signature += event.signature or ""
@@ -120,6 +121,10 @@ class _CollapseAccumulator:
             self.response.stop = event.stop or ""
             return
         # 'error' / 'done' 到不了这里（handler 先拦截），其余 kind 忽略。
+
+    def _seal_reasoning(self) -> None:
+        """封掉当前 reasoning 块：下一次 reasoning_block() 另起一块。"""
+        self.reason = None
 
     def reasoning_block(self) -> BridgeBlock:
         if self.reason is None:

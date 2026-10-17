@@ -20,6 +20,18 @@ def is_tool_stop(stop: str) -> bool:
     return stop in ("tool_calls", "tool_use", "function_call")
 
 
+def guard_phantom_tool_stop(stop: str, has_tool_content: bool) -> str:
+    """幻影工具守卫：承诺了工具调用却没有任何可用工具内容 → 降级成普通 stop。
+
+    "tool_use/停止原因 + 零个工具块"会让严格客户端**什么都不执行地结束回合且不报错**
+    （回合静默蒸发）。编码路径按"有没有名字非空的工具块"判内容，流式路径按"有没有
+    真的开过工具块"判——判据不同，规则同一份。
+    """
+    if is_tool_stop(stop) and not has_tool_content:
+        return "stop"
+    return stop
+
+
 def chat_stop(stop: str) -> str:
     if stop in ("tool_use", "tool_calls"):
         return "tool_calls"

@@ -12,11 +12,9 @@ collapse_stream 折叠。
 from __future__ import annotations
 
 import json
-import random
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 from curl_cffi import requests as crequests
@@ -46,6 +44,7 @@ from gateway.base import (
     UpstreamUnavailable,
 )
 from providers import models_dev, models_snapshot, profiles
+from providers.account_runtime import AccountRuntime
 from providers.capabilities import capability_block
 from providers.codex import classify, oauth, quota, shape
 from providers.codex import upstream as cx_upstream
@@ -58,7 +57,7 @@ from providers.codex.store import (
     default_store,
     write_with_retry,
 )
-from providers.common import BEIJING_TZ, RawBytes, refresh_result, stamp
+from providers.common import RawBytes, refresh_result, stamp, stamp_now
 from providers.identity import derive_request_ids
 
 # 请求路径等刷新锁的上限（秒）：另一个刷新在途时最多等这么久，超时按失败处理
@@ -125,19 +124,21 @@ def _core_entry(entry: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-class CodexProvider:
+class CodexProvider(AccountRuntime):
     name = "codex"
     upstream_url = CODEX_BASE
+    # 熔断与退避（语义见 providers/account_runtime.py）
+    breaker_threshold = CODEX_BREAKER_THRESHOLD
+    breaker_base_s = CODEX_BREAKER_BASE_S
+    breaker_max_s = CODEX_BREAKER_MAX_S
+    backoff_base_s = CODEX_BACKOFF_BASE_S
 
     def __init__(self, store: CodexStore | None = None):
         self._store = store or default_store()
         self._pool = Pool(self._store)
         self._lock = threading.Lock()
         self._catalog = _Catalog()
-        # 按账号串行化 token 刷新：refresh_token 会轮换（上游可能换发新 RT），
-        # 「请求路径按需刷」与「后台巡检」并发刷同一个号会造成 RT 双花。
-        self._refresh_locks: dict[str, threading.Lock] = {}
-        self._refresh_locks_guard = threading.Lock()
+        self._init_runtime()  # 刷新串行化（RT 轮换不能双花）
         # x-codex-turn-state：上游下发的粘性路由令牌，按「账号 × 会话」回显（官方
         # 客户端同款：会话级持有、换账号即重置，见 _note_turn_state 的注释）。
         # 纯进程内缓存——重启后重新捕获，最多丢一次粘性，无副作用。
@@ -203,7 +204,7 @@ class CodexProvider:
         with self._lock:
             self._catalog = _Catalog(
                 models=merged,
-                refreshed_at=datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                refreshed_at=stamp_now(),
                 cached_at_ms=int(models_snapshot.read_meta("codex").get("updated_at_ms") or 0),
             )
         detail = []
@@ -355,12 +356,14 @@ class CodexProvider:
 
     # ── 请求 ──
 
-    def derive_ids(self, headers: dict[str, str], body: dict[str, Any]) -> RequestIDs:
-        return derive_request_ids(headers, body)
+    def derive_ids(
+        self, headers: dict[str, str], body: dict[str, Any], client_ip: str = ""
+    ) -> RequestIDs:
+        return derive_request_ids(headers, body, client_ip)
 
     def shape(self, body: dict[str, Any], protocol: str) -> tuple[dict[str, Any], bool]:
-        # 会话相关的 prompt_cache_key 不在这里注入（shape 阶段还不知道会话）——
-        # 放在 send() 里用 ids.session 注入，与出站 session 头保持同一个值。
+        # 会话相关的 prompt_cache_key 不在这里注入（shape 阶段还不知道客户端键）——
+        # 放在 send() 里用 ids.client 注入：客户端稳定键，静态前缀跨会话共享。
         return body, shape.shape_codex_body(body, "")
 
     def send(
@@ -397,9 +400,11 @@ class CodexProvider:
                 continue
             try:
                 account = self._maybe_refresh(account)
-                # prompt_cache_key 用会话 id（与出站 session 头同值）：缓存按会话隔离。
-                if body_dict.get("prompt_cache_key") != session_id:
-                    body_dict["prompt_cache_key"] = session_id
+                # prompt_cache_key 用客户端键（ids.client，跨会话不变）：同一客户端的
+                # 所有会话共享同一段静态前缀缓存，新会话第一发不再全量冷启。
+                # 会话粘性仍由出站 session 头保证，与此互不影响。
+                if body_dict.get("prompt_cache_key") != ids.client:
+                    body_dict["prompt_cache_key"] = ids.client
                     body_dirty = True
                 attempt_body = (
                     json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
@@ -416,7 +421,6 @@ class CodexProvider:
                 except crequests.RequestsError as exc:
                     logger.warning(f"[codex] uid={account.uid[:8]}… 传输失败: {exc}")
                     self._feed_breaker(account)
-                    self._bump_used_seq(account)
                     attempts += 1
                     exclude.add(account.uid)
                     self._pool.unbind_sticky(session_id)
@@ -450,7 +454,6 @@ class CodexProvider:
                     f"{classify.error_message(text)[:160]}"
                 )
                 self._penalize(account, classified, text)
-                self._bump_used_seq(account)
                 last_error = UpstreamResponse(
                     status=status, headers=dict(response.headers), raw=RawBytes(raw),
                     account=account.uid,
@@ -481,17 +484,6 @@ class CodexProvider:
         raise UpstreamUnavailable("codex: rotation budget exhausted")
 
     # ── 记账与罚号 ──
-
-    def _bump_used_seq(self, account: Account) -> None:
-        self._store.update_runtime(account.uid, used_seq=self._store.next_used_seq())
-
-    def _sleep_backoff(self, attempts: int) -> None:
-        time.sleep(CODEX_BACKOFF_BASE_S * attempts + random.uniform(0, 0.25))
-
-    def _note_success(self, account: Account) -> None:
-        self._store.update_runtime(
-            account.uid, breaker_count=0, breaker_until_ms=0, consecutive_failures=0
-        )
 
     def _note_rate_limit(self, account: Account, headers: dict[str, str]) -> None:
         """把上游响应头里的限流窗口快照落库（额度列与容量估算的数据源）。
@@ -737,29 +729,7 @@ class CodexProvider:
             return
         self._store.update_runtime(account.uid, **fields)
 
-    def _feed_breaker(self, account: Account, fields: dict[str, Any] | None = None) -> None:
-        now_ms = int(time.time() * 1000)
-        current = self._store.get_account(account.uid)
-        count = (current.breaker_count if current else account.breaker_count) + 1
-        updates: dict[str, Any] = {"breaker_count": count}
-        if count >= CODEX_BREAKER_THRESHOLD:
-            over = count - CODEX_BREAKER_THRESHOLD
-            duration_s = min(CODEX_BREAKER_BASE_S * (2 ** over), CODEX_BREAKER_MAX_S)
-            updates["breaker_until_ms"] = now_ms + int(duration_s * 1000)
-        if fields is not None:
-            fields.update(updates)
-            return
-        self._store.update_runtime(account.uid, **updates)
-
     # ── token 刷新 ──
-
-    def _refresh_lock(self, uid: str) -> threading.Lock:
-        with self._refresh_locks_guard:
-            lock = self._refresh_locks.get(uid)
-            if lock is None:
-                lock = threading.Lock()
-                self._refresh_locks[uid] = lock
-            return lock
 
     def _maybe_refresh(self, account: Account) -> Account:
         """请求路径：到期前主动刷新，返回**本次请求该用**的账号对象。
@@ -1085,14 +1055,6 @@ class CodexProvider:
             raise ValueError(f"未知动作: {action}")
         updated = self._store.get_account(uid)
         return updated.public_dict() if updated else {}
-
-    def revive_account(self, uid: str) -> bool:
-        """人工恢复：清禁用/冷却/熔断/连败。"""
-        self._store.update_runtime(
-            uid, status="active", status_reason="", cooldown_until_ms=0,
-            cooldown_kind="", breaker_count=0, breaker_until_ms=0, consecutive_failures=0,
-        )
-        return True
 
     def login_start(self) -> dict[str, Any]:
         return self._login.start()

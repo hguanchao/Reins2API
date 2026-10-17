@@ -51,8 +51,10 @@ class _Provider:
         return Route(provider=self.name, model=model, upstream_model=model,
                      protocol="chat", free=False)
 
-    def derive_ids(self, headers, body) -> RequestIDs:
-        return RequestIDs(session="ses_t", request="msg_t", project="prj_t")
+    def derive_ids(self, headers, body, client_ip="") -> RequestIDs:
+        return RequestIDs(
+            session="ses_t", request="msg_t", project="prj_t", client="cli_t"
+        )
 
     def shape(self, body, protocol):
         return body, False

@@ -15,13 +15,22 @@
 ## 接入
 
 ```bash
-# 起服务(默认 127.0.0.1:8787;四步:自动装 uv/Node → 清理端口 → 后台启动 → 健康检查)
-./start.sh                       # bash
-.\start.ps1                      # PowerShell(CMD 双击 start.bat)
+# 起服务(默认 127.0.0.1:8787;启动编排:自动装 uv/Node → uv sync → 前端按 mtime 决定是否构建
+#   → 清端口旧实例 → 后台启动 → /healthz 健康检查 → 把窗口移交给实时请求视图。
+#   编排唯一实现在 server/scripts/start.py,根目录 start.sh/start.bat 只是薄壳转发)
+./start.sh                       # bash / Git Bash
+start.bat                        # CMD(双击)
 ./start.sh 9000                  # 指定端口
 ./start.sh --rebuild             # 强制重建前端(默认:产物缺失或 web 源码更新时才构建)
-# 再次运行 = 重启(自动结束旧实例);停止 = 结束端口上的进程;日志在 server/logs/
-# 启动后窗口保持打开并滚动实时日志,直接关闭窗口不影响后台服务
+./start.sh --attach              # 不重启服务,只挂上控制台视图(看正在跑的服务)
+./start.sh --full                # 步骤原始输出全量转发(默认一行摘要,失败才展开尾部)
+./start.sh --no-follow           # 只启动 + 打印就绪信息即退出(脚本化/CI 用)
+# 再次运行 = 重启(自动结束旧实例);停止 = 结束端口上的进程;直接关窗口不影响后台服务
+# 窗口里是实时请求流水(受理/完成两行拼一条请求),只读跟随 server/logs/server.log：
+#   21:24:21.925  →  msg_14550702…  chat      oc:big-pickle        上游 opencode · 非流式 · 免费档 · 塑形
+#   21:24:43.365  ✓  msg_14550702…  chat      oc:big-pickle        200  21.44s · 首字 — · 1.4k↑ 16↓ · 缓存 1.4k
+# 持久化日志只追加、绝不清空：server.log 按日轮转到 YYYY-MM-DD.log(保留 30 天),视图关掉
+#   重开(--attach)也不动它;回看历史用 cd server && uv run python -m core.console_view --tail 200
 # 或前台手动运行
 cd server && uv sync && uv run python main.py --serve 9000
 
@@ -104,7 +113,7 @@ Web 管理台:构建前端后访问 `http://127.0.0.1:8787/`(SPA;根路径会 re
 ```
 server/
 ├── main.py              入口:注册 provider(opencode + workbuddy + codex) → 起服务
-├── core/                settings(写死值) / logger(北京时间滚动) / http_body / respond
+├── core/                settings(写死值) / logger(北京时间滚动) / console_view(控制台请求流水渲染) / http_body / respond
 ├── api/server.py        零框架分发层(限流 503/413/408/SPA 托管),路由 /v1 /api /healthz
 ├── gateway/             ★ 与上游无关的协议核心
 │   ├── types.py         Bridge 中间结构 + Usage
@@ -115,13 +124,15 @@ server/
 │   │   └── _stream.py   共享流式状态机(事件路由 + 累积);协议差异走子类钩子
 │   ├── bridge/          协议中立层:共享助手(content/reasoning/stop/usage…)+ 桥入口
 │   ├── stream/          SSE 读写(sse/errors) + 流式编排(forward/transcode/collapse/observer)
+│   │                     + 首包前重发(retry)
 │   ├── inference.py     编排:前缀路由→转换→塑形→上游→回译→遥测
 │   └── base.py          Provider 接口 + registry(插件轴,前缀路由)
 ├── providers/           共享层:identity(会话标识派生) / models_snapshot(上游目录快照)
 │                        / capabilities·parts·profiles(能力档案与出站附件归一)
 │                        / common(北京时间·刷新回报·错误体·retry-after)
-│                        / account_store·account_pool(两个号池 provider 的公共内核:
-│                          SQLite 管道 + 选号/租约/粘性;子类只声明列集与三处钩子)
+│                        / account_store·account_pool·account_runtime(两个号池 provider 的
+│                          公共内核:SQLite 管道 + 选号/租约/粘性 + 熔断/刷新锁/退避;
+│                          子类只声明列集、常量与钩子)
 ├── providers/opencode/  OpenCode Zen 接入:routing/discovery/upstream
 ├── providers/workbuddy/ WorkBuddy 号池接入:pool/store/classify/shape/dsml/streamwrap/upstream/login/checkin/growth/scheduler
 ├── providers/codex/     Codex 号池接入:pool/store/classify/shape/oauth/upstream/login
@@ -131,6 +142,19 @@ web/                     React 管理台(OpenCodePage / WorkBuddyPage / CodexPag
 ```
 
 依赖方向:`api → inference → registry → provider → bridge`。`gateway/` 永不 import `providers/*`。
+
+### 测试
+
+`server/tests/` 是**脚本式测试**(零测试框架,每个文件自己跑完自己汇总):
+`cd server && uv run python tests/test_xxx.py` 输出 `N/N passed`,退出码即结论;
+全量跑一遍:`for f in tests/test_*.py; do uv run python "$f"; done`。
+
+- `test_protocol_bridge.py` —— 3×3 方向的请求/响应/流转码**逐字节黄金快照**
+  (`tests/golden/protocol_bridge.json`)。桥层改动的安全网:输出与黄金文件不一致即红,
+  确认改动符合预期后用 `--regen` 重新生成。重构前先跑它,再改代码。
+- `test_sse_framing.py` —— SSE 半包处理(随机切块 × 两条解码路径的等价性)。
+- `test_api_dispatch.py` —— 管理面路由与信封形状(起真实 HTTP 服务打真实请求)。
+- 其余按 provider / 协议 / 子系统分文件;`upstream_evidence.md` 记上游实测结论。
 
 ## 已知取舍
 
@@ -142,7 +166,7 @@ web/                     React 管理台(OpenCodePage / WorkBuddyPage / CodexPag
 - 错误透传:上游 4xx(如限流 429、凭证 401)原样带回,客户端需能区分上游与本地错误(看 `error.type`)。
 - workbuddy 出站脱敏:上游内容审核按**逐字精确匹配**拦整单(400,`code 11128`)——会话里只要出现过 `You are Claude Code, Anthropic's official CLI for Claude` 这类模板句(客户端 system prompt 注入的,或工具结果里引用过参考实现源码),之后**每一轮**都被拒(历史每轮重发)。`providers/workbuddy/sanitize.py` 在出站前把这类指纹做最小改写(换一个词/整段删除 header 键值对),命中即改写并打一条 WARNING 日志。客户端自己的历史不受影响;只改发往上游的副本。
 - workbuddy 出站清理的另一类脏数据:历史里的 `tool_calls[].function.name` 为空/纯空白(流式响应在 name 分片到达前断掉时,客户端会把这个占位写进会话)。上游对它直接回 400 `11133 ... must be a non-empty string`,**带不带配对结果都会拒**——这类脏条目正好命中"按 id 对称裁剪"的保留条件,所以光靠孤儿清理挡不住,整条会话会每轮 400。`shape.py` 的清理层现在把空 name 的调用一并裁掉(判定收窄到「function 存在且 name 是空白串」,缺字段的占位不判脏)。
-- `prompt_cache_key` 缺 `conversation_id` 时回退**会话键**(Anthropic/Claude Code 流量不带对话 id):不回退的话 `conv` 为空串,该账号下所有请求会算出同一个常量键,前缀缓存互相驱逐、每轮都冷启动。
+- `prompt_cache_key` 缺 `conversation_id` 时回退**客户端键**(ip+UA 哈希,跨会话不变;Anthropic/Claude Code 流量不带对话 id):按会话隔离的话,每个新会话的第一发都要全量 prefill 整段静态前缀(system+tools 约 2 万 token,实测首字 +1.7~2.7s),这就是"新对话第一条慢"的主因;按客户端聚合则静态前缀跨会话命中,新会话的第一发直接热。键里仍串着账号 uid 做硬隔离(跨账号共用同键会让上游命中错账号的缓存)。代价:IP 中途变换会丢当轮命中——桌面固定网下几乎不发生,换来所有新会话的首发提速。
 
 ## 多模态与模型能力适配
 

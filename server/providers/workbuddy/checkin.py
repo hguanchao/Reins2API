@@ -24,11 +24,15 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
-from curl_cffi import requests as crequests
+from core.settings import BEIJING_TZ as _BEIJING_TZ
 
+# crequests 指向出站会话复用层（每线程一条 keep-alive 连接，逐请求清 Cookie）：
+# 调用写法与 curl_cffi 顶层 API 同形，只是不再每次新建 Session。类型与异常
+# (RequestsError/Response) 在该模块内原样再导出。
+from net import outbound as crequests
 from net.proxy import proxies_for
 from providers.workbuddy.store import Account
 from providers.workbuddy.upstream import (
@@ -50,7 +54,6 @@ STATE_INACTIVE = "inactive"  # 活动未开启
 STATE_SKIPPED = "skipped"    # 账号类型不适用（global/企业号），未发请求
 STATE_ERROR = "error"        # 请求失败（provider 层用，checkin 内部以异常表达）
 
-_BEIJING_TZ = timezone(timedelta(hours=8))
 
 # 网络类失败的短退避（秒）。签到接口幂等，重试不会重复领取；定时任务最常撞上的
 # 是"刚开机/刚唤醒，网络还要几十秒才就绪"，单次 5 秒重试跨不过这个窗口。

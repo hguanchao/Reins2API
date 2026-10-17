@@ -12,12 +12,11 @@ import hashlib
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
-from curl_cffi import requests as crequests
-
 from core.settings import (
+    BEIJING_TZ,
     WB_BILLING_BASE,
     WB_CLI_VERSION,
     WB_CLIENT_VERSION,
@@ -30,6 +29,11 @@ from core.settings import (
     WB_UPSTREAM_BASE,
     WB_USER_AGENT,
 )
+
+# crequests 指向出站会话复用层（每线程一条 keep-alive 连接，逐请求清 Cookie）：
+# 调用写法与 curl_cffi 顶层 API 同形，只是不再每次新建 Session。类型与异常
+# (RequestsError/Response) 在该模块内原样再导出。
+from net import outbound as crequests
 from net.proxy import proxies_for
 from providers.workbuddy.store import Account
 
@@ -333,7 +337,7 @@ def fetch_models(account: Account) -> list[dict[str, Any]]:
 # 牌价（转正后基准倍率），生效价 = 牌价 × factor；「错峰使用」类只有时段文案无
 # 机器可读 factor，仅透出标签与说明。
 
-_PROMO_TZ = timezone(timedelta(hours=8))  # 上游优惠时区恒 Asia/Shanghai
+_PROMO_TZ = BEIJING_TZ  # 上游优惠时区恒 Asia/Shanghai
 
 
 def _promo_clock(hhmm: str) -> int | None:
@@ -449,12 +453,6 @@ def is_non_chat_model(entry: dict[str, Any]) -> bool:
     return False
 
 
-def fetch_credits(account: Account) -> tuple[float, float]:
-    """POST get-user-resource → (remain, total)（只要聚合值的调用方走这个）。"""
-    detail = fetch_credits_detail(account)
-    return detail.remain, detail.total
-
-
 @dataclass
 class CreditsDetail:
     """一次余额查询的完整观测（聚合值 + 包级到期信息）。
@@ -485,7 +483,7 @@ def _package_end_ms(raw: Any) -> int:
     except ValueError:
         return 0
     # 上游时间戳恒按 UTC+8 解释（与签到/余额查询的账期口径一致），本机时区不参与
-    return int(at.replace(tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000)
+    return int(at.replace(tzinfo=BEIJING_TZ).timestamp() * 1000)
 
 
 def fetch_credits_detail(account: Account, *, expiring_within_ms: int = 0) -> CreditsDetail:
@@ -500,7 +498,7 @@ def fetch_credits_detail(account: Account, *, expiring_within_ms: int = 0) -> Cr
     """
     if account.enterprise_id:
         return _fetch_enterprise_detail(account, expiring_within_ms=expiring_within_ms)
-    tz = timezone(timedelta(hours=8))
+    tz = BEIJING_TZ
     body = {
         "PageNumber": 1,
         "PageSize": 100,

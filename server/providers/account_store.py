@@ -1,7 +1,7 @@
 """账号表存储共享内核（codex / workbuddy 两个号池的 SQLite 管道）。
 
 两个 provider 的 accounts 表列不同、Account 数据类不同，但「连接 + PRAGMA +
-DDL + 幂等补列 + CRUD + 运行态增量更新 + 单调序号 + 状态计数」这套管道逐字相同。
+DDL + 幂等补列 + CRUD + 运行态增量更新 + 状态计数 + 进程内单例」这套管道逐字相同。
 此前各自维护一份（改一处漏一处），这里收成一个基类，子类只声明差异：
 
     db_filename / log_tag / columns / runtime_fields / json_fields
@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,9 @@ from core.settings import DATA_DIR
 STATUS_ACTIVE = "active"
 STATUS_PAUSED = "paused"
 STATUS_DISABLED = "disabled"
+
+_default_lock = threading.Lock()
+_defaults: dict[type, Any] = {}
 
 
 class AccountStore:
@@ -65,6 +69,24 @@ class AccountStore:
     def _row_to_account(self, row: sqlite3.Row) -> Any:
         raise NotImplementedError
 
+    # ── 构造与校验（子类共用一份实现）──
+
+    @classmethod
+    def default(cls) -> Any:
+        """进程内单例：每个子类一个实例、一条独立连接（面板与 provider 共用）。"""
+        with _default_lock:
+            instance = _defaults.get(cls)
+            if instance is None:
+                instance = cls()
+                _defaults[cls] = instance
+                logger.info(f"[{instance.log_tag}] 账号库就绪 path={instance._path}")
+            return instance
+
+    @classmethod
+    def valid_uid(cls, uid: str) -> bool:
+        """uid 白名单校验（各子类的字符集与长度见 uid_re）。"""
+        return isinstance(uid, str) and bool(cls.uid_re.match(uid))
+
     # ── 低层读写（全部持锁）──
 
     def _fetchall(self, sql: str, values: tuple = ()) -> list[sqlite3.Row]:
@@ -95,9 +117,6 @@ class AccountStore:
                 continue
             self._conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {decl}")
             logger.info(f"[{self.log_tag}] accounts 表补列 column={name}")
-
-    def valid_uid(self, uid: str) -> bool:
-        return isinstance(uid, str) and bool(self.uid_re.match(uid))
 
     def close(self) -> None:
         try:
@@ -144,7 +163,7 @@ class AccountStore:
         return cursor.rowcount > 0
 
     def update_runtime(self, uid: str, **fields: Any) -> None:
-        """运行态字段增量更新（冷却/熔断/权重/used_seq/last_error/状态）。
+        """运行态字段增量更新（冷却/熔断/last_error/状态/余额）。
 
         JSON 字段传 dict 自动序列化；白名单外字段直接忽略（防注入面）。
         """
@@ -161,11 +180,33 @@ class AccountStore:
         values.extend([int(time.time() * 1000), uid])
         self._write(f"UPDATE accounts SET {', '.join(sets)} WHERE uid = ?", tuple(values))
 
-    def next_used_seq(self) -> int:
-        """全局单调计数器：LRU 兜底 + 防惊群。"""
-        row = self._fetchone("SELECT COALESCE(MAX(used_seq), 0) AS n FROM accounts")
-        return int(row["n"]) + 1
-
     def count_by_status(self) -> dict[str, int]:
         rows = self._fetchall("SELECT status, COUNT(*) AS n FROM accounts GROUP BY status")
         return {str(row["status"]): int(row["n"]) for row in rows}
+
+
+def write_with_retry(
+    write: Callable[[], Any], *, attempts: int = 3, base_delay_s: float = 0.2
+) -> Any:
+    """执行一次「必须落地」的写：调用方刚把一次性 refresh_token 换成了新票。
+
+    这种写失败与普通写失败完全不同——票已经在上游轮换过了，库里那份是废票，
+    静默当成"这次刷新失败"会让下一轮拿旧票再去换（换不出票，还可能被上游判成
+    重放）。所以：先重试几次抗瞬时锁竞争/抖动，仍失败就把异常抛给调用方，由它
+    明确标状态、要求人工重新授权。
+    """
+    last: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return write()
+        except Exception as exc:
+            last = exc
+            if attempt + 1 >= attempts:
+                break
+            logger.warning(
+                f"[accounts] 凭据落库失败，重试 {attempt + 1}/{attempts - 1}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            time.sleep(base_delay_s * (attempt + 1))
+    assert last is not None  # attempts >= 1 时循环至少跑过一次
+    raise last

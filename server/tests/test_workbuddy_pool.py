@@ -141,10 +141,7 @@ def test_fetch_credits_detail_buckets_packages_by_expiry():
     # 窗口 0 = 不分桶（expiring 恒 0，聚合口径与旧行为一致）
     with _stub_http(payload):
         plain = wb_upstream.fetch_credits_detail(account)
-    assert plain.remain == 1200.0 and plain.expiring == 0.0
-    # 兼容口径：fetch_credits 仍返回二元组
-    with _stub_http(payload):
-        assert wb_upstream.fetch_credits(account) == (1200.0, 1650.0)
+    assert plain.remain == 1200.0 and plain.expiring == 0.0 and plain.total == 1650.0
 
 
 def test_fetch_credits_detail_tolerates_bad_payload():
@@ -368,6 +365,25 @@ def test_floor_applies_to_soft_fallback_too():
             assert pool.pick("free", "ses_2") is not None
         finally:
             wb_pool.WB_CREDIT_FLOOR = original
+
+
+def test_soft_fallback_respects_model_cooldown():
+    """兜底也不能把一个"本来就不服务这个模型"的号捞出来顶班。
+
+    模型级冷却（11102 负缓存 / 6004 模型限流）是**按 (账号, 模型)** 判的：全池都在
+    冷却时，若兜底只看账号级冷却，就会把这个号发给它必然拒绝的模型——白撞一次上游、
+    再记一笔失败，而且掩盖了真实结论（该模型不可用 ≠ 号全挂了：前者应回 400 让客户端
+    换模型，后者才该 429 重试）。
+    """
+    now_ms = int(time.time() * 1000)
+    blocked = {"until_ms": now_ms + 3_600_000, "kind": classify.MODEL_BLOCKED, "hits": 1}
+    with _wb_pool([_cn("u_blocked", cooldown_until_ms=now_ms + 60_000,
+                       cooldown_kind="soft", model_cooldowns={"m_special": blocked})]) as pool:
+        # 该模型被模型级冷却挡住 → 兜底不顶班，pick 返回 None（provider 译 400）
+        assert pool.pick("m_special", "ses_1") is None
+        assert pool.model_blocked("m_special")["blocked"] is True
+        # 同号的其它模型不受影响：模型级冷却是 (账号, 模型) 维度，不是账号维度
+        assert pool.pick("m_other", "ses_2") is not None
 
 
 # ── Top-N 短名单 + 防惊群 ──

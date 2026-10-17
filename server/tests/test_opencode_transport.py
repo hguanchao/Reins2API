@@ -1,13 +1,15 @@
-"""opencode 出站传输回归测试（对照 2026-10-15 线上事故）。
+"""opencode 出站传输回归测试（对照 2026-10-15 及 2026-10-17 线上事故）。
 
-两件事在这里锁死，任何一处回退都会变红，而不是等线上又批量 504/截断：
+三件事在这里锁死，任何一处回退都会变红，而不是等线上又批量 504/截断：
 
-1. **超时必须显式传**。curl_cffi 的 stream 模式把 tuple 翻译成
-   CONNECTTIMEOUT=connect + LOW_SPEED(1 B/s)=connect+idle；不传 timeout 时它用自带
-   默认 30/30，等于给免费档的长首字与推理期静默设了条 30s 死线（实测免费档首字
-   2.4s~33.5s，正好横跨这条线 → 504 与"流被中途掐断"）。
-2. **连接期失败重试一次**。出口线路会间歇性在握手期掐断新连接（curl 35，实测 8 次
-   里 3 次），单凭证不重试就是客户端可见的 502。
+1. **本地不设超时，且必须显式传 `timeout=None`**。curl_cffi 在 stream 模式下把
+   tuple 翻译成 CONNECTTIMEOUT + LOW_SPEED；省略 timeout 会落回它自带的默认
+   30/30，等于给免费档的长首字与推理期静默设了条 30s 死线。
+2. **响应头之前的传输失败按预算重发 + 几何退避**。出口线路会间歇性在握手期掐断
+   新连接（curl 35/56），且是成串出现的：2026-10-17 实测同一分钟内 0/12 全败、
+   几分钟后 3/3 全通。单凭证不重试就是客户端可见的 502。
+3. **判据只有一条：响应头一个字节都没到**（status 0）。错误码不进判据——出口线路
+   的故障码枚举不完；头一旦到过就不重发（上游多半已开始处理，重发是二次执行）。
 
 全部离线：本地 TCP 桩服务 + 真实的 curl_cffi 行为，不打上游、不耗额度。
 
@@ -28,7 +30,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from curl_cffi import requests as crequests
 
-from core import settings
 from gateway.base import RequestIDs
 from gateway.types import PROTOCOL_CHAT
 from providers.opencode import upstream
@@ -119,13 +120,6 @@ def _reset(conn: socket.socket, _index: int) -> None:
     conn.close()
 
 
-def _hold_silent(conn: socket.socket, _index: int, seconds: float) -> None:
-    """收下请求后静默——模拟上游"已连接但不吐第一个字节"。"""
-    _drain_request(conn)
-    time.sleep(seconds)
-    conn.close()
-
-
 def _header_then_reset(conn: socket.socket, _index: int) -> None:
     """先回响应头，再以 RST 掐断（不给任何 body）——上游"已开始处理才断线"。"""
     _drain_request(conn)
@@ -167,81 +161,54 @@ class _Patched:
         upstream.proxies_for = self._saved["proxies_for"]
 
 
-def _patch_timeout(connect: float, idle: float):
-    """临时替换发送超时常量（用小值验证机制，不必等 5 分钟）。"""
-
-    class _TimeoutPatch:
-        def __enter__(self) -> None:
-            self._saved = (
-                upstream.OPENCODE_TIMEOUT_CONNECT,
-                upstream.OPENCODE_TIMEOUT_IDLE,
-            )
-            upstream.OPENCODE_TIMEOUT_CONNECT = connect
-            upstream.OPENCODE_TIMEOUT_IDLE = idle
-
-        def __exit__(self, *exc: object) -> None:
-            upstream.OPENCODE_TIMEOUT_CONNECT, upstream.OPENCODE_TIMEOUT_IDLE = self._saved
-
-    return _TimeoutPatch()
-
-
 def _patch_attempts(attempts: int, backoff: float):
     class _AttemptsPatch:
         def __enter__(self) -> None:
             self._saved = (
                 upstream.OPENCODE_TRANSPORT_ATTEMPTS,
                 upstream.OPENCODE_TRANSPORT_BACKOFF_S,
+                upstream.OPENCODE_TRANSPORT_BACKOFF_MAX_S,
             )
             upstream.OPENCODE_TRANSPORT_ATTEMPTS = attempts
             upstream.OPENCODE_TRANSPORT_BACKOFF_S = backoff
+            # 夹具里把封顶抬高，让用例自己决定退避曲线（生产封顶另有专门用例）。
+            upstream.OPENCODE_TRANSPORT_BACKOFF_MAX_S = max(backoff * 8, backoff)
 
         def __exit__(self, *exc: object) -> None:
             (
                 upstream.OPENCODE_TRANSPORT_ATTEMPTS,
                 upstream.OPENCODE_TRANSPORT_BACKOFF_S,
+                upstream.OPENCODE_TRANSPORT_BACKOFF_MAX_S,
             ) = self._saved
 
     return _AttemptsPatch()
 
 
-# ── 1. 超时：静默容忍取自 settings，不是 curl_cffi 的 30 ──────────
+# ── 1. 超时：本地不设，且必须显式传 None ──────────────────────────
 
 
-def test_stream_silence_window_comes_from_settings():
-    """流式静默容忍由配置决定，不是 curl_cffi 自带的 30s。
+def test_outbound_timeout_is_disabled_explicitly():
+    """本地不设超时；必须显式传 None，省略会落回 curl_cffi 默认的 30/30。"""
 
-    用小值(1s+2s)验证机制：桩服务收下请求后一直不吐字节，send_upstream 必须在
-    connect+idle 的量级上掐掉（实测掐流点是其和的 1.2~1.7 倍），而不是 curl_cffi
-    的默认 30s。回退成"不传 timeout"时这条会等到 30s，超出这里的上界。
-    """
-    server = _StubServer(lambda conn, idx: _hold_silent(conn, idx, 10.0))
+    captured: dict[str, Any] = {}
+
+    class _Raw:
+        status_code = 200
+        headers: dict[str, str] = {}  # noqa: RUF012  stub 不实例化，不写共享默认值
+
+    def fake_post(url: str, **kwargs: Any) -> _Raw:
+        captured.update(kwargs)
+        return _Raw()
+
+    saved = upstream.crequests.post
+    upstream.crequests.post = fake_post  # type: ignore[assignment]
     try:
-        with _Patched(server.url), _patch_timeout(1.0, 2.0), _patch_attempts(1, 0.0):
-            started = time.monotonic()
-            try:
-                upstream.send_upstream(PROTOCOL_CHAT, b"{}", _ids(), stream=True)
-                raise AssertionError("桩服务静默时不该成功")
-            except crequests.RequestsError as exc:
-                elapsed = time.monotonic() - started
-                code = getattr(exc, "code", None)
-                message = str(exc)
-        assert code == 28, f"期望 curl 28（静默掐流），实得 {code}: {message}"
-        assert 3.0 <= elapsed <= 9.0, f"掐流点应≈connect+idle=3s，实测 {elapsed:.1f}s"
+        upstream.send_upstream(PROTOCOL_CHAT, b"{}", _ids(), stream=True)
     finally:
-        server.close()
-
-
-def test_shipped_silence_window_is_minutes_not_seconds():
-    """线上常量的静默容忍必须远离免费档首字区间（实测上限 33.5s）。
-
-    换算与 curl_cffi 的 stream 分支一致：LOW_SPEED_TIME = connect + idle，
-    实际掐流点还会再晚一点。取下限做断言：静默容忍至少 105s 才够（30s 那条线
-    原本就是被 33.5s 的首字打穿的）。
-    """
-    window = settings.OPENCODE_TIMEOUT_CONNECT + settings.OPENCODE_TIMEOUT_IDLE
-    assert window >= 105, f"静默容忍 {window}s 太紧，会被免费档正常长首字/推理静默打到"
-    # 连接超时仍要有上限：出口挂死时线程不能无限占着
-    assert 0 < settings.OPENCODE_TIMEOUT_CONNECT <= 30
+        upstream.crequests.post = saved
+    assert captured.get("timeout", "missing") is None, (
+        f"必须显式传 timeout=None，实得 {captured.get('timeout', 'missing')!r}"
+    )
 
 
 # ── 2. 重试：连接期失败重发一次，语义错误绝不重发 ─────────────────
@@ -258,7 +225,7 @@ def test_connection_reset_is_retried_once():
 
     server = _StubServer(handler)
     try:
-        with _Patched(server.url), _patch_timeout(5.0, 5.0), _patch_attempts(2, 0.05):
+        with _Patched(server.url), _patch_attempts(2, 0.05):
             result = upstream.send_upstream(PROTOCOL_CHAT, b"{}", _ids(), stream=True)
             assert result.status == 200, result.status
             assert result.read_body() == _OK_BODY
@@ -271,7 +238,7 @@ def test_upstream_http_error_is_not_retried():
     """非 2xx 是上游的判决（403 之类），不重发——推理层负责透传。"""
     server = _StubServer(lambda conn, idx: _respond(conn, "403 Forbidden", _FORBIDDEN_BODY))
     try:
-        with _Patched(server.url), _patch_timeout(5.0, 5.0), _patch_attempts(2, 0.05):
+        with _Patched(server.url), _patch_attempts(2, 0.05):
             result = upstream.send_upstream(PROTOCOL_CHAT, b"{}", _ids(), stream=True)
             assert result.status == 403, result.status
         assert server.connections == 1, f"403 不该重发，实得 {server.connections} 次连接"
@@ -283,15 +250,29 @@ def test_retry_budget_exhausted_raises_original_error():
     """连接一直被掐断时不无限重试：打满预算后把 curl_cffi 的异常原样抛出。"""
     server = _StubServer(_reset)
     try:
-        with _Patched(server.url), _patch_timeout(5.0, 5.0), _patch_attempts(2, 0.05):
+        with _Patched(server.url), _patch_attempts(4, 0.01):
             try:
                 upstream.send_upstream(PROTOCOL_CHAT, b"{}", _ids(), stream=True)
                 raise AssertionError("连接一直失败时不该成功")
             except crequests.RequestsError:
                 pass
-        assert server.connections == 2, f"预算应为 2 次，实得 {server.connections} 次连接"
+        assert server.connections == 4, f"预算应为 4 次，实得 {server.connections} 次连接"
     finally:
         server.close()
+
+
+def test_backoff_grows_geometrically_and_caps():
+    """退避是几何增长的（成串掐断要拉开间隔），并封顶在 MAX。"""
+    with _patch_attempts(4, 0.3):
+        waits = [upstream._retry_backoff(i) for i in range(1, 4)]
+    assert waits == [0.3, 0.6, 1.2], waits
+    saved = upstream.OPENCODE_TRANSPORT_BACKOFF_MAX_S
+    upstream.OPENCODE_TRANSPORT_BACKOFF_MAX_S = 1.0
+    try:
+        assert upstream._retry_backoff(4) == 1.0, "超过 MAX 应封顶"
+        assert upstream._retry_backoff(9) == 1.0, "远超 MAX 也应封顶"
+    finally:
+        upstream.OPENCODE_TRANSPORT_BACKOFF_MAX_S = saved
 
 
 # ── 3. 失败码分类：事故里的 curl 35 必须落在"可重发"里 ────────────
@@ -330,7 +311,7 @@ def test_headers_then_reset_is_not_retried():
     """
     server = _StubServer(_header_then_reset)
     try:
-        with _Patched(server.url), _patch_timeout(5.0, 5.0), _patch_attempts(2, 0.05):
+        with _Patched(server.url), _patch_attempts(2, 0.05):
             broke = False
             try:
                 result = upstream.send_upstream(PROTOCOL_CHAT, b"{}", _ids(), stream=True)
@@ -348,7 +329,11 @@ def test_headers_then_reset_is_not_retried():
 
 
 def test_classifier_requires_no_response_started():
-    """分类器语义：可重发 = 传输类错误码 **且** 一个响应头字节都没解析出来。"""
+    """分类器语义：可重发 = **一个响应头字节都没解析出来**；错误码不参与判定。
+
+    错误码白名单曾把新形态的出口故障漏掉（实测除了 35/56/92 还有 16/55 这类），
+    所以判据收窄到唯一有语义的那条：status 0 才允许重发；拿不到响应对象时保守。
+    """
 
     class _Rsp:
         def __init__(self, status_code: int) -> None:
@@ -361,14 +346,14 @@ def test_classifier_requires_no_response_started():
             if status_code is not None:
                 self.response = _Rsp(status_code)
 
-    for code in (6, 7, 28, 35, 52, 56, 92):
-        assert upstream._is_retryable_transport(_Exc(code, 0)), f"code={code} 应可重发"
+    # 已知的与"没见过"的错误码一视同仁：只要响应头没到就可重发
+    for code in (1, 6, 7, 16, 18, 28, 35, 52, 55, 56, 92, 999):
+        assert upstream._is_retryable_transport(_Exc(code, 0)), f"code={code} + 头没到 应可重发"
         assert not upstream._is_retryable_transport(_Exc(code, 200)), f"code={code} 头已到不该重发"
-        assert not upstream._is_retryable_transport(_Exc(code, None)), "无响应对象要保守"
-    # 体读到一半断（curl 18 PARTIAL_FILE）与未知码：不重发
-    for code in (18, 999):
-        assert not upstream._is_retryable_transport(_Exc(code, 200)), code
-        assert not upstream._is_retryable_transport(_Exc(code, 0)), code
+    # 体读到一半断（curl 18 + status 200）与 403 类判决同样不重发
+    assert not upstream._is_retryable_transport(_Exc(18, 200)), "体读到一半断不该重发"
+    # 拿不到响应对象 = 判据不成立：保守不重发
+    assert not upstream._is_retryable_transport(_Exc(35, None)), "无响应对象要保守"
 
 
 # ── 内建运行入口（无 pytest 环境直接跑）──

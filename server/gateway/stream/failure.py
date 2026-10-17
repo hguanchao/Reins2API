@@ -6,7 +6,11 @@
 from __future__ import annotations
 
 from gateway.protocols._stream import StreamEmitterBase
-from gateway.stream.errors import SseUnexpectedEof, UpstreamStreamFailure
+from gateway.stream.errors import (
+    SseUnexpectedEof,
+    UpstreamHttpError,
+    UpstreamStreamFailure,
+)
 from gateway.types import BridgeStreamEvent
 
 
@@ -18,7 +22,10 @@ def emit_unexpected_stream_error(
     返回 None 表示错误事件已成功写给客户端（或 emitter 以 UpstreamStreamFailure
     正常收尾）；返回异常表示连错误事件都没写出去，调用方用它当最终错误。
     """
-    if isinstance(cause, SseUnexpectedEof):
+    if isinstance(cause, UpstreamHttpError):
+        # 上游改判（重发时非 2xx）：文案本身就是给客户端看的上游错误体，不再套壳。
+        message = str(cause)
+    elif isinstance(cause, SseUnexpectedEof):
         message = "upstream SSE stream ended before a terminal event"
     else:
         message = f"upstream SSE stream failed: {cause}"

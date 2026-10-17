@@ -8,7 +8,16 @@ from typing import Any, NamedTuple
 from gateway.base import random_id
 from gateway.bridge.reasoning import anthropic_redacted_thinking_placeholder
 from gateway.errors import BridgeError
-from gateway.jsonutil import as_slice, bool_at, first_string, is_object, map_at, put, string_at
+from gateway.jsonutil import (
+    as_slice,
+    bool_at,
+    first_string,
+    is_object,
+    map_at,
+    parse_json_or_string,
+    put,
+    string_at,
+)
 from gateway.types import BridgeBlock, BridgeToolChoice, new_block
 
 
@@ -403,7 +412,7 @@ def encode_anthropic_blocks(blocks: list[BridgeBlock]) -> list[Any]:
         elif block.kind == "tool_call":
             input_value = block.args
             if input_value is None:
-                input_value = parse_arguments(block.args_json)
+                input_value = parse_json_or_string(block.args_json)
             parts.append({"type": "tool_use", "id": block.id, "name": block.name, "input": input_value})
         elif block.kind == "tool_result":
             parts.append(
@@ -422,15 +431,6 @@ def encode_anthropic_blocks(blocks: list[BridgeBlock]) -> list[Any]:
                     {"type": "thinking", "thinking": block.text, "signature": block.signature}
                 )
     return parts
-
-
-def parse_arguments(value: str) -> Any:
-    if value == "":
-        return {}
-    try:
-        return json.loads(value)
-    except ValueError:
-        return value
 
 
 def bridge_arguments_json(block: BridgeBlock) -> str:

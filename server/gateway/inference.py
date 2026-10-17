@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from http import client as http_client
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -21,9 +22,9 @@ from curl_cffi import requests as crequests
 from core.http_body import read_request_body
 from core.logger import logger
 from core.respond import send_bytes, send_json
+from core.settings import STREAM_RETRY_ATTEMPTS, STREAM_RETRY_BACKOFF_S
 from db import RequestRecord, store
 from gateway.base import (
-    ALIAS_PREFIXES,
     ModelNotFound,
     ModelUnavailable,
     Provider,
@@ -37,22 +38,29 @@ from gateway.bridge import convert_response, prepare_request, response_usage
 from gateway.errors import BridgeError, error_payload
 from gateway.jsonutil import encode_json_body, string_at
 from gateway.stream import (
-    StreamSink,
     client_canceled,
     collapse_stream,
     forward_stream,
     transcode_stream,
 )
-from gateway.types import PROTOCOL_ANTHROPIC, PROTOCOL_CHAT, PROTOCOL_RESPONSES, Usage
+from gateway.stream.errors import UpstreamHttpError
+from gateway.stream.retry import StreamStats, retrying_chunks
+from gateway.types import (
+    PROTOCOL_ANTHROPIC,
+    PROTOCOL_CHAT,
+    PROTOCOL_RESPONSES,
+    Usage,
+    protocol_path,
+)
 from net import egress
 
 # 对齐 zen2api express.json 的 32mb 上限
 MAX_BODY = 32 * 1024 * 1024
 
+# 路径 → 协议：唯一出处是 types.protocol_path 的反向映射（改协议路径只改一处）
 _PATH_PROTOCOLS = {
-    "/v1/chat/completions": PROTOCOL_CHAT,
-    "/v1/responses": PROTOCOL_RESPONSES,
-    "/v1/messages": PROTOCOL_ANTHROPIC,
+    protocol_path(p): p
+    for p in (PROTOCOL_CHAT, PROTOCOL_RESPONSES, PROTOCOL_ANTHROPIC)
 }
 
 
@@ -110,17 +118,20 @@ def _serve(handler: BaseHTTPRequestHandler, external: str) -> None:
     finally:
         record.http_status = status
         record.duration_ms = int((time.time() - started) * 1000)
+        provider = resolved["provider"]
+        name = provider.name if provider is not None else registry.default.name
         # 一条请求被拒绝（未知模型、坏请求体）也有 id、也值得进日志；
         # 落库失败绝不阻塞转发（store 内部吞异常）。
         if record.id:
-            provider = resolved["provider"]
             # 出口 IP（上游看到的地址）：只读探测缓存，联网那步在后台线程里，
             # 缓存冷时本行为空——列表里显示「—」，探到后的请求开始有值。
             record.egress_ip = egress.cached_ip(
                 provider.upstream_url if provider is not None else registry.default.upstream_url
             )
-            name = provider.name if provider is not None else registry.default.name
             store(name).log_request(record)
+        # 完成行：本请求的结果摘要（状态/耗时/首字/用量/账号/错误），与"受理"行配对
+        # 成控制台的每次请求流水（渲染见 core/console_view.py）。
+        logger.info(_completion_line(record, name))
 
 
 def _lower_headers(handler: BaseHTTPRequestHandler) -> dict[str, str]:
@@ -168,10 +179,14 @@ def _serve_inner(
     try:
         body = json.loads(raw.decode("utf-8")) if raw else None
     except (json.JSONDecodeError, UnicodeDecodeError):
+        # 早退的拒绝也要留错误文案：完成行/请求列表靠它说明"为什么被拒"，否则
+        # 只剩一个光秃秃的 400。
+        record.error_message = "无效 JSON"
         _send_error(handler, external, 400, "无效 JSON", "invalid_request_error")
         return 400
     if not isinstance(body, dict):
         record.id = random_id("req", 16)
+        record.error_message = "request body must be a JSON object"
         _send_error(handler, external, 400, "request body must be a JSON object",
                     "invalid_request_error")
         return 400
@@ -179,8 +194,9 @@ def _serve_inner(
     headers = _lower_headers(handler)
     # 前缀路由：workbuddy/xxx → workbuddy provider；裸名 → default。
     # id 派生不依赖路由成败（未知前缀也先派生，保证请求可记录、可排障）。
+    # client_ip 用与落库同一来源：客户端键（prompt_cache_key）的另一半材料。
     provider, unknown_prefix = _resolve_provider(body.get("model"))
-    ids = (provider or registry.default).derive_ids(headers, body)
+    ids = (provider or registry.default).derive_ids(headers, body, record.client_ip)
     record.id = ids.request
     record.session_id = ids.session
     record.is_stream = body.get("stream") is True
@@ -189,16 +205,19 @@ def _serve_inner(
 
     model = body.get("model")
     if not isinstance(model, str) or model == "":
+        record.error_message = "model is required"
         _send_error(handler, external, 400, "model is required", "invalid_request_error", extra)
         return 400
     record.model = model
     if unknown_prefix is not None:
+        record.error_message = f'unknown provider "{unknown_prefix}" in model "{model}"'[:255]
         _send_error(handler, external, 400,
                     f'unknown provider "{unknown_prefix}" in model "{model}"',
                     "invalid_request_error", extra)
         return 400
     resolved["provider"] = provider
     if not provider.supported(model):
+        record.error_message = f'model "{model}" is not available'[:255]
         _send_error(handler, external, 400,
                     f'model "{model}" is not available',
                     "invalid_request_error", extra)
@@ -229,13 +248,23 @@ def _serve_inner(
 
     client_stream = body.get("stream") is True
 
+    # 受理行：路由已定、即将发上游。与末尾的完成行配对，构成控制台的"每次请求"
+    # 流水（渲染见 core/console_view.py）——字段集固定，键名别改。
+    logger.info(
+        f"[推理] 受理 request={ids.request} provider={provider.name} model={model} "
+        f"upstream={route.upstream_model} proto={route.protocol} stream={client_stream} "
+        f"free={route.free} shaped={shaped} ip={record.client_ip or '-'}"
+    )
+
+    # 出站唯一序列化点：孤立代理项在这里统一 toWellFormed，不能让 .encode("utf-8")
+    # 把客户端送来的畸形串崩成 500（见 jsonutil）。字节留一份——首包前重发必须发
+    # 同一份 body。
+    body_bytes = encode_json_body(upstream_body)
     try:
         result = provider.send(
             route,
             route.protocol,
-            # 出站唯一序列化点：孤立代理项在这里统一 toWellFormed，不能让
-            # .encode("utf-8") 把客户端送来的畸形串崩成 500（见 jsonutil）。
-            encode_json_body(upstream_body),
+            body_bytes,
             ids,
             stream=client_stream,
         )
@@ -283,13 +312,30 @@ def _serve_inner(
         record.first_byte_ms = int(time.time() * 1000) - record.created_ms
 
     result.stamp_first_chunk(_stamp_first_byte)
-    logger.info(
-        f"[推理] request={ids.request} provider={provider.name} model={model} "
-        f"proto={route.protocol} stream={client_stream} shaped={shaped} status={result.status}"
-    )
+
+    def _resend() -> UpstreamResponse:
+        """首包前重发一次（节奏与判据见 gateway/stream/retry.py）。
+
+        只在"下游一个字节都没写出"时被调用，所以重发不会造成客户端可见的重复。
+        非 2xx 无法再改状态码（响应头已发出）：把上游错误体当流错误报给客户端——
+        这条只能走错误帧，不能像首次那样整包透传。
+        """
+        again = provider.send(route, route.protocol, body_bytes, ids, stream=client_stream)
+        if not 200 <= again.status < 300:
+            message = _upstream_error_message(again)
+            logger.warning(
+                f"[推理] request={ids.request} 重发的上游请求被拒"
+                f" status={again.status}: {message}"
+            )
+            raise UpstreamHttpError(message)
+        again.stamp_first_chunk(_stamp_first_byte)
+        if again.account:
+            record.account_uid = again.account
+        return again
 
     if client_stream:
-        return _stream_response(handler, external, route, result, record, extra)
+        return _stream_response(handler, external, route, result, record, extra,
+                                resend=_resend)
     return _buffered_response(handler, external, route, result, record, extra)
 
 
@@ -362,14 +408,16 @@ def _buffered_response(
 
 
 class _HandlerSink:
-    """下游 SSE 写出口：每个事件写完即 flush，不攒批。"""
+    """下游 SSE 写出口：每个事件写完即 flush，不攒批。written 供掐流遥测用。"""
 
     def __init__(self, handler: BaseHTTPRequestHandler):
         self._handler = handler
+        self.written = 0
 
     def write(self, chunk: bytes) -> None:
         self._handler.wfile.write(chunk)
         self._handler.wfile.flush()
+        self.written += len(chunk)
 
     def flush(self) -> None:
         self._handler.wfile.flush()
@@ -382,50 +430,96 @@ def _stream_response(
     result: UpstreamResponse,
     record: RequestRecord,
     extra: dict[str, str],
+    *,
+    resend: Callable[[], UpstreamResponse],
 ) -> int:
     status = result.status
-    handler.send_response(status)
-    handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
-    handler.send_header("Cache-Control", "no-cache")
-    handler.send_header("Connection", "close")
-    handler.send_header("X-Accel-Buffering", "no")
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Expose-Headers", "*")
-    for key, value in extra.items():
-        handler.send_header(key, value)
-    handler.end_headers()
-    # 无 Content-Length 的响应靠关闭连接定界（grok-rego 已验证的写法）
-    handler.close_connection = True
-    if handler.command == "HEAD":
+    # 上游响应的一切出口都收在这一层 try/finally 里：头写失败（客户端在首字节前
+    # 就断了）与流中途异常一样必须释放 curl 连接，不能等 GC。
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("Connection", "close")
+        handler.send_header("X-Accel-Buffering", "no")
+        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.send_header("Access-Control-Expose-Headers", "*")
+        for key, value in extra.items():
+            handler.send_header(key, value)
+        handler.end_headers()
+        # 无 Content-Length 的响应靠关闭连接定界（grok-rego 已验证的写法）
+        handler.close_connection = True
+        return _pump_stream(handler, external, route, result, record, status, resend)
+    finally:
         result.close()
-        return status
 
-    sink: StreamSink = _HandlerSink(handler)
+
+def _pump_stream(
+    handler: BaseHTTPRequestHandler,
+    external: str,
+    route: Route,
+    result: UpstreamResponse,
+    record: RequestRecord,
+    status: int,
+    resend: Callable[[], UpstreamResponse],
+) -> int:
+    """把上游流搬到下游（同协议透传 / 跨协议转码），返回最终对客户端的状态码。
+
+    close 上游不在这里：_stream_response 的 finally 负责，本函数只管搬字节。
+    """
+    sink: _HandlerSink = _HandlerSink(handler)
+    stats = StreamStats()
+
+    def _on_retry(attempt: int, cause: Exception | None) -> None:
+        detail = f": {cause}" if cause is not None else "(上游未产出任何字节)"
+        logger.warning(
+            f"[推理] request={record.id} 首包前上游流断开, 重发"
+            f" attempt={attempt}/{STREAM_RETRY_ATTEMPTS - 1}{detail}"
+        )
+
+    chunks = retrying_chunks(
+        result,
+        resend,
+        attempts=STREAM_RETRY_ATTEMPTS,
+        backoff_s=STREAM_RETRY_BACKOFF_S,
+        stats=stats,
+        on_retry=_on_retry,
+    )
     try:
         if external == route.protocol:
-            outcome = forward_stream(sink, result.iter_chunks(), route.protocol, record.model)
+            outcome = forward_stream(sink, chunks, route.protocol, record.model)
         else:
-            outcome = transcode_stream(sink, result.iter_chunks(), route.protocol, external,
+            outcome = transcode_stream(sink, chunks, route.protocol, external,
                                        record.model)
     except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
         record.error_message = "client canceled"
-        result.close()
         return 499
     except Exception as exc:
         # 头已发出：无法再改状态码，记录后结束连接
         record.error_message = str(exc)[:255]
         logger.warning(f"[推理] request={record.id} 下游流异常: {type(exc).__name__}: {exc}")
-        result.close()
         return status
 
     _apply_usage(record, outcome.usage)
+    # 掐流/重发日志的 key=value 尾巴：停止在哪、静默多久、重发过几次都留痕
+    # （控制台渲染见 core/console_view.py，键名是契约）。
+    trace = (
+        f"attempts={stats.attempts} retries={stats.retries} "
+        f"up_chunks={stats.up_chunks} up_bytes={stats.up_bytes} "
+        f"down_bytes={sink.written} silent_ms={stats.silence_ms()}"
+    )
     if outcome.error is not None:
         if client_canceled(outcome.error):
             record.error_message = "client canceled"
-            logger.info(f"[推理] request={record.id} 客户端断开")
+            logger.info(f"[推理] request={record.id} 客户端断开 {trace}")
         else:
             record.error_message = str(outcome.error)[:255]
-            logger.warning(f"[推理] request={record.id} 下游流以错误结束: {record.error_message}")
+            logger.warning(
+                f"[推理] request={record.id} 下游流以错误结束: "
+                f"{record.error_message} {trace}"
+            )
+    elif stats.retries:
+        logger.info(f"[推理] request={record.id} 首包前重发后流完成 {trace}")
     return status
 
 
@@ -439,19 +533,7 @@ def _copy_upstream_error(
     record: RequestRecord,
     extra: dict[str, str],
 ) -> int:
-    raw = result.read_body()
-    text = raw.decode("utf-8", "replace")
-    message = http_client.responses.get(result.status, "upstream request failed")
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            message = (
-                string_at(parsed, "error", "message")
-                or string_at(parsed, "message")
-                or message
-            )
-    except json.JSONDecodeError:
-        pass  # 非 JSON 的上游错误体保留状态文案
+    message = _upstream_error_message(result)
     retry_after = result.header("retry-after")
     if retry_after:
         extra["retry-after"] = retry_after
@@ -461,21 +543,29 @@ def _copy_upstream_error(
     return result.status
 
 
+def _upstream_error_message(result: UpstreamResponse) -> str:
+    """上游错误体的可读文案（读掉并关闭响应体；非 JSON 退回落 HTTP 状态文案）。
+
+    首次响应用它整包透传，重发的非 2xx 只能用它填错误帧——两条路共用一份解析，
+    免得"客户端看到的文案"和"日志里的文案"各是一套。
+    """
+    raw = result.read_body()
+    text = raw.decode("utf-8", "replace")
+    message = http_client.responses.get(result.status, "upstream request failed")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return message  # 非 JSON 的上游错误体保留状态文案
+    if isinstance(parsed, dict):
+        return (
+            string_at(parsed, "error", "message")
+            or string_at(parsed, "message")
+            or message
+        )
+    return message
+
+
 # ── 小工具 ───────────────────────────────────────────────────────
-
-
-def _model_owner(model_id: str) -> str:
-    """模型 id → 归属 provider 名。别名前缀(oc:/cn:/glb:)查前缀表;旧式
-    provider/xxx 取斜杠前段;裸名归默认 provider。"""
-    if ":" in model_id:
-        name = ALIAS_PREFIXES.get(model_id.split(":", 1)[0])
-        if name:
-            return name
-    if "/" in model_id:
-        prefix = model_id.split("/", 1)[0]
-        if prefix in registry.names:
-            return prefix
-    return registry.default.name
 
 
 def _send_models(handler: BaseHTTPRequestHandler) -> None:
@@ -488,7 +578,7 @@ def _send_models(handler: BaseHTTPRequestHandler) -> None:
             "id": info.id,
             "object": "model",
             "created": 0,
-            "owned_by": _model_owner(info.id),
+            "owned_by": registry.owner(info.id),
             # 上游真实模型名(裸名):实际打到上游的 model 字段,不带别名前缀
             "upstream_model": info.upstream_model,
             "protocol": info.protocol,
@@ -501,6 +591,34 @@ def _send_models(handler: BaseHTTPRequestHandler) -> None:
         entry.update(info.capabilities)
         data.append(entry)
     send_json(handler, 200, {"object": "list", "data": data})
+
+
+def _completion_line(record: RequestRecord, provider_name: str) -> str:
+    """完成行文本（[推理] 完成 …）。
+
+    渲染器按 `key=` 取列（core/console_view.py），所以键名与取值形状是契约；
+    空账号/空错误直接省略键，渲染器按缺失处理。
+    """
+    parts = [
+        f"[推理] 完成 request={record.id or '-'}",
+        f"provider={provider_name}",
+        f"model={record.model or '-'}",
+        f"proto={record.client_protocol}",
+        f"status={record.http_status}",
+        f"dur_ms={record.duration_ms}",
+        f"ttfb_ms={record.first_byte_ms}",
+        f"in={record.input_tokens}",
+        f"out={record.output_tokens}",
+        f"cached={record.cached_tokens}",
+    ]
+    if record.account_uid:
+        parts.append(f"acct={record.account_uid[:8]}…")
+    if record.error_message:
+        # 值含空格要加引号（logger.py 文案规范）；换行会把一条日志拆成多行、
+        # 内层引号会提前闭合，两者都先压平。
+        flat = " ".join(str(record.error_message).split()).replace('"', "'")
+        parts.append(f'err="{flat}"')
+    return " ".join(parts)
 
 
 def _apply_usage(record: RequestRecord, usage: Usage) -> None:

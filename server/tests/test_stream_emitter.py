@@ -92,6 +92,61 @@ def test_transcode_failure_helper_writes_error_frame() -> None:
         assert "terminal event" in sink.text, f"{emitter_type.__name__}: {sink.text[:200]!r}"
 
 
+def test_anonymous_tool_deltas_share_one_block() -> None:
+    """没有 index / id 的 tool delta：同一工具的连续 delta 必须落进同一个工具块。
+
+    上游（非规范实现）会发不带 index 的 tool_calls delta，parser 用空串当键、
+    collapse 也把空串当同一个工具合并；发射器若每次现算一个键，就会按 delta 个数
+    切出 N 个幻影工具块——同一份流，流式与非流式（折叠）结果不一致。
+    """
+    import json
+
+    from gateway.protocols import ChatStreamParser
+    from gateway.stream.collapse import collapse_stream
+
+    stream = (
+        b'data: {"id":"r1","model":"test-model","choices":[{"delta":{"tool_calls":'
+        b'[{"function":{"name":"get_weather","arguments":"{\\"city\\":"}}]}}]}\n\n'
+        b'data: {"choices":[{"delta":{"tool_calls":'
+        b'[{"function":{"arguments":"\\"SF\\"}"}}]}}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+
+    # ① 流式：args 必须拼在同一个 tool_calls index 下
+    parser = ChatStreamParser()
+    sink = _Recorder()
+    emitter = ChatStreamEmitter(sink, "test-model")
+    for frame in stream.split(b"\n\n"):
+        if not frame.strip():
+            continue
+        for event in parser.parse("data", frame[len(b"data: ") :].decode()):
+            try:
+                emitter.emit(event)
+            except Exception:
+                pass  # [DONE] 之后的收尾信号
+    args_by_index: dict[object, str] = {}
+    for chunk in sink.chunks:
+        for line in chunk.splitlines():
+            if not line.startswith("data: {"):
+                continue  # [DONE] 与注释帧不是 JSON
+            payload = json.loads(line[len("data: ") :])
+            for choice in payload.get("choices") or []:
+                for call in (choice.get("delta") or {}).get("tool_calls") or []:
+                    index = call.get("index")
+                    args_by_index[index] = args_by_index.get(index, "") + (
+                        call.get("function") or {}
+                    ).get("arguments", "")
+    assert len(args_by_index) == 1, f"匿名 tool delta 被切成多个工具块: {sorted(args_by_index)}"
+    assert json.loads(args_by_index.popitem()[1]) == {"city": "SF"}
+
+    # ② 折叠（非流式回包）对同一份流必须给出同一个工具调用
+    collapsed = collapse_stream([stream], "chat", "test-model")
+    calls = collapsed["choices"][0]["message"]["tool_calls"]
+    assert len(calls) == 1, calls
+    assert calls[0]["function"]["name"] == "get_weather"
+    assert json.loads(calls[0]["function"]["arguments"]) == {"city": "SF"}
+
+
 _ALL = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 

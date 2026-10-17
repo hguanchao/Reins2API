@@ -13,9 +13,12 @@ from __future__ import annotations
 import threading
 import time
 
-from curl_cffi import requests as crequests
-
 from core.logger import logger
+
+# crequests 指向出站会话复用层（每线程一条 keep-alive 连接，逐请求清 Cookie）：
+# 调用写法与 curl_cffi 顶层 API 同形，只是不再每次新建 Session。类型与异常
+# (RequestsError/Response) 在该模块内原样再导出。
+from net import outbound as crequests
 from net.proxy import describe, proxies_for
 
 # 多个 echo 服务依次兜底，单个不通不影响结论
@@ -25,6 +28,9 @@ ECHO_URLS: tuple[str, ...] = (
     "https://ifconfig.me/ip",
 )
 TIMEOUT = 8
+# 单次探测的**总**预算：三个 echo 依次兜底，各自 8s 时最坏 24s——管理面点「探测」
+# 会占住一个请求线程那么久。给个总闸，超预算就不再试下一个（拿不到结论也认了）。
+TOTAL_BUDGET = 12.0
 # 缓存时长。这里**只是"多久复查一次"**，不是"多久之后算没数据"——cached_ip 有过期值
 # 也要照给（见下）。出口 IP 只在代理换节点时变，周期性重探纯属浪费 echo 配额，所以取
 # 半小时：换个节点最迟半小时内会重新探到，而中间每次请求都还有旧的正确值可用。
@@ -75,10 +81,15 @@ def probe(reference_url: str, *, force: bool = False) -> dict:
         "cached": False,
     }
 
+    deadline = time.monotonic() + TOTAL_BUDGET
     for url in ECHO_URLS:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            result["error"] = f"探测超预算（{TOTAL_BUDGET:.0f}s）"
+            break
         try:
             response = crequests.get(
-                url, proxies=proxies, timeout=TIMEOUT, impersonate="chrome"
+                url, proxies=proxies, timeout=min(TIMEOUT, remaining), impersonate="chrome"
             )
             text = bytes(response.content).decode("utf-8", "replace").strip()
             if response.status_code == 200 and text:

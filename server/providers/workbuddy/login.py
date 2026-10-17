@@ -14,10 +14,13 @@ import threading
 import time
 from typing import Any
 
-from curl_cffi import requests as crequests
-
 from core.logger import logger
 from core.settings import WB_ORIGIN, WB_UPSTREAM_BASE
+
+# crequests 指向出站会话复用层（每线程一条 keep-alive 连接，逐请求清 Cookie）：
+# 调用写法与 curl_cffi 顶层 API 同形，只是不再每次新建 Session。类型与异常
+# (RequestsError/Response) 在该模块内原样再导出。
+from net import outbound as crequests
 from providers.workbuddy.store import Account, WorkBuddyStore
 
 # 设备授权专用 UA（wb2api clientUA——CLI 形态，非桌面端三段式）

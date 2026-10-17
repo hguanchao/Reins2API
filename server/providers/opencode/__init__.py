@@ -8,14 +8,13 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
 from typing import Any
 
 from core.logger import logger
 from gateway.base import ModelInfo, RequestIDs, Route, UpstreamResponse
 from providers import models_dev, profiles
 from providers.capabilities import as_flag, capability_block
-from providers.common import BEIJING_TZ, refresh_result, stamp
+from providers.common import refresh_result, stamp, stamp_now
 from providers.identity import derive_request_ids
 from providers.opencode.discovery import discover
 from providers.opencode.routing import ModelIndex, ModelRecord, Router
@@ -79,7 +78,7 @@ class OpenCodeProvider:
                 self._index.set_available(available)
             else:
                 self._index.set_available_unknown()  # 清单没拉到：不过滤，别用旧清单挡新模型
-            self._refreshed_at = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            self._refreshed_at = stamp_now()
             counts = self._index.counts()
             listed = {entry["id"] for entry in self._router.list()}
         added = sorted(listed - previous)
@@ -226,8 +225,10 @@ class OpenCodeProvider:
 
     # ── 请求 ──
 
-    def derive_ids(self, headers: dict[str, str], body: dict[str, Any]) -> RequestIDs:
-        return derive_request_ids(headers, body)
+    def derive_ids(
+        self, headers: dict[str, str], body: dict[str, Any], client_ip: str = ""
+    ) -> RequestIDs:
+        return derive_request_ids(headers, body, client_ip)
 
     def shape(self, body: dict[str, Any], protocol: str) -> tuple[dict[str, Any], bool]:
         return shape_free_request_body(body, protocol)

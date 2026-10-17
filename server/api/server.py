@@ -35,7 +35,7 @@ from net import egress
 from net import proxy as outbound_proxy
 
 _MAX_BODY = 1_000_000
-_API_PREFIXES = ("/api", "/v1", "/health")
+_API_PREFIXES = ("/api", "/v1", "/healthz")
 _WEB_INDEX = "index.html"
 
 
@@ -63,7 +63,22 @@ def _safe_web_file(root: str, url_path: str) -> str | None:
     return None
 
 
-def _send_file(handler: BaseHTTPRequestHandler, path: str) -> None:
+def _cache_control(relative_path: str) -> str:
+    """构建产物的缓存策略。
+
+    Vite 给每个 js/css/字体文件名带内容哈希（assets/index-B3f9x2.js），内容换了
+    文件名就换——这类文件可以 immutable 长缓存，页面刷新不再重下几 MB 的包。
+    index.html 与其它按固定名发布的文件相反：它们**指**那些哈希文件，缓存住会让
+    用户永远拿到旧包，所以必须 no-cache（每次带 ETag/If-None-Match 复用，见下）。
+    """
+    normalized = relative_path.replace("\\", "/")
+    if "/assets/" in f"/{normalized}":
+        return "public, max-age=31536000, immutable"
+    return "no-cache"
+
+
+def _send_file(handler: BaseHTTPRequestHandler, path: str, root: str = "") -> None:
+    """直接把文件写到 socket（分块拷贝，不整包读进内存）。"""
     ctype, _ = mimetypes.guess_type(path)
     if not ctype:
         ctype = "application/octet-stream"
@@ -73,16 +88,21 @@ def _send_file(handler: BaseHTTPRequestHandler, path: str) -> None:
         "image/svg+xml",
     ):
         ctype = f"{ctype}; charset=utf-8"
-    with open(path, "rb") as fh:
-        body = fh.read()
+    stat = os.stat(path)
+    relative = os.path.relpath(path, root) if root else path
     handler.send_response(200)
     handler.send_header("Content-Type", ctype)
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Cache-Control", "no-cache")
+    handler.send_header("Content-Length", str(stat.st_size))
+    handler.send_header("Cache-Control", _cache_control(relative))
     handler.end_headers()
-    if handler.command != "HEAD":
-        handler.wfile.write(body)
-        handler.wfile.flush()
+    if handler.command == "HEAD":
+        return
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(64 * 1024)
+            if not chunk:
+                break
+            handler.wfile.write(chunk)
 
 
 def try_serve_web(handler: BaseHTTPRequestHandler, method: str, path: str) -> bool:
@@ -96,11 +116,11 @@ def try_serve_web(handler: BaseHTTPRequestHandler, method: str, path: str) -> bo
         return False
     target = _safe_web_file(root, path)
     if target and os.path.isfile(target):
-        _send_file(handler, target)
+        _send_file(handler, target, root)
         return True
     index = os.path.join(root, _WEB_INDEX)
     if os.path.isfile(index):
-        _send_file(handler, index)
+        _send_file(handler, index, root)
         return True
     return False
 
@@ -259,6 +279,97 @@ def _handle_provider_api(
     return False
 
 
+# ── 号池管理面共用实现（workbuddy / codex 两家同形，只有 provider 名不同）──
+
+
+def _reply_accounts(handler: BaseHTTPRequestHandler, provider_name: str, provider: Any) -> None:
+    """账号列表 + 遥测统计并入（面板表格的每一列都靠这一份 payload）。"""
+    summaries = provider.account_summaries()
+    stats = _account_stats(provider_name)
+    for item in summaries:
+        extra = stats.get(item["uid"], {})
+        item["stats_7d"] = extra.get("stats")
+        item["stats_total"] = extra.get("total")
+        item["last_used_ms"] = extra.get("last_used_ms", 0)
+        item["daily_14d"] = extra.get("daily") or [0] * _SERIES_DAYS
+        # 最近 14 次请求（最旧在前）——账号行那排柱子与它的悬停详情
+        item["recent_14"] = extra.get("recent") or []
+    send_json(handler, 200, {"ok": True, "data": summaries})
+
+
+def _reply_account_add(handler: BaseHTTPRequestHandler, provider: Any) -> None:
+    """手动导入凭证（面板粘贴形态）；provider 的 ValueError 即 400。"""
+    body = _json_body(handler)
+    if not isinstance(body, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    try:
+        account = provider.manual_add_account(body)
+    except ValueError as exc:
+        send_json(handler, 400, {"ok": False, "error": str(exc)})
+        return
+    send_json(handler, 200, {"ok": True, "data": account.public_dict()})
+
+
+def _reply_account_delete(
+    handler: BaseHTTPRequestHandler, provider_name: str, provider: Any, uid: str
+) -> None:
+    """删号：有在途请求时 409（删掉会让在途请求失去归属），否则删库。"""
+    if provider.account_busy(uid):
+        send_json(handler, 409, {"ok": False, "error": "账号有在途请求，稍后再删"})
+        return
+    if not _pool_store(provider_name)().delete_account(uid):
+        send_json(handler, 404, {"ok": False, "error": f"账号不存在: {uid}"})
+        return
+    send_json(handler, 200, {"ok": True, "data": {"deleted": uid}})
+
+
+def _pool_store(provider_name: str) -> Any:
+    """号池账号库句柄（仓库级操作如删号直连 store，不经 provider）。
+
+    局部 import：api 层不在模块级拉起 providers/*（provider 未启用时也不该被导入）。
+    """
+    if provider_name == "workbuddy":
+        from providers.workbuddy.store import default_store
+
+        return default_store
+    from providers.codex.store import default_store
+
+    return default_store
+
+
+def _reply_action(
+    handler: BaseHTTPRequestHandler,
+    run: Any,
+    *,
+    label: str,
+    detail: bool = True,
+) -> None:
+    """跑一个管理动作，把结果与异常翻成统一信封。
+
+    异常阶梯：KeyError→404（目标不存在）· ValueError→400（入参不合法）·
+    其余→502（上游/内部失败）。`detail` 关掉时错误文案不带异常类名（设备授权那类
+    直接把上游原文给用户看的入口）。
+    """
+    try:
+        data = run()
+    except KeyError as exc:
+        send_json(handler, 404, {"ok": False, "error": str(exc)})
+        return
+    except ValueError as exc:
+        send_json(handler, 400, {"ok": False, "error": str(exc)})
+        return
+    except Exception as exc:
+        logger.warning(f"[API] {label}失败: {type(exc).__name__}: {exc}")
+        reason = f"{type(exc).__name__}: {exc}" if detail else str(exc)
+        send_json(handler, 502, {"ok": False, "error": f"{label}失败: {reason}"})
+        return
+    send_json(handler, 200, {"ok": True, "data": data})
+
+
+def _reply_state(handler: BaseHTTPRequestHandler, provider: Any) -> None:
+    send_json(handler, 200, {"ok": True, "data": provider.pool_snapshot()})
+
+
 def _handle_workbuddy_api(
     method: str, path: str, query: dict[str, list[str]], handler: BaseHTTPRequestHandler
 ) -> bool:
@@ -266,6 +377,7 @@ def _handle_workbuddy_api(
 
     路由形态：/api/workbuddy/{accounts|login|state}[/...]；ops/requests/usage
     由泛化的 _handle_provider_api 先行处理，此处只收专属面。
+    与 codex 共用的形态走 _pool_* 助手（见下方"号池管理面共用实现"）。
     """
     parts = path.split("/")
     if len(parts) < 4 or parts[1] != "api" or parts[2] != "workbuddy":
@@ -276,110 +388,48 @@ def _handle_workbuddy_api(
     action = parts[3]
 
     if method == "GET" and action == "accounts" and len(parts) == 4:
-        summaries = provider.account_summaries()
-        stats = _account_stats("workbuddy")
-        for item in summaries:
-            extra = stats.get(item["uid"], {})
-            item["stats_7d"] = extra.get("stats")
-            item["stats_total"] = extra.get("total")
-            item["last_used_ms"] = extra.get("last_used_ms", 0)
-            item["daily_14d"] = extra.get("daily") or [0] * _SERIES_DAYS
-            # 最近 14 次请求（最旧在前）——账号行那排柱子与它的悬停详情
-            item["recent_14"] = extra.get("recent") or []
-        send_json(handler, 200, {"ok": True, "data": summaries})
+        _reply_accounts(handler, "workbuddy", provider)
         return True
 
     if method == "POST" and action == "accounts" and len(parts) == 4:
-        body = _json_body(handler)
-        if not isinstance(body, dict):
-            raise ValueError("请求体必须是 JSON 对象")
-        try:
-            account = provider.manual_add_account(body)
-        except ValueError as exc:
-            send_json(handler, 400, {"ok": False, "error": str(exc)})
-            return True
-        send_json(handler, 200, {"ok": True, "data": account.public_dict()})
+        _reply_account_add(handler, provider)
         return True
 
     if method == "DELETE" and action == "accounts" and len(parts) == 5:
-        uid = parts[4]
-        if provider.account_busy(uid):
-            send_json(handler, 409, {"ok": False, "error": "账号有在途请求，稍后再删"})
-            return True
-        from providers.workbuddy.store import default_store
-
-        if not default_store().delete_account(uid):
-            send_json(handler, 404, {"ok": False, "error": f"账号不存在: {uid}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": {"deleted": uid}})
+        _reply_account_delete(handler, "workbuddy", provider, parts[4])
         return True
 
     if method == "POST" and action == "accounts" and len(parts) == 6 and parts[5] == "action":
-        uid = parts[4]
         body = _json_body(handler)
         act = str((body or {}).get("action") or "")
-        try:
-            updated = provider.account_action(uid, act)
-        except KeyError as exc:
-            send_json(handler, 404, {"ok": False, "error": str(exc)})
-            return True
-        except ValueError as exc:
-            send_json(handler, 400, {"ok": False, "error": str(exc)})
-            return True
-        except Exception as exc:
-            send_json(handler, 502, {"ok": False, "error": f"动作失败: {type(exc).__name__}: {exc}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": updated})
+        _reply_action(handler, lambda: provider.account_action(parts[4], act), label="动作")
         return True
 
     if method == "POST" and action == "accounts" and len(parts) == 6 and parts[5] == "checkin":
         # 立即签到：force 绕过本地台账，交给上游幂等兜底（失败以 state=error 返回）
-        uid = parts[4]
-        try:
-            result = provider.checkin(uid, force=True)
-        except KeyError as exc:
-            send_json(handler, 404, {"ok": False, "error": str(exc)})
-            return True
-        send_json(handler, 200, {"ok": True, "data": result})
+        _reply_action(handler, lambda: provider.checkin(parts[4], force=True), label="签到")
         return True
 
     if method == "POST" and action == "checkin" and len(parts) == 5 and parts[4] == "run-all":
         # 一键全签：串行 + 账号间错峰，号多时耗时随号数线性增长
-        try:
-            summary = provider.checkin_all()
-        except Exception as exc:
-            send_json(handler, 502, {"ok": False, "error": f"签到失败: {type(exc).__name__}: {exc}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": summary})
+        _reply_action(handler, provider.checkin_all, label="签到")
         return True
 
     if method == "GET" and action == "accounts" and len(parts) == 6 and parts[5] == "models":
         # 按账号实时查询可用模型（用该账号 token 打上游 /v3/config，不缓存）
-        uid = parts[4]
-        try:
-            models = provider.account_models(uid)
-        except KeyError as exc:
-            send_json(handler, 404, {"ok": False, "error": str(exc)})
-            return True
-        except Exception as exc:
-            send_json(handler, 502, {"ok": False, "error": f"查询失败: {type(exc).__name__}: {exc}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": models})
+        _reply_action(handler, lambda: provider.account_models(parts[4]), label="查询")
         return True
 
     if method == "GET" and action == "state" and len(parts) == 4:
-        send_json(handler, 200, {"ok": True, "data": provider.pool_snapshot()})
+        _reply_state(handler, provider)
         return True
 
     if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "start":
         body = _json_body(handler)
         realm = str((body or {}).get("realm") or "cn")
-        try:
-            data = provider.login_start(realm)
-        except Exception as exc:
-            send_json(handler, 502, {"ok": False, "error": f"发起设备授权失败: {exc}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": data})
+        _reply_action(
+            handler, lambda: provider.login_start(realm), label="发起设备授权", detail=False
+        )
         return True
 
     if method == "GET" and action == "login" and len(parts) == 5 and parts[4] == "poll":
@@ -387,8 +437,7 @@ def _handle_workbuddy_api(
         if not state:
             send_json(handler, 400, {"ok": False, "error": "missing state"})
             return True
-        data = provider.login_poll(state)
-        send_json(handler, 200, {"ok": True, "data": data})
+        _reply_action(handler, lambda: provider.login_poll(state), label="登录轮询")
         return True
 
     if method == "GET" and action == "schedule" and len(parts) == 4:
@@ -406,26 +455,26 @@ def _handle_workbuddy_api(
                 "未知任务: " + ", ".join(sorted(unknown))
                 + "（可用: " + ", ".join(app_config.SCHEDULE_TASKS) + "）"
             )
-        for name, item in body.items():
+        for task, item in body.items():
             if not isinstance(item, dict):
-                raise ValueError(f"{name} 配置必须是对象")
+                raise ValueError(f"{task} 配置必须是对象")
             expr = item.get("cron")
             if expr is None:
                 continue
             text = str(expr).strip()
             if not text:
-                raise ValueError(f"{name}.cron 不能为空（要停任务请关开关）")
+                raise ValueError(f"{task}.cron 不能为空（要停任务请关开关）")
             try:
                 parse_cron(text)
             except CronError as exc:
-                raise ValueError(f"{name}.cron 非法: {exc}") from exc
+                raise ValueError(f"{task}.cron 非法: {exc}") from exc
         app_config.update_schedule(body)
         logger.info(
             "[配置] WorkBuddy 定时任务已更新: "
             + "，".join(
-                f"{name} {'开' if item.get('enabled') else '关'}"
+                f"{task} {'开' if item.get('enabled') else '关'}"
                 f" {item.get('cron') or ''}".rstrip()
-                for name, item in app_config.schedule().items()
+                for task, item in app_config.schedule().items()
             )
         )
         send_json(handler, 200, {"ok": True, "data": provider.scheduler.snapshot()})
@@ -569,6 +618,7 @@ def _handle_codex_api(
 
     路由形态：/api/codex/{accounts|login|state}[/...]；ops/requests/usage 由泛化的
     _handle_provider_api 先行处理，此处只收专属面。
+    与 workbuddy 共用的形态走 _pool_* 助手（见「号池管理面共用实现」）。
     """
     parts = path.split("/")
     if len(parts) < 4 or parts[1] != "api" or parts[2] != "codex":
@@ -579,30 +629,12 @@ def _handle_codex_api(
     action = parts[3]
 
     if method == "GET" and action == "accounts" and len(parts) == 4:
-        summaries = provider.account_summaries()
-        stats = _account_stats("codex")
-        for item in summaries:
-            extra = stats.get(item["uid"], {})
-            item["stats_7d"] = extra.get("stats")
-            item["stats_total"] = extra.get("total")
-            item["last_used_ms"] = extra.get("last_used_ms", 0)
-            item["daily_14d"] = extra.get("daily") or [0] * _SERIES_DAYS
-            # 最近 14 次请求（最旧在前）——账号行那排柱子与它的悬停详情
-            item["recent_14"] = extra.get("recent") or []
-        send_json(handler, 200, {"ok": True, "data": summaries})
+        _reply_accounts(handler, "codex", provider)
         return True
 
     if method == "POST" and action == "accounts" and len(parts) == 4:
         # 手动导入凭证（粘贴 refresh_token 或 access_token+account_id）
-        body = _json_body(handler)
-        if not isinstance(body, dict):
-            raise ValueError("请求体必须是 JSON 对象")
-        try:
-            account = provider.manual_add_account(body)
-        except ValueError as exc:
-            send_json(handler, 400, {"ok": False, "error": str(exc)})
-            return True
-        send_json(handler, 200, {"ok": True, "data": account.public_dict()})
+        _reply_account_add(handler, provider)
         return True
 
     if method == "GET" and action == "accounts" and len(parts) == 5 and parts[4] == "export":
@@ -610,12 +642,7 @@ def _handle_codex_api(
         fmt = str((query.get("format") or ["cpa"])[0] or "cpa").strip().lower()
         if fmt not in ("cpa", "codex2api"):
             fmt = "cpa"
-        try:
-            data = provider.export_accounts(fmt)
-        except Exception as exc:
-            send_json(handler, 500, {"ok": False, "error": f"导出失败: {type(exc).__name__}: {exc}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": data})
+        _reply_action(handler, lambda: provider.export_accounts(fmt), label="导出")
         return True
 
     if method == "POST" and action == "accounts" and len(parts) == 5 and parts[4] == "import":
@@ -632,6 +659,7 @@ def _handle_codex_api(
             send_json(handler, 400, {"ok": False, "error": str(exc)})
             return True
         except Exception as exc:
+            logger.warning(f"[API] 导入失败: {type(exc).__name__}: {exc}")
             send_json(handler, 502, {"ok": False, "error": f"导入失败: {type(exc).__name__}: {exc}"})
             return True
         if summary["imported"] + summary["updated"] > 0:
@@ -645,64 +673,33 @@ def _handle_codex_api(
 
     if method == "POST" and action == "quotas" and len(parts) == 5 and parts[4] == "refresh":
         # 全池额度补刷（主动查上游 /usage；导入后也会自动刷一遍）
-        try:
-            data = provider.refresh_quota()
-        except Exception as exc:
-            send_json(handler, 502, {"ok": False, "error": f"额度刷新失败: {type(exc).__name__}: {exc}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": data})
+        _reply_action(handler, provider.refresh_quota, label="额度刷新")
         return True
 
     if method == "DELETE" and action == "accounts" and len(parts) == 5:
-        uid = parts[4]
-        if provider.account_busy(uid):
-            send_json(handler, 409, {"ok": False, "error": "账号有在途请求，稍后再删"})
-            return True
-        from providers.codex.store import default_store
-
-        if not default_store().delete_account(uid):
-            send_json(handler, 404, {"ok": False, "error": f"账号不存在: {uid}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": {"deleted": uid}})
+        _reply_account_delete(handler, "codex", provider, parts[4])
         return True
 
     if method == "POST" and action == "accounts" and len(parts) == 6 and parts[5] == "action":
-        uid = parts[4]
         body = _json_body(handler)
         act = str((body or {}).get("action") or "")
-        try:
-            updated = provider.account_action(uid, act)
-        except KeyError as exc:
-            send_json(handler, 404, {"ok": False, "error": str(exc)})
-            return True
-        except ValueError as exc:
-            send_json(handler, 400, {"ok": False, "error": str(exc)})
-            return True
-        except Exception as exc:
-            send_json(handler, 502, {"ok": False, "error": f"动作失败: {type(exc).__name__}: {exc}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": updated})
+        _reply_action(handler, lambda: provider.account_action(parts[4], act), label="动作")
         return True
 
     if method == "GET" and action == "state" and len(parts) == 4:
-        send_json(handler, 200, {"ok": True, "data": provider.pool_snapshot()})
+        _reply_state(handler, provider)
         return True
 
     if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "start":
         # 发起 PKCE 授权：返回授权 URL 与 session_id（用户在浏览器打开并登录）；
         # listening=true 表示本机 1455 回调监听已起，登录完成会自动入池
-        try:
-            data = provider.login_start()
-        except Exception as exc:
-            send_json(handler, 502, {"ok": False, "error": f"发起授权失败: {exc}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": data})
+        _reply_action(handler, provider.login_start, label="发起授权", detail=False)
         return True
 
     if method == "GET" and action == "login" and len(parts) == 5 and parts[4] == "poll":
         # 轮询登录进度（本机回调监听兑换完成后转 done）；自动入池不可用时前端不轮询
         state = (query.get("state") or [""])[0].strip()
-        send_json(handler, 200, {"ok": True, "data": provider.login_poll(state)})
+        _reply_action(handler, lambda: provider.login_poll(state), label="登录轮询")
         return True
 
     if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "cancel":
@@ -724,15 +721,9 @@ def _handle_codex_api(
         if not session_id or not callback:
             send_json(handler, 400, {"ok": False, "error": "session_id 与 callback 均为必填"})
             return True
-        try:
-            data = provider.login_exchange(session_id, callback, state)
-        except ValueError as exc:
-            send_json(handler, 400, {"ok": False, "error": str(exc)})
-            return True
-        except Exception as exc:
-            send_json(handler, 502, {"ok": False, "error": f"兑换失败: {type(exc).__name__}: {exc}"})
-            return True
-        send_json(handler, 200, {"ok": True, "data": data})
+        _reply_action(
+            handler, lambda: provider.login_exchange(session_id, callback, state), label="兑换"
+        )
         return True
 
     return False

@@ -587,10 +587,6 @@ def test_registry_alias_routing():
     assert ALIAS_PREFIXES == {
         "oc": "opencode", "cn": "workbuddy", "glb": "workbuddy", "cx": "codex",
     }
-    assert reg.resolve("oc:big-pickle").provider == "opencode"
-    assert reg.resolve("cn:x").provider == "workbuddy"
-    assert reg.resolve("glb:x").provider == "workbuddy"
-    assert reg.resolve("cx:gpt-5-codex").provider == "codex"
     # route_target：命中前缀 → provider；未注册前缀 → (None, prefix)
     assert reg.route_target("cn:x") == (reg.get("workbuddy"), None)
     assert reg.route_target("cx:gpt-5-codex") == (reg.get("codex"), None)
@@ -598,6 +594,10 @@ def test_registry_alias_routing():
     assert reg.route_target("nope/x")[0] is None and reg.route_target("nope/x")[1] == "nope"
     # 裸名 → 默认 provider（首个注册）
     assert reg.route_target("bare")[0] is reg.default
+    # owner（/v1/models 的 owned_by）：与 route_target 同源，未注册前缀落默认
+    assert reg.owner("oc:big-pickle") == "opencode"
+    assert reg.owner("cn:x") == "workbuddy" and reg.owner("cx:gpt-5-codex") == "codex"
+    assert reg.owner("nope/x") == "opencode" and reg.owner("bare") == "opencode"
     # 别名指向的 provider 未注册 → 报未知，不静默落默认 provider
     only_oc = Registry()
     only_oc.register(_Fake("opencode"))

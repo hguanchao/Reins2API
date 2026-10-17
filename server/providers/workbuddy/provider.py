@@ -1,8 +1,8 @@
 """WorkBuddy Provider：Provider 协议实现 + 单请求轮换主循环。
 
-M1 形态：单账号直连（选号 = 最小 used_seq 的健康号），token 过期前主动刷新、
-session 失效刷新一次重试、错误分类罚号（冷却/熔断落 accounts 表）。M2 换
-pool.py 的加权选号 + 会话粘性，send 主循环结构不变。
+选号已下沉 pool.py（加权随机 + 在途租约 + 会话粘性）：本文件的 send 主循环只负责
+token 过期前主动刷新、session 失效刷新一次重试、错误分类罚号（冷却/熔断落
+accounts 表）。
 
 send 契约（D3）：网关把 send 当原子操作——只在拿到非 2xx（还没给客户端发过
 一个字节）时轮换，流一旦开始不换号；恒 stream=True 打上游（D4），非流式
@@ -12,11 +12,10 @@ send 契约（D3）：网关把 send 当原子操作——只在拿到非 2xx（
 from __future__ import annotations
 
 import json
-import random
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 from curl_cffi import requests as crequests
@@ -53,8 +52,9 @@ from gateway.base import (
     UpstreamUnavailable,
 )
 from providers import models_dev, models_snapshot, profiles
+from providers.account_runtime import AccountRuntime
 from providers.capabilities import as_flag, capability_block
-from providers.common import BEIJING_TZ, RawBytes, refresh_result, stamp
+from providers.common import RawBytes, refresh_result, stamp, stamp_now
 from providers.identity import derive_request_ids  # 通用会话派生（provider 共享层）
 from providers.workbuddy import checkin, classify, dsml, growth, sanitize, shape
 from providers.workbuddy import pool as wb_pool
@@ -166,11 +166,6 @@ def _entry_from_snapshot(entry: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in out.items() if value is not None}
 
 
-def _fmt_credit(value: float) -> str:
-    """积分数值的展示形态（整数不带小数点，与 checkin.fmt_credit 同口径）。"""
-    return str(int(value)) if float(value).is_integer() else f"{value:g}"
-
-
 def _as_number(value: Any) -> float | None:
     """上游数值字段 → float；非数值/布尔返回 None（不臆测）。"""
     if isinstance(value, bool):
@@ -205,9 +200,14 @@ def _compact_payload(value: Any, limit: int = 220) -> str:
     return text[:limit] + "…" if len(text) > limit else text
 
 
-class WorkBuddyProvider:
+class WorkBuddyProvider(AccountRuntime):
     name = "workbuddy"
     upstream_url = WB_UPSTREAM_BASE
+    # 熔断与退避（语义见 providers/account_runtime.py）
+    breaker_threshold = WB_BREAKER_THRESHOLD
+    breaker_base_s = WB_BREAKER_BASE_S
+    breaker_max_s = WB_BREAKER_MAX_S
+    backoff_base_s = WB_BACKOFF_BASE_S
 
     def __init__(self, store: WorkBuddyStore | None = None):
         self._store = store or default_store()
@@ -229,10 +229,8 @@ class WorkBuddyProvider:
         # 快照内容的最后变更时间(models.json 的 meta.updated_at_ms);本进程从快照
         # 冷启动时它是唯一的时间线索,与各册的 refreshed_at(本进程刷新时间)分开。
         self._cached_at_ms = 0
-        # 按账号串行化 token 刷新：refresh_token 会轮换，而池允许同号多请求在途
-        # （WB_MAX_IN_FLIGHT），并发刷同一个号会让 RT 双花（一个成功一个失效）。
-        self._refresh_locks: dict[str, threading.Lock] = {}
-        self._refresh_locks_guard = threading.Lock()
+        # RT 轮换不能双花：池允许同号多请求在途（WB_MAX_IN_FLIGHT）
+        self._init_runtime()
         from providers.workbuddy.login import LoginManager
 
         # 登录完成只顺带拉积分（见 _on_account_added）：不再自动拉模型目录
@@ -311,7 +309,7 @@ class WorkBuddyProvider:
             with self._lock:
                 self._catalogs[realm] = _Catalog(
                     models=models, efforts=efforts, default_efforts=default_efforts,
-                    refreshed_at=datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                    refreshed_at=stamp_now(),
                 )
             detail = []
             if realm_added:
@@ -549,8 +547,10 @@ class WorkBuddyProvider:
 
     # ── 请求 ──
 
-    def derive_ids(self, headers: dict[str, str], body: dict[str, Any]) -> RequestIDs:
-        return derive_request_ids(headers, body)
+    def derive_ids(
+        self, headers: dict[str, str], body: dict[str, Any], client_ip: str = ""
+    ) -> RequestIDs:
+        return derive_request_ids(headers, body, client_ip)
 
     def shape(self, body: dict[str, Any], protocol: str) -> tuple[dict[str, Any], bool]:
         realm, bare = self._parse(str(body.get("model") or ""))
@@ -639,10 +639,11 @@ class WorkBuddyProvider:
                 # 出站请求体在拿到账号后才最终定形：prompt_cache_key 需要 uid 做隔离，
                 # global 域还要补 system——两者都改 body_dict，因此按需重新序列化。
                 # 缺 conversation_id 的客户端（Anthropic / Claude Code 流量）回退到
-                # 会话键：不回退的话 conv 为空串，该账号下所有请求会共享同一个常量键，
-                # 前缀缓存互相驱逐（等于每轮都冷启动）。
+                # 客户端键（ids.client，跨会话不变）：键里仍有 uid 做账号隔离，同时
+                # 同一客户端的新会话第一发就能吃上共享的静态前缀缓存。若回退到会话键，
+                # 每个新会话都是一个新键、注定全量冷启动。
                 if shape.inject_prompt_cache_key(
-                    body_dict, account.uid, conversation_id or ids.session
+                    body_dict, account.uid, conversation_id or ids.client
                 ):
                     body_dirty = True
                 if account.realm == "global" and shape.ensure_console_system(body_dict):
@@ -661,7 +662,6 @@ class WorkBuddyProvider:
                 except crequests.RequestsError as exc:
                     logger.warning(f"[workbuddy] uid={account.uid[:8]}… 传输失败: {exc}")
                     self._penalize_transport(account)
-                    self._bump_used_seq(account)
                     attempts += 1
                     exclude.add(account.uid)
                     self._pool.unbind_sticky(ids.session)
@@ -706,7 +706,6 @@ class WorkBuddyProvider:
                     f"[workbuddy] uid={account.uid[:8]}… 上游错误 status={status} kind={classified.kind}: {text[:160]}"
                 )
                 self._penalize(account, classified, bare_model, text)
-                self._bump_used_seq(account)
                 last_error = UpstreamResponse(
                     status=status, headers=dict(response.headers), raw=RawBytes(raw),
                     account=account.uid,
@@ -755,14 +754,6 @@ class WorkBuddyProvider:
 
     # ── 选号已下沉 pool.py（加权随机 + 租约 + 粘性）──
 
-    def _bump_used_seq(self, account: Account) -> None:
-        seq = self._store.next_used_seq()
-        self._store.update_runtime(account.uid, used_seq=seq)
-
-    def _sleep_backoff(self, attempts: int) -> None:
-        delay = WB_BACKOFF_BASE_S * attempts + random.uniform(0, 0.25)
-        time.sleep(delay)
-
     # ── token 刷新 ──
 
     def _needs_refresh(self, account: Account) -> bool:
@@ -772,14 +763,6 @@ class WorkBuddyProvider:
         if not account.token_expires_ms:
             return True
         return int(time.time() * 1000) + _REFRESH_AHEAD_MS >= account.token_expires_ms
-
-    def _refresh_lock(self, uid: str) -> threading.Lock:
-        with self._refresh_locks_guard:
-            lock = self._refresh_locks.get(uid)
-            if lock is None:
-                lock = threading.Lock()
-                self._refresh_locks[uid] = lock
-            return lock
 
     def _maybe_refresh(self, account: Account) -> None:
         """到期前主动刷新（对齐 wb2api keepalive）；失败不阻塞本次发送。"""
@@ -950,29 +933,26 @@ class WorkBuddyProvider:
         排程与手动按钮都走默认（全开）。
         """
         accounts = [a for a in self._store.list_accounts() if a.status == STATUS_ACTIVE]
-        items: list[dict[str, Any]] = []
         tally = dict.fromkeys(
             (checkin.STATE_CLAIMED, checkin.STATE_ALREADY, checkin.STATE_SKIPPED,
              checkin.STATE_INACTIVE, checkin.STATE_ERROR),
             0,
         )
         revived = 0
-        for index, account in enumerate(accounts):
-            if index:
-                time.sleep(WB_CHECKIN_STAGGER_MS / 1000.0)
-            try:
-                result = self.checkin(account.uid, force=force)
-            except Exception as exc:  # 单号异常不中断整轮
-                logger.warning(
-                    f"[workbuddy] uid={account.uid[:8]}… 签到异常: {type(exc).__name__}: {exc}"
-                )
-                result = {"uid": account.uid, "state": checkin.STATE_ERROR,
-                          "message": f"{type(exc).__name__}: {exc}"}
-            state = result.get("state") or checkin.STATE_ERROR
-            tally[state] = tally.get(state, 0) + 1
-            items.append(result)
+
+        def _checkin_one(account: Account) -> dict[str, Any]:
+            nonlocal revived
+            result = self.checkin(account.uid, force=force)
             if with_balance:
                 revived += 1 if self._refresh_balance(account.uid) else 0
+            return result
+
+        items = self._run_pool_task(
+            accounts, _checkin_one, label="签到", error_state=checkin.STATE_ERROR
+        )
+        for item in items:
+            state = item.get("state") or checkin.STATE_ERROR
+            tally[state] = tally.get(state, 0) + 1
         summary: dict[str, Any] = {
             "total": len(accounts),
             "claimed": tally[checkin.STATE_CLAIMED],
@@ -1028,6 +1008,40 @@ class WorkBuddyProvider:
     def _task_accounts(self, *, include_paused: bool = True) -> list[Account]:
         wanted = {STATUS_ACTIVE, STATUS_PAUSED} if include_paused else {STATUS_ACTIVE}
         return [a for a in self._store.list_accounts() if a.status in wanted]
+
+    def _run_pool_task(
+        self,
+        accounts: list[Account],
+        run: Callable[[Account], dict[str, Any]],
+        *,
+        label: str,
+        error_state: str = "error",
+        error_extra: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """逐账号跑一次池任务：账号之间错开（整点齐射是最容易被记成机器特征的形态），
+        单号异常转成 error 结果、不中断整轮。
+
+        五类任务（签到 / 连登管家 / 活跃上报 / 猫猫旅行 / token 保活）的节奏与容错
+        逐字相同，差异只有"跑什么"和"错误结果长什么样"——模板在这里，任务本体是 run。
+        """
+        items: list[dict[str, Any]] = []
+        for index, account in enumerate(accounts):
+            if index:
+                time.sleep(WB_CHECKIN_STAGGER_MS / 1000.0)
+            try:
+                result = run(account)
+            except Exception as exc:  # 单号异常不中断整轮
+                logger.warning(
+                    f"[workbuddy] uid={account.uid[:8]}… {label}异常: {type(exc).__name__}: {exc}"
+                )
+                result = {
+                    "uid": account.uid,
+                    "state": error_state,
+                    "message": f"{type(exc).__name__}: {exc}",
+                    **(error_extra or {}),
+                }
+            items.append(result)
+        return items
 
     def _growth_skip(self, account: Account, *, need_access: bool = True) -> str:
         """CN 成长任务的账号级门控（非空 = 跳过原因，一个请求都不发）。
@@ -1134,23 +1148,15 @@ class WorkBuddyProvider:
         accounts = self._task_accounts()
         items: list[dict[str, Any]] = []
         redeemed = drawn = failed = skipped = 0
-        for index, account in enumerate(accounts):
-            if index:
-                time.sleep(WB_CHECKIN_STAGGER_MS / 1000.0)
-            try:
-                result = self.streak_bonus(account.uid)
-            except Exception as exc:  # 单号异常不中断整轮
-                logger.warning(
-                    f"[workbuddy] uid={account.uid[:8]}… 连登管家异常: {type(exc).__name__}: {exc}"
-                )
-                result = {"uid": account.uid, "state": "error",
-                          "message": f"{type(exc).__name__}: {exc}", "redeemed": [], "drawn": 0}
-            state = result.get("state")
-            redeemed += len(result.get("redeemed") or [])
-            drawn += int(result.get("drawn") or 0)
-            skipped += 1 if state == "skipped" else 0
-            failed += 1 if state == "error" else 0
-            items.append(result)
+        items = self._run_pool_task(
+            accounts, lambda account: self.streak_bonus(account.uid),
+            label="连登管家", error_extra={"redeemed": [], "drawn": 0},
+        )
+        for item in items:
+            redeemed += len(item.get("redeemed") or [])
+            drawn += int(item.get("drawn") or 0)
+            skipped += 1 if item.get("state") == "skipped" else 0
+            failed += 1 if item.get("state") == "error" else 0
         return {
             "total": len(accounts),
             "redeemed": redeemed,
@@ -1218,23 +1224,16 @@ class WorkBuddyProvider:
         accounts = self._task_accounts()
         items: list[dict[str, Any]] = []
         reported = skipped = failed = suspect = 0
-        for index, account in enumerate(accounts):
-            if index:
-                time.sleep(WB_CHECKIN_STAGGER_MS / 1000.0)
-            try:
-                result = self.activity_report(account.uid)
-            except Exception as exc:
-                logger.warning(
-                    f"[workbuddy] uid={account.uid[:8]}… 活跃上报异常: {type(exc).__name__}: {exc}"
-                )
-                result = {"uid": account.uid, "state": "error",
-                          "message": f"{type(exc).__name__}: {exc}", "suspect": False}
-            state = result.get("state")
+        items = self._run_pool_task(
+            accounts, lambda account: self.activity_report(account.uid),
+            label="活跃上报", error_extra={"suspect": False},
+        )
+        for item in items:
+            state = item.get("state")
             reported += 1 if state == "reported" else 0
             skipped += 1 if state == "skipped" else 0
             failed += 1 if state == "error" else 0
-            suspect += 1 if result.get("suspect") else 0
-            items.append(result)
+            suspect += 1 if item.get("suspect") else 0
         return {
             "total": len(accounts),
             "reported": reported,
@@ -1290,11 +1289,11 @@ class WorkBuddyProvider:
                 logger.warning(f"[workbuddy] uid={uid[:8]}… 旅行领奖失败: {exc}")
                 return {"uid": uid, "state": "error", "message": str(exc), "credit": 0.0}
             logger.info(
-                f"[workbuddy] uid={uid[:8]}… 旅行领奖 +{_fmt_credit(credit)} 积分"
+                f"[workbuddy] uid={uid[:8]}… 旅行领奖 +{checkin.fmt_credit(credit)} 积分"
                 f"（record={state.record_id}）"
             )
             return {"uid": uid, "state": "claimed",
-                    "message": f"到站领奖 +{_fmt_credit(credit)}", "credit": credit}
+                    "message": f"到站领奖 +{checkin.fmt_credit(credit)}", "credit": credit}
 
         if state.state == growth.TRAVEL_IDLE:
             if state.daily_limit_reached:
@@ -1360,21 +1359,14 @@ class WorkBuddyProvider:
         items: list[dict[str, Any]] = []
         tally: dict[str, int] = {}
         credits = 0.0
-        for index, account in enumerate(accounts):
-            if index:
-                time.sleep(WB_CHECKIN_STAGGER_MS / 1000.0)
-            try:
-                result = self.travel(account.uid)
-            except Exception as exc:
-                logger.warning(
-                    f"[workbuddy] uid={account.uid[:8]}… 旅行异常: {type(exc).__name__}: {exc}"
-                )
-                result = {"uid": account.uid, "state": "error",
-                          "message": f"{type(exc).__name__}: {exc}", "credit": 0.0}
-            state = str(result.get("state") or "error")
+        items = self._run_pool_task(
+            accounts, lambda account: self.travel(account.uid),
+            label="旅行", error_extra={"credit": 0.0},
+        )
+        for item in items:
+            state = str(item.get("state") or "error")
             tally[state] = tally.get(state, 0) + 1
-            credits += float(result.get("credit") or 0)
-            items.append(result)
+            credits += float(item.get("credit") or 0)
         return {
             "total": len(accounts),
             "adopted": tally.get("adopted", 0),
@@ -1388,7 +1380,7 @@ class WorkBuddyProvider:
             "summary": (
                 f"共 {len(accounts)} 号：领养 {tally.get('adopted', 0)}，"
                 f"派出 {tally.get('departed', 0)}，领奖 {tally.get('claimed', 0)}"
-                + (f"（+{_fmt_credit(credits)} 积分）" if credits else "")
+                + (f"（+{checkin.fmt_credit(credits)} 积分）" if credits else "")
                 + f"，在途 {tally.get('traveling', 0)}，"
                 f"不适用 {tally.get('skipped', 0) + tally.get('adopt-blocked', 0)}，"
                 f"失败 {tally.get('error', 0)}"
@@ -1444,23 +1436,16 @@ class WorkBuddyProvider:
         accounts = self._task_accounts()
         items: list[dict[str, Any]] = []
         refreshed = failed = disabled = skipped = 0
-        for index, account in enumerate(accounts):
-            if index:
-                time.sleep(WB_CHECKIN_STAGGER_MS / 1000.0)
-            try:
-                result = self.keepalive(account.uid)
-            except Exception as exc:
-                logger.warning(
-                    f"[workbuddy] uid={account.uid[:8]}… 保活异常: {type(exc).__name__}: {exc}"
-                )
-                result = {"uid": account.uid, "state": "failed",
-                          "message": f"{type(exc).__name__}: {exc}"}
-            state = str(result.get("state") or "failed")
+        items = self._run_pool_task(
+            accounts, lambda account: self.keepalive(account.uid),
+            label="保活", error_state="failed",
+        )
+        for item in items:
+            state = str(item.get("state") or "failed")
             refreshed += 1 if state == "refreshed" else 0
             disabled += 1 if state == "disabled" else 0
             failed += 1 if state == "failed" else 0
             skipped += 1 if state == "skipped" else 0
-            items.append(result)
         return {
             "total": len(accounts),
             "refreshed": refreshed,
@@ -1475,11 +1460,6 @@ class WorkBuddyProvider:
         }
 
     # ── 罚号与记账 ──
-
-    def _note_success(self, account: Account) -> None:
-        self._store.update_runtime(
-            account.uid, breaker_count=0, breaker_until_ms=0, consecutive_failures=0
-        )
 
     def _clear_model_block(self, account: Account, model: str) -> None:
         """成功请求证明「这个号此刻服务这个模型」，清掉它的 11102 负缓存条目。
@@ -1531,10 +1511,7 @@ class WorkBuddyProvider:
 
     def _note_stream_error(self, account: Account, model: str, payload: str) -> None:
         """流内 error 帧（6004 限流/内容拦截等真实形态）——罚号依据 D6。"""
-        try:
-            classified = classify.classify(200, payload)
-        except Exception:
-            return
+        classified = classify.classify(200, payload)
         if classified.kind in (classify.NONE,):
             return
         self._penalize(account, classified, model, payload)
@@ -1615,20 +1592,6 @@ class WorkBuddyProvider:
                 fields["status"] = "disabled"
                 fields["status_reason"] = "session invalid (refresh exhausted)"
         self._store.update_runtime(account.uid, **fields)
-
-    def _feed_breaker(self, account: Account, fields: dict[str, Any] | None = None) -> None:
-        now_ms = int(time.time() * 1000)
-        current = self._store.get_account(account.uid)
-        count = (current.breaker_count if current else account.breaker_count) + 1
-        updates: dict[str, Any] = {"breaker_count": count}
-        if count >= WB_BREAKER_THRESHOLD:
-            over = count - WB_BREAKER_THRESHOLD
-            duration_s = min(WB_BREAKER_BASE_S * (2 ** over), WB_BREAKER_MAX_S)
-            updates["breaker_until_ms"] = now_ms + int(duration_s * 1000)
-        if fields is not None:
-            fields.update(updates)
-            return
-        self._store.update_runtime(account.uid, **updates)
 
     # ── 运维面（管理端点用）──
 
@@ -1727,15 +1690,6 @@ class WorkBuddyProvider:
 
     def login_poll(self, state: str) -> dict[str, Any]:
         return self._login_manager.poll(state)
-
-    def revive_account(self, uid: str) -> bool:
-        """人工恢复：清禁用/冷却/熔断/连败（wb2api Revive 语义）。"""
-        self._store.update_runtime(
-            uid, status="active", status_reason="", cooldown_until_ms=0,
-            cooldown_kind="", breaker_count=0, breaker_until_ms=0,
-            consecutive_failures=0,
-        )
-        return True
 
     def pool_snapshot(self) -> dict[str, Any]:
         return self._pool.snapshot()

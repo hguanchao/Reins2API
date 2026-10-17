@@ -9,10 +9,11 @@ today→小时桶（当前整点前 11h ~ 后 12h，共 24 桶）、7d→天桶�
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
-_BEIJING_TZ = timezone(timedelta(hours=8))
+from core.settings import BEIJING_TZ as _BEIJING_TZ
+
 _BEIJING_OFFSET_MS = 8 * 3_600_000
 
 # 居中窗口(UI 四档):锚点 = 当前整点(小时桶) / 北京今日 0 点(天桶)。
