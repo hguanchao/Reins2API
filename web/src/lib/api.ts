@@ -363,6 +363,11 @@ export interface WorkBuddyAccount extends AccountTelemetry {
   credits_total: number | null;
   credits_remain: number | null;
   credits_updated_ms: number;
+  /** 上次**尝试**查询余额的时刻（成功/失败/空包都写）；0 = 从未查过。
+   *  与 credits_updated_ms（上次**成功**）分开：面板讲"为什么空"要靠它 */
+  credits_checked_ms: number;
+  /** 上次查询的失败原因（成功或空包清空）——上游 5xx / 网络异常的原文 */
+  credits_error: string;
   /** 快过期积分：窗口（7 天）内会到期的那部分余额，是 credits_remain 的子集 */
   credits_expiring: number;
   /** 最近一批到期包的到期时刻（毫秒）；0 = 没有带期限的包 */

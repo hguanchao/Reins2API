@@ -21,6 +21,7 @@ msg 文案规范（全仓库 logger 调用统一遵守）:
 - 统一 f-string，不用 loguru 的 {} 占位符；一条日志一行，事件短语不带句尾标点。
 """
 
+import atexit
 import os
 import re
 import sys
@@ -108,7 +109,7 @@ logger.add(
 FILE_LINE_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
 )
-logger.add(
+_FILE_SINK_ID = logger.add(
     os.path.join(LOG_DIR, "server.log"),
     level="TRACE",
     format=FILE_LINE_FORMAT,
@@ -120,5 +121,22 @@ logger.add(
     backtrace=True,
     diagnose=True,
 )
+
+
+def _close_file_sink() -> None:
+    """退出前刷净队列并关掉文件 sink。
+
+    两个用处：① 生产进程不留尾巴——enqueue 队列里的最后几条（排水收尾那些）先落盘
+    再退出，突然关窗口也不会丢；② 测试进程的临时目录能被 settings 的 atexit 清理删净
+    ——Windows 上打开着的日志文件删不掉，sink 不关就只剩一个删不掉的空壳目录
+    （settings 的清理注册得更早 → 按 atexit 的后进先出，本函数先跑）。"""
+    try:
+        logger.complete()
+        logger.remove(_FILE_SINK_ID)
+    except Exception:  # 退出路径尽力而为，失败也不该影响退出码
+        pass
+
+
+atexit.register(_close_file_sink)
 
 __all__ = ["logger"]

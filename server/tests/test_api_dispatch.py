@@ -208,8 +208,10 @@ class _Client:
 class _Server:
     """上下文管理器：真实 HTTP 服务 + 桩 provider + 临时配置/临时遥测库。
 
-    绝不碰生产状态：配置落盘改指临时文件（PUT /schedule 会落盘）、遥测库改指
-    临时目录、注册表用完还原。测试跑完机器上什么都不该变。
+    绝不碰生产状态：注册表用完还原；配置落盘与遥测库都改指本用例的临时目录。
+    （settings 已把整个测试进程分流到 %TEMP%（见 settings._test_scratch），这里再按
+    用例收窄一次——同一个进程里连跑多个用例时，PUT /schedule 改过的配置不该被下一个
+    用例看见。测试跑完机器上什么都不该变。）
     """
 
     def __init__(self, *names: str) -> None:

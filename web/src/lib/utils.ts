@@ -129,6 +129,54 @@ export function expiringHint(
   return { earliestRemain, expiring, atMs, tone };
 }
 
+/* ── 积分列「没有观测」的解释（只有 WorkBuddy 池用）──────────────
+   余额只在"拿到新 token"的时刻拉取，所以一列"—"至少有三种来路，光看破折号分不清
+   是坏了还是没数据（2026-10-18 实测：新号的欢迎积分包比入库晚 1~2 秒才创建，
+   入库那次查询必然拿到空包）：
+
+     failed  上次查询失败（上游 5xx / 网络）——原因原文来自 credits_error
+     empty   查询通了，但上游没给资源包（新号还没发、或确实为 0）
+     never   从未查过（升级前入库的老号；或刚入库的补拉还在阶梯里跑）
+
+   有观测（credits_remain != null）时返回 null：数字自己在说话，不需要解释。
+   色档不在这里给——TSX 那边按 kind 映射主题色（与到期提示同一套规矩）。 */
+export type CreditsMissingKind = "failed" | "empty" | "never";
+
+export interface CreditsMissingHint {
+  kind: CreditsMissingKind;
+  /** 一行结论（卡片「状态」行） */
+  label: string;
+  /** 细节：失败给上游原文，其余给一句人话（卡片第二行） */
+  detail: string;
+  /** 上次**尝试**时刻（毫秒）；0 = 从未尝试过 */
+  checkedMs: number;
+}
+
+export function creditsMissingHint(account: {
+  credits_remain: number | null;
+  credits_checked_ms?: number;
+  credits_error?: string;
+}): CreditsMissingHint | null {
+  if (account.credits_remain != null) return null;
+  const checkedMs = account.credits_checked_ms || 0;
+  const error = (account.credits_error || "").trim();
+  if (error) return { kind: "failed", label: "上次查询失败", detail: error, checkedMs };
+  if (checkedMs > 0) {
+    return {
+      kind: "empty",
+      label: "上游未返回资源包",
+      detail: "查询是通的，包里没有余额——可能确实为 0，也可能刚发的积分还没到账",
+      checkedMs,
+    };
+  }
+  return {
+    kind: "never",
+    label: "尚未查得余额",
+    detail: "添加 / 导入后会自动补拉；也可点这一行的「刷新」立即查一次",
+    checkedMs: 0,
+  };
+}
+
 /* ── 耗时列分档（两个用量页共用，阈值只在这里定义）──────────────
    数据依据（2026-10-12 实测两张 requests 表）：首字 p90 = 6.3s、p95 = 8.0s，
    取 10s 大约只圈住最慢的 5%；30s 是 2%（p99 = 65s、max 98s）。

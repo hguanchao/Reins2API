@@ -65,6 +65,10 @@ CREATE TABLE IF NOT EXISTS accounts (
     credits_total        REAL,
     credits_remain       REAL,
     credits_updated_ms   INTEGER NOT NULL DEFAULT 0,
+    -- 上次**尝试**查询余额的时刻（成功/失败/空包都写）与失败原因：面板要靠它解释
+    -- 「为什么这一列是空的」，巡检靠它判断观测过期（见 settings 的 WB_CREDITS_*）
+    credits_checked_ms   INTEGER NOT NULL DEFAULT 0,
+    credits_error        TEXT NOT NULL DEFAULT '',
     -- 运行态备忘（统计由 requests 表按 account_uid 汇总，见 docs §7.2）
     last_error           TEXT NOT NULL DEFAULT '',
     -- 签到台账（last_checkin_day = 北京日期 YYYY-MM-DD，见 checkin.py）
@@ -94,6 +98,8 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("credits_expiring", "REAL NOT NULL DEFAULT 0"),
     ("credits_earliest_at_ms", "INTEGER NOT NULL DEFAULT 0"),
     ("credits_earliest_remaining", "REAL NOT NULL DEFAULT 0"),
+    ("credits_checked_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("credits_error", "TEXT NOT NULL DEFAULT ''"),
 )
 
 _ACCOUNT_COLUMNS = (
@@ -101,7 +107,7 @@ _ACCOUNT_COLUMNS = (
     "device_token", "token_expires_ms", "status", "status_reason",
     "cooldown_until_ms", "cooldown_kind", "breaker_count", "breaker_until_ms",
     "model_cooldowns", "consecutive_failures", "credits_total", "credits_remain",
-    "credits_updated_ms", "last_error",
+    "credits_updated_ms", "credits_checked_ms", "credits_error", "last_error",
     "last_checkin_day", "checkin_streak", "checkin_total_credits", "checkin_updated_ms",
     "credits_expiring", "credits_earliest_at_ms", "credits_earliest_remaining",
     "created_ms", "updated_ms",
@@ -111,7 +117,7 @@ _ACCOUNT_COLUMNS = (
 _RUNTIME_FIELDS = frozenset({
     "cooldown_until_ms", "cooldown_kind", "breaker_count", "breaker_until_ms",
     "model_cooldowns", "consecutive_failures", "credits_total", "credits_remain",
-    "credits_updated_ms", "last_error",
+    "credits_updated_ms", "credits_checked_ms", "credits_error", "last_error",
     "last_checkin_day", "checkin_streak", "checkin_total_credits", "checkin_updated_ms",
     "credits_expiring", "credits_earliest_at_ms", "credits_earliest_remaining",
     "status", "status_reason",
@@ -141,6 +147,8 @@ class Account:
     credits_total: float | None = None
     credits_remain: float | None = None
     credits_updated_ms: int = 0
+    credits_checked_ms: int = 0
+    credits_error: str = ""
     last_error: str = ""
     last_checkin_day: str = ""
     checkin_streak: int = 0
@@ -187,6 +195,8 @@ class Account:
             "credits_total": self.credits_total,
             "credits_remain": self.credits_remain,
             "credits_updated_ms": self.credits_updated_ms,
+            "credits_checked_ms": self.credits_checked_ms,
+            "credits_error": self.credits_error,
             "last_error": self.last_error,
             "last_checkin_day": self.last_checkin_day,
             "checkin_streak": self.checkin_streak,
@@ -240,6 +250,8 @@ class WorkBuddyStore(AccountStore):
             credits_total=data.get("credits_total"),
             credits_remain=data.get("credits_remain"),
             credits_updated_ms=int(data.get("credits_updated_ms") or 0),
+            credits_checked_ms=int(data.get("credits_checked_ms") or 0),
+            credits_error=data.get("credits_error") or "",
             last_error=data.get("last_error") or "",
             last_checkin_day=data.get("last_checkin_day") or "",
             checkin_streak=int(data.get("checkin_streak") or 0),

@@ -87,7 +87,15 @@ import { UsageStatsCell } from "@/components/accounts/UsageStatsCell";
 import { useCatalogRefresh } from "@/lib/useCatalogRefresh";
 import { fmtLimit } from "@/lib/format";
 import { AUTO_REFRESH_MS, useSessionCountdown } from "@/lib/countdown";
-import { cn, expiringHint, fmtCompact, parseCreditFactor, type ExpiringTone } from "@/lib/utils";
+import {
+  cn,
+  creditsMissingHint,
+  expiringHint,
+  fmtCompact,
+  parseCreditFactor,
+  type CreditsMissingKind,
+  type ExpiringTone,
+} from "@/lib/utils";
 
 const LOGIN_POLL_MS = 3_000;
 
@@ -326,6 +334,14 @@ const TONE_TEXT: Record<ExpiringTone, string> = {
   "": "text-muted-foreground",
   "is-soon": "text-warn",
   "is-urgent": "text-destructive",
+};
+
+/** 积分列「没有观测」的色档：只有失败值得上色（琥珀——列里的数字不可信，账号本身
+ *  未必有问题）；"上游没发"与"还没查过"是常态，用弱化色，别吓人。 */
+const MISSING_TONE: Record<CreditsMissingKind, string> = {
+  failed: "text-warn",
+  empty: "text-muted-foreground",
+  never: "text-muted-foreground",
 };
 
 /** cron 的粗校验（够用即止）：5 个字段、每字段只含数字与 * , - /。
@@ -752,6 +768,7 @@ export function WorkBuddyPage() {
                       const avail = availabilityOf(account);
                       const unsupported = checkinUnsupported(account);
                       const expiring = expiringHint(account);
+                      const missing = creditsMissingHint(account);
                       const checkedToday = account.last_checkin_day === beijingToday();
                       return (
                         <TableRow key={account.uid}>
@@ -794,6 +811,40 @@ export function WorkBuddyPage() {
                                   ? `${fmtCompact(account.credits_remain)} / ${fmtCompact(account.credits_total ?? 0)}`
                                   : "—"}
                               </span>
+                              {/* 没有观测时挂一个说明图标：一个"—"分不清是"坏了"、"上游没发"
+                                  还是"还没查过"，卡片把三种都说成一句人话 + 上次尝试时刻 */}
+                              {missing ? (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className={cn("wb-credits-hint", MISSING_TONE[missing.kind])}>
+                                      <AlertTriangle className="size-3.5" strokeWidth={1.9} aria-hidden />
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" tone="surface">
+                                    <div className="grid grid-cols-[auto_1fr] items-baseline gap-x-3.5 gap-y-1">
+                                      <span className="text-fg-subtle">状态</span>
+                                      <span className={cn("font-medium", MISSING_TONE[missing.kind])}>
+                                        {missing.label}
+                                      </span>
+                                      <span className="text-fg-subtle">
+                                        {missing.kind === "failed" ? "上游返回" : "说明"}
+                                      </span>
+                                      {/* 上游原文可能很长（含 requestId）：允许换行，别把卡片撑爆 */}
+                                      <span className="max-w-[220px] font-mono text-[11px] break-all">
+                                        {missing.detail}
+                                      </span>
+                                      {missing.checkedMs > 0 ? (
+                                        <>
+                                          <span className="text-fg-subtle">上次尝试</span>
+                                          <span className="font-mono tabular-nums">
+                                            {beijingStamp(missing.checkedMs)}
+                                          </span>
+                                        </>
+                                      ) : null}
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : null}
                               {expiring ? (
                                 <Tooltip>
                                   <TooltipTrigger asChild>

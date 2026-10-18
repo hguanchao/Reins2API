@@ -16,6 +16,7 @@ sqlite 全程参数化查询；uid 白名单防路径穿越/注入。
 
 from __future__ import annotations
 
+import atexit
 import json
 import re
 import sqlite3
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from core.logger import logger
+
+# 账号库路径来自 settings：测试进程由 settings 分流到临时目录（见 settings._test_scratch）
 from core.settings import DATA_DIR
 
 # 账号级生命周期状态（与冷却/熔断正交）：active 可派号；paused 人工暂停；
@@ -210,3 +213,22 @@ def write_with_retry(
             time.sleep(base_delay_s * (attempt + 1))
     assert last is not None  # attempts >= 1 时循环至少跑过一次
     raise last
+
+
+def _close_defaults() -> None:
+    """进程退出时关掉默认单例的连接（atexit，尽力而为）。
+
+    两处都需要：生产进程的排水收尾只关了 db.stores()（遥测库），账号库不在那份名单里
+    ——句柄留给解释器收尾虽然不会损坏 WAL，但"排水完成即状态干净"这条对得上更好；
+    测试进程则靠它让自己的临时目录能被 settings 的 atexit 删净（打开的 SQLite 文件
+    在 Windows 上删不掉）。注册顺序也正好：本模块 import settings 在先，atexit 后进
+    先出，本函数先跑，settings 的 rmtree 后跑。
+    """
+    with _default_lock:
+        instances = list(_defaults.values())
+        _defaults.clear()
+    for instance in instances:
+        instance.close()
+
+
+atexit.register(_close_defaults)

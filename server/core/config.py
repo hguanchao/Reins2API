@@ -31,9 +31,16 @@ from typing import Any
 from core.cron import CronError
 from core.cron import parse as parse_cron
 from core.logger import logger
-from core.settings import BASE_DIR, PROXY_MODE, PROXY_URL, WB_SCHEDULE_DEFAULTS, WB_SCHEDULE_MINUTE
+from core.settings import (
+    CONFIG_FILE,
+    PROXY_MODE,
+    PROXY_URL,
+    WB_SCHEDULE_DEFAULTS,
+    WB_SCHEDULE_MINUTE,
+)
 
-CONFIG_PATH = BASE_DIR / "config.json"
+# 生产 = server/config.json；测试进程由 settings 分流到临时目录（见 settings._test_scratch）
+CONFIG_PATH = CONFIG_FILE
 
 PROXY_MODES = ("direct", "system", "manual")
 

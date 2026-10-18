@@ -34,6 +34,10 @@ from core.settings import (
     WB_COOLDOWN_SOFT_BASE,
     WB_COOLDOWN_SOFT_MAX,
     WB_COOLDOWN_WAF,
+    WB_CREDITS_SETTLE_ATTEMPTS,
+    WB_CREDITS_SETTLE_BACKOFF_S,
+    WB_CREDITS_SWEEP_MAX,
+    WB_CREDITS_TTL_S,
     WB_NEGATIVE_CACHE_BASE_S,
     WB_NEGATIVE_CACHE_MAX_S,
     WB_NEGATIVE_CACHE_SHIFT,
@@ -823,13 +827,40 @@ class WorkBuddyProvider(AccountRuntime):
         finally:
             lock.release()
 
-    # ── 积分（只在取得新 token 时拉取：登录入库 / 手动导入 / token 刷新）──
+    # ── 积分（取得新 token 的时刻拉取：登录入库 / 手动导入 / token 刷新；
+    #     另配两条补拉规则兜住到账竞态与观测过期，见 settings 的 WB_CREDITS_*）──
 
     def _refresh_credits_async(self, uid: str) -> None:
         threading.Thread(
             target=self._refresh_credits, args=(uid,), daemon=True,
             name=f"wb-credits-{uid[:8]}",
         ).start()
+
+    def _refresh_credits_settling(self, uid: str) -> None:
+        """新号入库后的补拉（后台线程外壳，阻塞体见 _refresh_credits_settle）。"""
+        threading.Thread(
+            target=self._refresh_credits_settle, args=(uid,), daemon=True,
+            name=f"wb-credits-settle-{uid[:8]}",
+        ).start()
+
+    def _refresh_credits_settle(self, uid: str) -> wb_upstream.CreditsDetail | None:
+        """新号入库后的补拉阶梯：空包/失败都重试，拿到观测即停（阻塞体，供线程与测试走）。
+
+        为什么需要：上游的欢迎积分包比账号入库晚 1~2 秒才创建（实测 16:27:25.110 入库、
+        16:27:26.0 与 27.0 两个包到账），而入库那次查询只花 ~0.2s——必然打在积分到账
+        之前拿到空包。空包按「未知」处理（不能用 0 覆盖已知值），于是新号的积分列
+        一直空着，直到下一次换 token（global 号的 AT 是一年期的，等于永远不刷）。
+
+        阶梯步进在 settings（4 次含立即那次、1.5s 起逐次 ×2，全程 ~11s）：上游到账
+        只需秒级，这个量级够；上限固定，失败也不会变成持续重试。
+        """
+        for attempt in range(WB_CREDITS_SETTLE_ATTEMPTS):
+            if attempt:
+                time.sleep(WB_CREDITS_SETTLE_BACKOFF_S * (2 ** (attempt - 1)))
+            detail = self._refresh_credits(uid, quiet=True)
+            if detail is not None:
+                return detail
+        return None
 
     def _refresh_credits(self, uid: str, quiet: bool = True) -> wb_upstream.CreditsDetail | None:
         """取积分并落库（含快过期分桶）→ 返回本次观测；失败/空包返回 None。
@@ -842,6 +873,10 @@ class WorkBuddyProvider(AccountRuntime):
 
         快过期分桶（窗口 7 天，由 WB_EXPIRING_SOON_H 给出）落库后供选号加权：到期越近的余额
         越该先花掉，官方赠送/补偿的积分常带期限。
+
+        三种结局都写 credits_checked_ms（上次**尝试**时刻）——巡检靠它判过期，面板靠它
+        区分"从没查过"与"查过但没数"；失败原因另写 credits_error（成功/空包清空），
+        面板据此把「为什么空」讲给用户听，而不是只留一个说不清的"—"。
         """
         account = self._store.get_account(uid)
         if account is None:  # 刷新与落库之间账号可能被删
@@ -853,17 +888,47 @@ class WorkBuddyProvider(AccountRuntime):
         except Exception as exc:
             level = logger.info if quiet else logger.warning
             level(f"[workbuddy] uid={uid[:8]}… 积分查询失败: {type(exc).__name__}: {exc}")
+            self._store.update_runtime(
+                uid, credits_checked_ms=int(time.time() * 1000),
+                credits_error=f"{type(exc).__name__}: {exc}"[:300],
+            )
             return None
+        now_ms = int(time.time() * 1000)
         if detail.remain <= 0 and detail.total <= 0:
+            # 空包 ≠ 失败：查询是通的，只是上游没给资源包（新号还没发、或确实为 0）。
+            # credit 值照旧不覆盖（未知保持未知），但这次尝试要记账。
+            self._store.update_runtime(uid, credits_checked_ms=now_ms, credits_error="")
             return None
         self._store.update_runtime(
             uid, credits_remain=detail.remain, credits_total=detail.total,
-            credits_updated_ms=int(time.time() * 1000),
+            credits_updated_ms=now_ms, credits_checked_ms=now_ms, credits_error="",
             credits_expiring=detail.expiring,
             credits_earliest_at_ms=detail.earliest_at_ms,
             credits_earliest_remaining=detail.earliest_remaining,
         )
         return detail
+
+    def refresh_stale_credits(self) -> int:
+        """积分巡检：观测（＝上次尝试）超期的账号补拉一次，返回补拉条数。
+
+        为什么要有它：余额只在「拿到新 token」的时刻拉取，而 global 号的 AT 是一年期
+        的——请求路径的「到期前才刷」整年不触发，积分观测于是永远停在入库那一次。
+        没有这条巡检，任何一次空包/失败都会让积分列一直空到下次保活（一天一次）。
+
+        门槛用 credits_checked_ms（尝试时刻）而不是 credits_updated_ms（成功时刻）：
+        一直失败/一直空包的号也按 TTL 重试，否则它们会退化成每轮必撞上游。
+        disabled 不进（token 多半已废）；paused 进——暂停不该让面板上的数字烂掉。
+        每轮上限 WB_CREDITS_SWEEP_MAX：积压多时（比如批量导入）也不会对着上游齐射。
+        """
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - WB_CREDITS_TTL_S * 1000
+        accounts = [a for a in self._task_accounts() if a.credits_checked_ms <= cutoff]
+        accounts.sort(key=lambda a: a.credits_checked_ms)  # 最老的先补，积压时也公平
+        refreshed = 0
+        for account in accounts[:WB_CREDITS_SWEEP_MAX]:
+            if self._refresh_credits(account.uid, quiet=True) is not None:
+                refreshed += 1
+        return refreshed
 
     # ── 签到（billing 域每日一次；接口契约与跳过规则由同目录 checkin 模块承担）──
 
@@ -1620,16 +1685,18 @@ class WorkBuddyProvider(AccountRuntime):
         if not account.access_token and not account.refresh_token:
             raise ValueError("access_token 与 refresh_token 至少填一项")
         self._store.upsert_account(account)  # INSERT OR REPLACE = 重新导入即人工恢复
-        # 手动导入 = 一次拿新 token：后台顺带拉积分，不阻塞导入响应
-        self._refresh_credits_async(uid)
+        # 手动导入 = 一次拿新 token：后台顺带拉积分，不阻塞导入响应（新号走阶梯补拉）
+        self._refresh_credits_settling(uid)
         return account
 
     def _on_account_added(self, uid: str) -> None:
         """OAuth 登录完成入库（新 token 时刻）：后台顺带拉积分给账号列填数。
 
-        不拉模型目录：目录只在手动「获取模型」时刷新。
+        新号必须走 settling 阶梯：入库那一刻上游的欢迎积分包还没建好（晚 1~2 秒），
+        单次查询必然拿到空包、积分列一直空着（2026-10-18 实测，见
+        _refresh_credits_settling 的注释）。不拉模型目录：目录只在手动「获取模型」时刷新。
         """
-        self._refresh_credits_async(uid)
+        self._refresh_credits_settling(uid)
 
     def account_busy(self, uid: str) -> bool:
         return self._pool.in_flight_count(uid) > 0

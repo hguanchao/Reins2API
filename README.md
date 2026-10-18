@@ -9,7 +9,7 @@
 - **分库遥测**:每个上游一个 SQLite 文件(`server/data/opencode.db`、`server/data/workbuddy.db`、`server/data/codex.db`),用量与请求日志同源;另有 `server/data/models.json` 保存各上游模型目录快照——三家**统一核心字段**(`id`/`name`/`description`/`context_window`/`max_output_tokens`/`input_modalities`/`output_modalities`/`supports_images`/`supports_reasoning`/`supports_tool_call`/`reasoning_efforts`/`default_effort`/`protocol`/`free`/`extras`,上游没声明的字段省略),形状 `{"opencode":[],"workbuddy":{"cn":[],"glb":[]},"codex":[],"meta":{"<provider>":{"updated_at_ms":…}}}`,每次刷新覆盖对应键,供排查/对照。**模型目录只在页面点「获取模型」时刷新**(`POST /api/{provider}/refresh`),启动只读这份快照(缓存为空才兜底拉一次);内容有变才写盘,写前把现文件轮转成 `models.json.bak`
 - **WorkBuddy 号池**:多账号加权选号(快过期积分加权 + 成本分层 + Top-5 候选 + 防惊群)、冷却/熔断、会话粘性、token 自动刷新、OAuth 设备码登录、DSML 工具调用标记还原;四类定时任务(签到+连登管家 / 活跃上报 / 猫猫旅行 / token 保活)各有独立开关与时点(见 `docs/workbuddy-provider-design.md`)
 - **Codex 号池**:ChatGPT 账号 OAuth(PKCE 授权码)接入、多账号加权选号、冷却/熔断、会话粘性、refresh_token 轮换与自动刷新、模型目录按账号下发(见 `docs/codex-provider-design.md`)
-- **管理台**:OpenCode 状态页、WorkBuddy 号池页(含定时任务弹窗、暂停选号单列统计;账号表**积分列**在主行「剩余 / 总」下再给一行**快过期提示**——<7 天橙色、<1 天红色,数据全部来自本地库、打开页面不打上游)、Codex 页、系统配置页
+- **管理台**:OpenCode 状态页、WorkBuddy 号池页(含定时任务弹窗、暂停选号单列统计;账号表**积分列**在主行「剩余 / 总」下再给一行**快过期提示**——<7 天橙色、<1 天红色,数据全部来自本地库、打开页面不打上游;列里没有数字时给原因:查询失败 / 上游未返回资源包 / 尚未查过)、Codex 页、系统配置页
 - **插件轴**:`providers/` 按上游分包,后期加新上游 = 一个包 + 一行注册
 
 ## 接入
@@ -123,6 +123,7 @@ Web 管理台:构建前端后访问 `http://127.0.0.1:8787/`(SPA;根路径会 re
   **选号**(实现住共用的 `providers/account_pool.py`,但新机制只在 WorkBuddy 打开;Codex 不覆写任何钩子、行为逐字不变):粘性会话优先 → 过滤(冷却/熔断/在途占满/积分保底)→ **成本分层** → **加权随机** → **Top-5 短名单** → **防惊群** → 软冷却兜底。
   - **加权随机**:`1 + 闲置补偿(0.5/h 封顶 5.0) + credits 项(按候选集最大余额归一,满额 +10)`,未知余额不加 credits 项(按 1.0 计)。**企业额度**走 `get-enterprise-user-usage`(`X-Enterprise-Id`,`credit`=本周期已用四舍五入、`limitNum`=额度;负值=不限量 → 大剩余量 + 总量 -1),所以企业号也有真实余额参与权重与积分保底
   - **快过期积分加权**:余额查询解析**包级到期时间**(`CycleEndTime`),7 天窗口内到期的余额单独落库;带有效快过期批次的号在候选集里按 3 个虚拟实例计权(`WB_EXPIRING_SLOTS`),把快到期的赠送/补偿积分先花掉——实测本机账号 350 分里有 250 分在 7 天内到期
+  - **余额台账的补拉**:余额只在「拿到新 token」的时刻查(登录入库 / 手动导入 / 手动刷新 / token 刷新 / 保活),两条补拉规则兜住它的两个缺口——① **到账竞态**:上游的欢迎积分包比账号入库晚 1~2 秒才创建,入库那一刻的查询必然拿到空包(空包按「未知」处理、不覆盖不落库),所以新号入库后按短阶梯重试(`WB_CREDITS_SETTLE_*`,4 次含立即那次、全程 ~11s,拿到观测即停);② **观测过期**:global 号的 AT 是一年期的,请求路径的「到期前才刷」整年不触发,后台巡检(每 2 分钟醒来)按「上次**尝试**」超过 `WB_CREDITS_TTL_S`(6h)补拉一次、每轮上限 `WB_CREDITS_SWEEP_MAX`(防积压时齐射上游)。每次尝试(成功/失败/空包)都记 `credits_checked_ms`,失败原因记 `credits_error`——积分列没有数字时,悬浮图标把三种来路(查询失败 / 上游没给资源包 / 还没查过)分别说清,而不是只留一个说不明的"—"
   - **成本分层**:按 (账号, 模型) 的**实测扣费**分三层(响应末帧 `usage.credit` 按每千 token 归一 → 0 实测免费 / 1 无观测 / 2 实测收费),只留最优层;存在"免费层垄断 + 无观测号"时每 30 分钟把一轮真实请求改道给无观测号去实测(**条件探索**,零额外上游请求),成功即毕业。`/api/workbuddy/state` 的 `model_costs` 就是这本台账(默认 6 小时观测有效期,"夜间免费"这类时段优惠过期后不再影响选号)
   - **Top-5 短名单**:按 (单价, 权重) 取前 5 再在名单内加权抽签,打散热点;并列候选在截断前洗牌(否则排序会把并列号里固定的那批钉死在名单里)
   - **防惊群**:同号 100ms 撞号窗口内让位给其它号(短名单全热时按**单调选中序号**在全候选里取最旧——墙钟精度不足,连续选号可能同一毫秒,只有序号能分全序)
@@ -184,7 +185,14 @@ web/                     React 管理台(OpenCodePage / WorkBuddyPage / CodexPag
   确认改动符合预期后用 `--regen` 重新生成。重构前先跑它,再改代码。
 - `test_sse_framing.py` —— SSE 半包处理(随机切块 × 两条解码路径的等价性)。
 - `test_api_dispatch.py` —— 管理面路由与信封形状(起真实 HTTP 服务打真实请求)。
+- `test_isolation.py` —— 测试进程的落盘隔离契约(见下)。
 - 其余按 provider / 协议 / 子系统分文件;`upstream_evidence.md` 记上游实测结论。
+
+**测试进程的落盘分流**:入口在 `server/tests/` 下的进程(手工 `python tests/test_x.py`
+或 `pytest`)由 `core.settings` 自动把日志 / 遥测库 / 账号库 / 配置全指到
+`%TEMP%/reins2api-test-*/`,不碰 `server/logs`、`server/data`、`server/config.json`
+——测试不用各自改路径(改了也仍会被覆盖成临时目录),生产进程(`main.py`、`scripts/start.py`)
+解析结果不变。`test_isolation.py` 双向钉死这条契约:测试侧必须分流,生产侧必须不误伤。
 
 ## 已知取舍
 

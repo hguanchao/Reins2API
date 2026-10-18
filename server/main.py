@@ -13,9 +13,10 @@ import time
 
 from core.logger import logger
 
-# 账号 token 后台巡检间隔（秒）。固定周期醒来，但**只刷快过期的号**，
-# 不做全量刷新——全量刷会让每个号的 refresh_token 周期性轮换（上游可能因此判失效），
-# 也白打上游请求。刷谁由 provider.refresh_expiring() 自己决定。
+# 账号后台巡检间隔（秒）。固定周期醒来，但每一类维护都**只碰该碰的号**：
+# token 只刷快过期的（全量刷会让每个号的 refresh_token 周期性轮换，上游可能因此判失效，
+# 也白打上游请求），积分只补拉观测过期的。刷谁由 provider 的钩子自己决定：
+# refresh_expiring() / refresh_stale_credits()。
 TOKEN_SWEEP_SECONDS = 120
 
 
@@ -85,22 +86,37 @@ def _auto_refresh_if_stale(provider) -> None:
         logger.warning(f"[目录] provider={provider.name} 自动刷新失败: {type(exc).__name__}: {exc}")
 
 
-def _token_sweep_loop(provider) -> None:
-    """账号 token 后台巡检：固定周期醒来，只刷「快过期」的号。
+def _account_sweep_loop(provider) -> None:
+    """账号后台巡检：固定周期醒来，按 provider 实现的钩子跑两类维护。
 
-    门槛与跳过规则由 provider 的 refresh_expiring() 定义——与请求路径
-    用同一个提前量，巡检才真正替请求挡掉那次同步刷新。没有实现该方法的 provider
-    直接不跑（这样以后加新上游可以按需实现）。
+      refresh_expiring()       只刷「快过期」的 token（门槛由 provider 定义，与请求
+                               路径同一个提前量，巡检才真正替请求挡掉那次同步刷新）
+      refresh_stale_credits()  积分观测过期的号补拉一次（workbuddy：余额只在换 token
+                               的时刻拉，而 global 号的 AT 是一年期的，"到期前才刷"
+                               整年不触发，没有这条巡检积分列会一直空着）
+
+    两个钩子都按需实现：没实现的直接跳过这一类（这样加新上游可以按需接）。两个都
+    没有的 provider 连线程都不起。
     """
-    if not hasattr(provider, "refresh_expiring"):
+    has_token = hasattr(provider, "refresh_expiring")
+    has_credits = hasattr(provider, "refresh_stale_credits")
+    if not (has_token or has_credits):
         return
     while True:
-        try:
-            refreshed = provider.refresh_expiring()
-            if refreshed:
-                logger.info(f"[token] provider={provider.name} 后台巡检刷新 accounts={refreshed}")
-        except Exception as exc:
-            logger.warning(f"[token] provider={provider.name} 巡检异常: {type(exc).__name__}: {exc}")
+        if has_token:
+            try:
+                refreshed = provider.refresh_expiring()
+                if refreshed:
+                    logger.info(f"[token] provider={provider.name} 后台巡检刷新 accounts={refreshed}")
+            except Exception as exc:
+                logger.warning(f"[token] provider={provider.name} 巡检异常: {type(exc).__name__}: {exc}")
+        if has_credits:
+            try:
+                swept = provider.refresh_stale_credits()
+                if swept:
+                    logger.info(f"[积分] provider={provider.name} 观测过期补拉 accounts={swept}")
+            except Exception as exc:
+                logger.warning(f"[积分] provider={provider.name} 巡检异常: {type(exc).__name__}: {exc}")
         time.sleep(TOKEN_SWEEP_SECONDS)
 
 
@@ -174,7 +190,14 @@ def main() -> None:
         codex = CodexProvider()
         registry.register(codex)
         init_stores(registry.names)  # codex.db（requests + accounts 表）
-        threading.Thread(target=_token_sweep_loop, args=(codex,), daemon=True).start()
+
+    # 账号后台巡检（token 快过期 + 积分观测过期）：每个 provider 一条线程，
+    # 线程内部按它实现了哪些钩子决定跑哪一类——都不实现的 provider 会自己退出。
+    for name in registry.names:
+        threading.Thread(
+            target=_account_sweep_loop, args=(registry.get(name),),
+            daemon=True, name=f"sweep-{name}",
+        ).start()
 
     from providers import models_snapshot
 

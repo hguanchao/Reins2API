@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from providers.workbuddy import checkin, classify, dsml, sanitize, shape
+from providers.workbuddy import upstream as wb_upstream
 from providers.workbuddy.pool import Pool
 from providers.workbuddy.provider import WorkBuddyProvider, _parse_prefix
 from providers.workbuddy.store import Account, WorkBuddyStore
@@ -1328,6 +1329,196 @@ def test_try_refresh_skips_fresh_token_unless_forced():
                 assert calls == ["u_1"]  # force：真打一次
             finally:
                 wb_upstream.refresh_request = original
+        finally:
+            store.close()
+
+
+# ── 积分台账：到账竞态的重试阶梯 / 观测过期补拉 / 失败可见 ──
+#
+# 背景（2026-10-18 实测）：上游的欢迎积分包比账号入库晚 1~2 秒才创建，而入库那一刻
+# 的查询只花 ~0.2s——必然拿到空包；空包按「未知」不落库，且余额只在换 token 时才拉，
+# 于是新号积分列一直空到下一次保活。这一组用例钉住三条：阶梯重试能补上、巡检按
+# 「上次尝试」过期补拉、失败原因要落库给面板看。
+
+
+@contextmanager
+def _stub_credits(*results):
+    """脚本化 fetch_credits_detail：元素是 CreditsDetail 或 Exception 实例。
+
+    序列用尽后重复最后一项（便于写"一直空/一直失败"的用例）。yield 出调用记录
+    （每次查询的 uid 列表），断言"打了谁、打了几次"。
+    """
+    calls: list[str] = []
+
+    def _fake(account, **_kwargs):
+        calls.append(account.uid)
+        item = results[min(len(calls) - 1, len(results) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    original = wb_upstream.fetch_credits_detail
+    wb_upstream.fetch_credits_detail = _fake
+    try:
+        yield calls
+    finally:
+        wb_upstream.fetch_credits_detail = original
+
+
+def test_credits_empty_payload_keeps_known_value_and_records_attempt():
+    """空包：不清已知余额（未知≠0），但这次尝试要记账（巡检与面板都靠它）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(
+                uid="u_1", realm="cn", access_token="at",
+                credits_remain=500.0, credits_total=800.0,
+            ))
+            provider = WorkBuddyProvider(store=store)
+            with _stub_credits(wb_upstream.CreditsDetail()):  # 无资源包
+                assert provider._refresh_credits("u_1") is None
+            account = store.get_account("u_1")
+            assert (account.credits_remain, account.credits_total) == (500.0, 800.0)
+            assert account.credits_checked_ms > 0  # 尝试过
+            assert account.credits_updated_ms == 0  # 从未有过可靠观测
+            assert account.credits_error == ""  # 空包不是失败
+        finally:
+            store.close()
+
+
+def test_credits_failure_recorded_then_cleared_by_success():
+    """失败原因落库（面板要能讲清"为什么空"），下次成功即清空。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(uid="u_1", realm="global", access_token="at"))
+            provider = WorkBuddyProvider(store=store)
+            with _stub_credits(ValueError("user-resource status 500: boom")):
+                assert provider._refresh_credits("u_1") is None
+            failed = store.get_account("u_1")
+            assert "status 500" in failed.credits_error
+            assert failed.credits_checked_ms > 0 and failed.credits_updated_ms == 0
+            assert failed.credits_remain is None
+            # 面板拿到的就是这两个字段（public_dict 直出，不另做裁剪）
+            view = failed.public_dict()
+            assert view["credits_error"] == failed.credits_error
+            assert view["credits_checked_ms"] == failed.credits_checked_ms
+
+            with _stub_credits(wb_upstream.CreditsDetail(remain=350.0, total=350.0)):
+                detail = provider._refresh_credits("u_1")
+            assert detail is not None and detail.remain == 350.0
+            recovered = store.get_account("u_1")
+            assert (recovered.credits_remain, recovered.credits_total) == (350.0, 350.0)
+            assert recovered.credits_error == ""
+            assert recovered.credits_updated_ms > 0
+        finally:
+            store.close()
+
+
+def test_credits_settle_ladder_stops_at_first_observation():
+    """阶梯：入库那次空包 → 重试到有观测即停（不再多打一次上游）。"""
+    import providers.workbuddy.provider as provider_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(uid="u_1", realm="global", access_token="at"))
+            provider = WorkBuddyProvider(store=store)
+            backoff = provider_module.WB_CREDITS_SETTLE_BACKOFF_S
+            provider_module.WB_CREDITS_SETTLE_BACKOFF_S = 0.0  # 用例里不等真实秒数
+            try:
+                with _stub_credits(
+                    wb_upstream.CreditsDetail(),  # 入库那次：欢迎包还没建好
+                    wb_upstream.CreditsDetail(),  # 第一次重试：仍为空
+                    wb_upstream.CreditsDetail(remain=350.0, total=350.0),  # 到账
+                ) as calls:
+                    detail = provider._refresh_credits_settle("u_1")
+            finally:
+                provider_module.WB_CREDITS_SETTLE_BACKOFF_S = backoff
+            assert detail is not None and detail.remain == 350.0
+            assert len(calls) == 3  # 第 3 次拿到观测即停，没有第 4 次
+            assert store.get_account("u_1").credits_remain == 350.0
+        finally:
+            store.close()
+
+
+def test_credits_settle_ladder_gives_up_at_attempt_cap():
+    """阶梯是有限的：一直失败就停在次数上限，并把最后一次的失败原因留在库里。"""
+    import providers.workbuddy.provider as provider_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(uid="u_1", realm="cn", access_token="at"))
+            provider = WorkBuddyProvider(store=store)
+            backoff = provider_module.WB_CREDITS_SETTLE_BACKOFF_S
+            provider_module.WB_CREDITS_SETTLE_BACKOFF_S = 0.0
+            try:
+                with _stub_credits(RuntimeError("upstream down")) as calls:
+                    assert provider._refresh_credits_settle("u_1") is None
+            finally:
+                provider_module.WB_CREDITS_SETTLE_BACKOFF_S = backoff
+            assert len(calls) == provider_module.WB_CREDITS_SETTLE_ATTEMPTS
+            account = store.get_account("u_1")
+            assert "upstream down" in account.credits_error
+            assert account.credits_remain is None
+        finally:
+            store.close()
+
+
+def test_credits_sweep_gates_by_attempt_age_and_status():
+    """巡检选谁：只挑「上次尝试早于 now-TTL」的活跃/暂停号；没查过的也要补。"""
+    from core.settings import WB_CREDITS_TTL_S
+
+    now = int(time.time() * 1000)
+    stale_ms = now - (WB_CREDITS_TTL_S + 60) * 1000
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            store.upsert_account(Account(uid="u_fresh", realm="cn", access_token="at",
+                                         credits_checked_ms=now))
+            store.upsert_account(Account(uid="u_old", realm="cn", access_token="at",
+                                         credits_checked_ms=stale_ms))
+            store.upsert_account(Account(uid="u_paused", realm="cn", access_token="at",
+                                         status="paused", credits_checked_ms=stale_ms))
+            store.upsert_account(Account(uid="u_never", realm="cn", access_token="at"))
+            store.upsert_account(Account(uid="u_off", realm="cn", access_token="at",
+                                         status="disabled"))
+            provider = WorkBuddyProvider(store=store)
+            with _stub_credits(wb_upstream.CreditsDetail(remain=10.0, total=10.0)) as calls:
+                swept = provider.refresh_stale_credits()
+            assert sorted(calls) == ["u_never", "u_old", "u_paused"]  # fresh 不补、disabled 不进
+            assert swept == 3
+            assert store.get_account("u_fresh").credits_checked_ms == now  # 没被动过
+            assert store.get_account("u_never").credits_remain == 10.0
+            assert store.get_account("u_off").credits_checked_ms == 0  # 禁用号不碰
+        finally:
+            store.close()
+
+
+def test_credits_sweep_caps_per_round_and_records_failures():
+    """每轮有上限（积压也不齐射）；失败次数 0 但尝试时刻要前进，免得下轮立刻重撞。"""
+    import providers.workbuddy.provider as provider_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WorkBuddyStore(Path(tmp) / "wb.db")
+        try:
+            for uid in ("u_a", "u_b", "u_c"):
+                store.upsert_account(Account(uid=uid, realm="cn", access_token="at"))
+            provider = WorkBuddyProvider(store=store)
+            cap = provider_module.WB_CREDITS_SWEEP_MAX
+            provider_module.WB_CREDITS_SWEEP_MAX = 1
+            try:
+                with _stub_credits(ValueError("500")) as calls:
+                    assert provider.refresh_stale_credits() == 0  # 没有新观测
+            finally:
+                provider_module.WB_CREDITS_SWEEP_MAX = cap
+            assert len(calls) == 1  # 上限拦住，没把三个一起打
+            swept_uid = calls[0]
+            assert store.get_account(swept_uid).credits_checked_ms > 0
+            others = [u for u in ("u_a", "u_b", "u_c") if u != swept_uid]
+            for uid in others:
+                assert store.get_account(uid).credits_checked_ms == 0  # 留到下一轮
         finally:
             store.close()
 

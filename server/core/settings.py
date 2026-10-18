@@ -6,6 +6,11 @@
 
 from __future__ import annotations
 
+import atexit
+import shutil
+import sys
+import tempfile
+import time
 from datetime import timedelta, timezone
 from pathlib import Path
 
@@ -26,9 +31,81 @@ PORT = 8787
 PROXY_MODE = "direct"
 PROXY_URL: str | None = None
 
+
+def _test_process() -> bool:
+    """本进程是不是测试进程（入口在 server/tests/ 下）。
+
+    认两种跑法：`uv run python tests/test_x.py`（argv 里带着那个测试文件）与
+    `uv run python -m pytest tests/test_x.py` / 裸 `pytest`（argv 可能不带路径，
+    但 pytest 已在 sys.modules 里）。判定刻意收紧到"文件名 test_*.py 且父目录
+    正好是 server/tests"——服务自身（main.py / scripts/start.py）与启动器拉起的
+    子进程都不会命中。
+    """
+    if "pytest" in sys.modules:
+        return True
+    tests_dir = BASE_DIR / "tests"
+    for item in sys.argv:
+        try:
+            candidate = Path(item).resolve()
+        except (OSError, ValueError):
+            continue
+        if candidate.parent == tests_dir and candidate.name.startswith("test_"):
+            return True
+    return False
+
+
+def _sweep_stale_scratch(root: Path, keep_s: float = 3600.0) -> int:
+    """收掉上一次运行留下的测试临时目录，返回删掉几个。
+
+    为什么需要：本进程自己的目录在退出时会被清理，但**被强杀**（Ctrl+C、超时、
+    pytest -x）的测试进程没有这个机会，目录会一个个攒在 %TEMP% 里。于是每次开跑
+    顺手扫一遍上一轮：只认 reins2api-test- 前缀 + 一小时年龄门槛——正在跑的测试
+    目录文件被占用，Windows 上本来也删不动，扫到会安全跳过。
+    """
+    removed = 0
+    cutoff = time.time() - keep_s
+    try:
+        entries = list(root.glob("reins2api-test-*"))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _test_scratch() -> Path | None:
+    """测试进程的进程级临时目录；非测试进程返回 None。
+
+    为什么在这里分流而不是让每个测试文件自己改指：测试曾经与生产共用同一份路径常量，
+    踩过两次（2026-10-18）——fixture 日志写进 server/logs/server.log（启动器视图
+    把这些假行当真实运行播出来，同事按它排查会走偏），DELETE 用例打开生产 account 库
+    并跑了迁移。要求"每个测试文件记得改指"就一定会有人忘，忘了还是静默的；放在路径
+    解析这一处，日志 / 遥测库 / 账号库 / 配置全部自动落进 %TEMP%/，不需要测试配合。
+
+    目录按进程隔离（mkdtemp）：并行跑两个测试文件也不会互踩 WAL。退出时清理：logger
+    的文件 sink 会在自己的 atexit 里先关（本函数注册得更早 → 实际后跑），句柄一放
+    rmtree 就能删净；被强杀的进程留给下一个测试进程扫（见 _sweep_stale_scratch）。
+    """
+    if not _test_process():
+        return None
+    _sweep_stale_scratch(Path(tempfile.gettempdir()))
+    scratch = Path(tempfile.mkdtemp(prefix="reins2api-test-"))
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)
+    return scratch
+
+
+# 测试进程专属落盘根（None = 生产路径），供本模块与 config.py 分流
+TEST_SCRATCH = _test_scratch()
+
 # ── 路径 ──
-LOG_DIR = BASE_DIR / "logs"                    # 日志（按日滚动，保留 30 天）
-DATA_DIR = BASE_DIR / "data"                   # 分库遥测：data/<provider>.db
+LOG_DIR = (TEST_SCRATCH / "logs") if TEST_SCRATCH else (BASE_DIR / "logs")   # 日志（按日滚动，保留 30 天）
+DATA_DIR = (TEST_SCRATCH / "data") if TEST_SCRATCH else (BASE_DIR / "data")  # 分库遥测：data/<provider>.db
+CONFIG_FILE = (TEST_SCRATCH / "config.json") if TEST_SCRATCH else (BASE_DIR / "config.json")
 WEB_DIST_DIR = PROJECT_DIR / "web" / "dist"    # 前端构建产物（Vite 默认输出，SPA 托管）
 
 # ── OpenCode provider（单一 public 匿名凭证；免费档恒流式 + agent 工具集）──
@@ -121,6 +198,19 @@ WB_TOP_CANDIDATES = 5          # 短名单长度：按权重取前 N 再在 N �
 WB_MIN_PICK_GAP_MS = 100       # 同号撞号窗口：该窗口内刚被选中的号让位给其它号
 WB_COST_EXPLORE_S = 1800       # 成本分层条件探索窗口（秒）；0 = 关闭探索
 WB_MODEL_COST_TTL_S = 6 * 3600 # 实测扣费观测有效期（秒）；过期的观测不再参与分层
+
+# 积分台账的补拉规则（余额只在「拿到新 token」的时刻顺带拉取：登录入库 / 手动导入 /
+# 手动刷新 / token 刷新 / 保活）。两条缺口各配一条规则：
+#   ① 到账竞态：上游的欢迎积分包比账号入库晚 1~2 秒才创建（2026-10-18 实测：16:27:25.110
+#      入库，两个包在 +0.9s / +1.9s 才建好），入库那次查询于是常拿到空包——而空包按
+#      「未知」处理、不落库（不能拿 0 覆盖已知值）。新号入库后按短阶梯重试几次补上。
+#   ② 观测过期：global 号的 AT 签的是一年期（登录响应 expiresIn≈31536000s），
+#      「到期前才刷」整年不触发 → 积分观测永远停在入库那一次。按上次**尝试**时刻
+#      超期补拉（新号、老号同一条规则），周期由 main 的账号巡检线程给。
+WB_CREDITS_SETTLE_ATTEMPTS = 4      # 新号入库后的查询次数（含立即那次；拿到观测即停）
+WB_CREDITS_SETTLE_BACKOFF_S = 1.5   # 阶梯间隔基数（秒），逐次 ×2 → 1.5/3/6s
+WB_CREDITS_TTL_S = 6 * 3600         # 观测有效期（秒）：上次尝试早于 now-TTL 就补拉
+WB_CREDITS_SWEEP_MAX = 3            # 每轮巡检最多补拉几个账号（防上游齐射）
 
 # ── 签到与定时任务（billing / growth 域）──
 # 四类任务各自独立排程、各有开关（管理台可改，落盘 server/config.json 的 schedule 段）：
