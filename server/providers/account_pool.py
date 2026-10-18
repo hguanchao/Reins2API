@@ -118,7 +118,7 @@ class AccountPool:
     def _cost_signal(self, account: Any, model: str | None, now_ms: int) -> tuple[int, float]:
         """成本分层信号 → (层, 每千 token 单价)。
 
-        层语义（对齐参考实现）：0 = 已实测免费，1 = 无观测，2 = 已实测收费。
+        层语义：0 = 已实测免费，1 = 无观测，2 = 已实测收费。
         默认恒 (1, 0) = 全员同层 → 分层退化为不过滤。
         """
         return 1, 0.0
@@ -167,10 +167,10 @@ class AccountPool:
                 and self._healthy(candidate, model, now_ms)
                 and not self._below_floor_blocked(candidate, model)
             ):
-                # 粘性命中是否推进「最近使用」：参考实现推进（已用时刻是"这个号刚
-                # 干过活"的权威依据，撞号窗口/LRU 都靠它）；本仓库历史行为不推进，
-                # 故默认关闭——只有开了撞号窗口的池（WorkBuddy）才打开，Codex 的
-                # 闲置补偿动力学保持原样。
+                # 粘性命中是否推进「最近使用」：推进时，已用时刻是"这个号刚干过活"
+                # 的权威依据，撞号窗口/LRU 都靠它；本仓库历史行为不推进，故默认关闭
+                # ——只有开了撞号窗口的池（WorkBuddy）才打开，Codex 的闲置补偿动力学
+                # 保持原样。
                 if self._sticky_marks_used:
                     self._note_used(candidate.uid)
                 return candidate
@@ -204,7 +204,7 @@ class AccountPool:
                 now_ms: int) -> Any | None:
         """从健康号里选一个（分层 → 权重 → 短名单 → 撞号窗口 → 抽签）。"""
         # 权重归一的基准用**分层前的全集口径**：截断排序与抽签权重共享同一基准，
-        # 两个阶段的分值可比（对齐参考实现的 maxCredits 口径）。
+        # 两个阶段的分值可比（截断排序与抽签权重共用同一个 maxCredits 基准）。
         max_credits = 0.0
         credits: dict[str, float | None] = {}
         for account in healthy:
@@ -295,12 +295,12 @@ class AccountPool:
     def _weighted_choice(self, candidates: list[Any], weights: dict[str, float]) -> Any | None:
         if not candidates:
             return None
-        # 权重起手 1.0（见 _weight_of），抽签池恒非空权重——无需全零兜底
+        # 权重起手 1.0（基准项），抽签池恒非空权重——无需全零兜底
         draw = [max(weights.get(a.uid, 1.0), 0.0) for a in candidates]
         return random.choices(candidates, weights=draw, k=1)[0]
 
     def _idle_boost(self, uid: str) -> float:
-        """闲置补偿：按距上次被选中的时长线性增长，封顶见 settings。
+        """闲置补偿：按距上次被选中的时长线性增长，斜率与封顶分别取 idle_boost_per_hour / idle_boost_max。
 
         时钟必须与 `_last_used` 同源（都是 time.monotonic）：monotonic 是进程内
         相对时钟，拿墙钟去减会得到「闲置了几十年」→ 补偿恒封顶。

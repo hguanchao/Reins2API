@@ -1,6 +1,6 @@
 """WorkBuddy Provider：Provider 协议实现 + 单请求轮换主循环。
 
-选号已下沉 pool.py（加权随机 + 在途租约 + 会话粘性）：本文件的 send 主循环只负责
+选号已下沉选号池（加权随机 + 在途租约 + 会话粘性）：本文件的 send 主循环只负责
 token 过期前主动刷新、session 失效刷新一次重试、错误分类罚号（冷却/熔断落
 accounts 表）。
 
@@ -69,7 +69,7 @@ from providers.workbuddy.store import (
     default_store,
 )
 
-# token 到期前主动刷新窗口(对齐 wb2api keepalive 语义)
+# token 到期前主动刷新窗口(保活口径:不等过期就提前换票)
 _REFRESH_AHEAD_MS = 10 * 60 * 1000
 # 请求路径等刷新锁的上限（秒）：另一个刷新在途时最多等这么久，超时按失败处理
 _REFRESH_LOCK_WAIT_S = 30.0
@@ -108,10 +108,10 @@ def _parse_prefix(model: str) -> tuple[str | None, str]:
 
 
 def _snapshot_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """上游 /v3/config 条目 → models.json 统一核心字段（见 models_snapshot.core_entry）。
+    """上游 /v3/config 条目 → models.json 的统一核心字段条目。
 
     倍率/活动/credits 这些上游侧字段进 `extras`：冷启动不再打上游，内存目录只能
-    由快照重建，缺了它们重启后 _model_info 的对应列就空着（见 _entry_from_snapshot）。
+    由快照重建，缺了它们重启后 _model_info 的对应列就空着（由 _entry_from_snapshot 逆向投影补回）。
     """
     reasoning = entry.get("reasoning") if isinstance(entry.get("reasoning"), dict) else {}
     efforts = reasoning.get("supportedEfforts")
@@ -203,7 +203,7 @@ def _compact_payload(value: Any, limit: int = 220) -> str:
 class WorkBuddyProvider(AccountRuntime):
     name = "workbuddy"
     upstream_url = WB_UPSTREAM_BASE
-    # 熔断与退避（语义见 providers/account_runtime.py）
+    # 熔断与退避（阈值与退避曲线由下方同名属性给出）
     breaker_threshold = WB_BREAKER_THRESHOLD
     breaker_base_s = WB_BREAKER_BASE_S
     breaker_max_s = WB_BREAKER_MAX_S
@@ -214,27 +214,26 @@ class WorkBuddyProvider(AccountRuntime):
         self._pool = Pool(self._store)
         self._lock = threading.Lock()
         # 领养当日失败台账（uid → 北京日期）：门槛未达的号当日不再重试，避免同日多趟
-        # 反复撞门槛。进程内即可，重启清零无副作用（参考实现同为内存态）。
+        # 反复撞门槛。进程内即可，重启清零无副作用。
         self._adopt_tried: dict[str, str] = {}
         self._adopt_guard = threading.Lock()
         from providers.workbuddy.scheduler import WorkBuddyScheduler
 
         # 排程器由 main 显式 start()（构造即起线程会让测试/导入副作用起后台任务）
         self.scheduler = WorkBuddyScheduler(self)
-        # 目录按 realm 分册:CN/global 是两套独立上游,模型表各自成册(见 upstream chat_base)。
+        # 目录按 realm 分册:CN/global 是两套独立上游部署,模型表各自成册,base 也按 realm 选。
         self._catalogs: dict[str, _Catalog] = {"cn": _Catalog(), "global": _Catalog()}
         # 选号的积分保底要按目录倍率判「这个模型收不收费」（实测台账无观测时的兜底），
-        # 池不持有目录，把查询注入进去（参考实现 modelRateOf 同款接线）。
+        # 池不持有目录，所以把这条查询注入进去。
         self._pool.set_model_rate(self._catalog_model_rate)
-        # 快照内容的最后变更时间(models.json 的 meta.updated_at_ms);本进程从快照
+        # 快照内容的最后变更时间(落盘快照元数据 updated_at_ms);本进程从快照
         # 冷启动时它是唯一的时间线索,与各册的 refreshed_at(本进程刷新时间)分开。
         self._cached_at_ms = 0
         # RT 轮换不能双花：池允许同号多请求在途（WB_MAX_IN_FLIGHT）
         self._init_runtime()
         from providers.workbuddy.login import LoginManager
 
-        # 登录完成只顺带拉积分（见 _on_account_added）：不再自动拉模型目录
-        # （目录只在手动「获取模型」时刷新，见 refresh 的 docstring）。
+        # 登录完成只顺带拉积分：不再自动拉模型目录（目录只在手动「获取模型」时刷新）。
         self._login_manager = LoginManager(self._store, on_account_added=self._on_account_added)
 
     # ── 目录 ──
@@ -583,7 +582,7 @@ class WorkBuddyProvider(AccountRuntime):
             body_dict = {}
         # 出站脱敏：上游按逐字匹配拦整单（400 11128 unapproved channel），历史每轮
         # 重发 ⇒ 会话里只要出现过指纹就是粘性 400。这里洗一次覆盖全部换号重试与
-        # 三种客户端协议（词表与实测记录见 tests/upstream_evidence.md）。
+        # 三种客户端协议，词表按上游实测归类决定。
         if sanitize.sanitize_body(body_dict):
             body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
             logger.warning("[workbuddy] 出站脱敏: 请求体命中上游审核指纹, 已改写后转发")
@@ -752,7 +751,7 @@ class WorkBuddyProvider(AccountRuntime):
             return last_error
         raise UpstreamUnavailable("workbuddy: rotation budget exhausted")
 
-    # ── 选号已下沉 pool.py（加权随机 + 租约 + 粘性）──
+    # ── 选号已下沉选号池（加权随机 + 租约 + 粘性）──
 
     # ── token 刷新 ──
 
@@ -765,14 +764,14 @@ class WorkBuddyProvider(AccountRuntime):
         return int(time.time() * 1000) + _REFRESH_AHEAD_MS >= account.token_expires_ms
 
     def _maybe_refresh(self, account: Account) -> None:
-        """到期前主动刷新（对齐 wb2api keepalive）；失败不阻塞本次发送。"""
+        """到期前主动刷新（保活口径，不等过期就换票）；失败不阻塞本次发送。"""
         if not self._needs_refresh(account):
             return
         self._try_refresh(account, quiet=True)
 
     def _try_refresh(self, account: Account, quiet: bool = False,
                      sync_credits: bool = False, *, force: bool = False) -> bool:
-        """用 RT 换新 AT 并落库（bool 形态，见 _try_refresh_ex）。"""
+        """用 RT 换新 AT 并落库（bool 形态；详细失败原因由 _try_refresh_ex 返回）。"""
         ok, _ = self._try_refresh_ex(
             account, quiet=quiet, sync_credits=sync_credits, force=force
         )
@@ -841,7 +840,7 @@ class WorkBuddyProvider(AccountRuntime):
         credits 保持 None（未知）语义（权重不加 credits 项、积分保底也不误伤），
         并返回 None 让调用方（解冻判定）知道"没有新观测"，不去动旧值。
 
-        快过期分桶（窗口见 WB_EXPIRING_SOON_H）落库后供选号加权：到期越近的余额
+        快过期分桶（窗口 7 天，由 WB_EXPIRING_SOON_H 给出）落库后供选号加权：到期越近的余额
         越该先花掉，官方赠送/补偿的积分常带期限。
         """
         account = self._store.get_account(uid)
@@ -866,7 +865,7 @@ class WorkBuddyProvider(AccountRuntime):
         )
         return detail
 
-    # ── 签到（billing 域每日一次；接口契约与跳过规则见 checkin.py）──
+    # ── 签到（billing 域每日一次；接口契约与跳过规则由同目录 checkin 模块承担）──
 
     def checkin(self, uid: str, *, force: bool = False) -> dict[str, Any]:
         """单账号签到。幂等，自动调度与「立即签到」共用。
@@ -925,7 +924,7 @@ class WorkBuddyProvider(AccountRuntime):
         既是风控特征，也会和聊天流量抢连接与代理。暂停/禁用的号是人工决定，
         不代签。
 
-        收尾按参考实现的整轮语义：签到 → 逐个查余额（余额回血即解冻硬冷却）→
+        收尾按完整一轮的语义：签到 → 逐个查余额（余额回血即解冻硬冷却）→
         连登管家（兑换已解锁档位 + 抽完抽奖次数）。连登管家排在最后是因为「档位
         解锁」以当天签到后的天数为准，且它本身幂等，多跑无害。
 
@@ -996,11 +995,11 @@ class WorkBuddyProvider(AccountRuntime):
         return self._revive_hard_cooldown(account, detail.remain)
 
     # ── 定时任务（连登管家 / 活跃上报 / 猫猫旅行 / token 保活）──
-    # 上游契约见 growth.py；这层只做账号门控、限速、汇总与落库。四类任务的时点与
-    # 开关由 scheduler.py 驱动（config.json 的 schedule 段），管理台「立即运行」
+    # 上游契约在同目录 growth 模块；这层只做账号门控、限速、汇总与落库。四类任务的时点与
+    # 开关由排程器驱动（config.json 的 schedule 段），管理台「立即运行」
     # 走同一批 run_*_all，与自动排程共用一条管线。
     #
-    # 账号门控（与参考实现同口径）：
+    # 账号门控口径：
     #   global 域 — 无 CN 任务体系，除活跃上报外一律不发请求（国际版 /v2/report 实测可用）
     #   企业号   — 无成长中心（growth 全 403），签到与成长任务都跳过
     #   paused   — 暂停是「别拿去跑对话」，签到/成长/保活照常（保号）；disabled 一律跳过
@@ -1517,7 +1516,7 @@ class WorkBuddyProvider(AccountRuntime):
         self._penalize(account, classified, model, payload)
 
     def _note_usage_cost(self, account: Account, model: str, usage: dict[str, Any]) -> None:
-        """末帧 usage → 成本台账（实测扣费观测，见 account_pool.note_model_cost）。
+        """末帧 usage → 成本台账（实测扣费观测）。
 
         上游把本次真实扣费放在 usage.credit（积分），`credit` 缺失 = 没观测到，
         不写台账（"测不到"不能被当成"测得 0"——那会把收费号误标成免费号）。
@@ -1628,7 +1627,7 @@ class WorkBuddyProvider(AccountRuntime):
     def _on_account_added(self, uid: str) -> None:
         """OAuth 登录完成入库（新 token 时刻）：后台顺带拉积分给账号列填数。
 
-        不拉模型目录：目录只在手动「获取模型」时刷新（见 refresh 的 docstring）。
+        不拉模型目录：目录只在手动「获取模型」时刷新。
         """
         self._refresh_credits_async(uid)
 

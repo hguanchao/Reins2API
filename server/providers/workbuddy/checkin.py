@@ -1,6 +1,6 @@
 """workbuddy 每日签到：活动状态查询 + 领取（billing 域，幂等）。
 
-接口契约逆向自官方桌面端成长中心（与 88lin/workbuddy-auto-signin 同款）：
+接口契约逆向自官方桌面端成长中心：
 
     POST {billing_base}/v2/billing/meter/checkin-activity-status   查状态
     POST {billing_base}/v2/billing/meter/daily-checkin             领取
@@ -141,7 +141,7 @@ def skip_reason(account: Account) -> str:
 
 
 def _dig(obj: Any, key: str) -> Any:
-    """在可能被 data/result/resp/response 包裹的负载里找字段（对齐 wb2api/桌面端）。"""
+    """在可能被 data/result/resp/response 包裹的负载里找字段（对齐官方桌面端）。"""
     if isinstance(obj, dict):
         if key in obj and obj[key] is not None:
             return obj[key]

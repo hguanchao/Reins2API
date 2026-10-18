@@ -125,7 +125,7 @@ def decode_request(input: dict[str, Any]) -> BridgeRequest:
     for i, tool in enumerate(tools):
         if not is_object(tool) or string_at(tool, "type") != "function":
             # 非 function 工具（web_search / file_search / computer_use / mcp …）
-            # 见 chat.py 同处注释：上游只认 function 工具，丢弃并记日志。
+            # 与 chat 协议同一规则：上游只认 function 工具，丢弃并记日志。
             logger.warning(
                 f'[桥接] tools[{i}] 非 function 工具, 已忽略 type={string_at(tool, "type") or "缺失"}'
             )
@@ -524,10 +524,9 @@ class ResponsesStreamParser(StreamParserBase):
             return events
         return []
 
-    # responsesCompletedStop decides how a finished Responses turn is reported
-    # downstream. The completed event carries no stop reason, so the
-    # function_call items in its output — or the tool calls seen earlier — are
-    # the only signal that the turn ended waiting for tool results.
+    # 决定一轮已结束的 Responses 回合如何向下游汇报停止原因。
+    # completed 事件本身不带停止原因，所以输出里的 function_call 项——
+    # 或此前已见的工具调用——才是"这一轮在等工具结果"的唯一信号。
     def _completed_stop(self, response: dict[str, Any]) -> str:
         for raw in slice_at(response, "output"):
             if string_at(raw, "type") == "function_call":

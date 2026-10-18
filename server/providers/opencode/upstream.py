@@ -2,14 +2,14 @@
 
 - headers：按 OpenCode 官方客户端实际发出的头集合构造；认证头按协议分叉
   （anthropic 走 x-api-key）。上游对每个档位都做客户端指纹校验（2026-10-14 起），
-  头集合的每一处都是实测出来的必要条件，见 build_upstream_headers。
+  头集合的每一处都是实测出来的必要条件，由 build_upstream_headers 构造。
 - shaping：agent 会话形态塑形——上游把非 agent 会话形态的请求以 403 FreeTierError
   拒掉，所以缺流式/缺核心工具/核心工具定义不是官方的请求在这里补齐；同时按官方
   客户端的协议约定归一字段（chat 的 max tokens 字段名、responses 的路由默认值），
   客户端要 JSON 仍由网关折叠流回。
 - send：单凭证（public）发送；"响应头之前"的传输失败重试一次，其余错误直接返回给
   推理层透传——无换 key 轮换。responses 协议的客户端级 prompt_cache_key 也在这里补
-  （shape 阶段还不知道 ids，见 _with_client_cache_key）。
+  （shape 阶段还不知道 ids，只能放到发送前补）。
 """
 
 from __future__ import annotations
@@ -43,17 +43,16 @@ ZEN_BASE = "https://opencode.ai/zen"
 # /zen。发现与模型清单仍在 ZEN_BASE 上（两端点清单一致，实测 85 个模型）。
 INFERENCE_BASE = "https://opencode.ai/inference"
 PUBLIC_KEY = "public"
-# 本地不设超时（见 send_upstream 的 timeout=None），长生成完全由上游决定。
+# 本地不设超时（发送时显式传 timeout=None），长生成完全由上游决定。
 # 声称的版本号本身上游不校验，但 UA 里不带 "opencode/<…>" 会 403——旧形态
 # "opencode/1.18.31 <runtime 描述>" 与官方现形态不同，这里对齐官方。
-# 版本号不只是指纹：工具定义逐字段比对与目录门控都以它对账，见 settings 与 tools。
+# 版本号不只是指纹：工具定义逐字段比对与目录门控都以它对账（settings 与 tools 两处）。
 USER_AGENT = f"opencode/latest/{OPENCODE_CLI_VERSION}/cli"
 
 
 def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str, str]:
-    """按官方 OpenCode 客户端实际发出的头集合构造（对照 opencode 2.0.29 的
-    core/src/session/model-request.ts:281-292，并在 2026-10-15 对线上端点逐项验证
-    过必要性）。会话身份头的粒度见 identity.py：session 每会话一个；request 只留在
+    """按官方 OpenCode 客户端实际发出的头集合构造（对照官方 2.0.29，并在 2026-10-15
+    对线上端点逐项验证过必要性）。会话身份头的粒度：session 每会话一个；request 只留在
     本地（响应头与日志），不再出网。
 
     实测的硬性要求，少一处就是 403 FreeTierError（2026-10-17 复测：官方编码的请求
@@ -67,7 +66,7 @@ def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str
       * UA 里必须带 "opencode/<…>"，空 UA 与浏览器默认 UA 都拒。
 
     带父会话时官方同时发 x-opencode-parent-session-id 与 x-parent-session-id 两个
-    名字（reference 的 session-runner.test.ts「uses parent cache affinity」），这里
+    名字（官方会话运行器的「uses parent cache affinity」用例即此形态），这里
     跟随官方形态；不带父会话时二者都不出现。
     """
     headers: dict[str, str] = {
@@ -90,8 +89,7 @@ def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str
         headers["x-api-key"] = key
         headers["anthropic-version"] = "2023-06-01"
         # 官方 anthropic 传输层恒请求 interleaved thinking，其余 beta 按请求内容
-        # 条件追加（compaction / thinking block binding，见官方
-        # anthropic-messages.ts 的 requiredBetaHeaders）。网关不构造那两类请求，
+        # 条件追加（compaction / thinking block binding）。网关不构造那两类请求，
         # 所以恒为这一项——多带的 beta 官方客户端从不发，属于无谓的形态偏差。
         headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
     else:
@@ -125,9 +123,9 @@ def shape_free_request_body(body: dict[str, Any], protocol: str) -> tuple[dict[s
 def _rename_max_tokens(payload: dict[str, Any]) -> bool:
     """chat 的 max tokens 字段名对齐官方客户端：`max_completion_tokens`。
 
-    Zen 的 chat 路线在官方客户端里走 openai-compatible，其 detectMaxTokensField 对
-    provider == "opencode" 返回 max_completion_tokens（openai-chat.ts:683-715 的
-    例外表里没有 opencode），即官方客户端从不发 max_tokens。两种字段名上游都认且
+    Zen 的 chat 路线在官方客户端里走 openai-compatible，其字段名判定对
+    provider == "opencode" 返回 max_completion_tokens（例外表里没有 opencode），
+    即官方客户端从不发 max_tokens。两种字段名上游都认且
     语义一致（2026-10-15 实测：limit=16 时两者都把输出截到 16、finish=length），
     这里纯做形态对齐，防上游将来像工具定义那样收紧字段集。
     """
@@ -142,8 +140,8 @@ def _ensure_responses_defaults(payload: dict[str, Any]) -> bool:
     """responses 的路由默认值：store=false、include 只回 encrypted reasoning。
 
     官方 openai-responses 与 openai-compatible-responses 两条 route 的 defaults
-    都是 {store: false, include: ["reasoning.encrypted_content"]}
-    （openai-responses.ts:330、openai-compatible-responses.ts:20），即官方客户端的
+    都是 {store: false, include: ["reasoning.encrypted_content"]}，
+    即官方客户端的
     responses 请求恒带这两个字段：响应不落上游存储、reasoning 以加密块回放。
     store=false + encrypted reasoning 是一对——不存服务端，多轮 reasoning 就靠
     encrypted_content 在客户端侧续命（桥已经原样透传它）。客户端显式给值时不动：
@@ -209,8 +207,8 @@ def _needs_genuine_definition(protocol: str, name: str, item: Any) -> bool:
     """客户端声明的定义是否与官方定义不同（描述与 schema 逐字段比）。
 
     schema 字段名按协议分叉：chat 在 function.parameters 下，anthropic 在
-    input_schema，responses 与 chat 一样用顶层 parameters（官方 open-responses.ts
-    的 Tool 结构）。读错字段名会让每个请求都被判成"需重写"——定义换来换去都是
+    input_schema，responses 与 chat 一样用顶层 parameters（官方 responses 的
+    Tool 结构即此）。读错字段名会让每个请求都被判成"需重写"——定义换来换去都是
     同一份官方定义，功能无害，但幂等性与 shaped 遥测全废。
     """
     genuine = tools.render_tool(protocol, name)
@@ -246,7 +244,7 @@ def _tool_name(protocol: str, item: Any) -> str:
     return str(item.get("name") or "")
 
 
-# 可重发的传输失败——唯一判据是"响应头一个字节都没到"（见 _is_retryable_transport）。
+# 可重发的传输失败——唯一判据是"响应头一个字节都没到"（判定实现在下方函数里）。
 # 这里刻意不按错误码白名单：出口线路的故障码枚举不完（实测成串掐断里既有 35 也有
 # 56/92，换节点/换协议还会给 16/55/1），而"头没到"已经把"重发会不会让上游二次执行"
 # 这个真问题覆盖住了。
@@ -282,12 +280,11 @@ def _with_client_cache_key(protocol: str, body: bytes, cache_key: str) -> bytes:
     """responses 协议补客户端级 prompt_cache_key（shape 阶段拿不到 ids，放在发送前）。
 
     官方客户端把 prompt_cache_key 当请求的一部分签发：值 = 会话亲和
-    （session/model-request.ts:295，亲和 = 父会话 ?? 分叉源 ?? 本会话），且
-    responses 路线的 body 构建没有能力开关、恒发（open-responses.ts:798）；chat
-    路线则因 Zen 没有 supportsPromptCacheKey 能力位而从不发——所以只在 responses
-    上补。实测影响（2026-10-15，muse-spark-1.2-contributor-free，同前缀两连发）：
-    带键时 prompt 缓存命中 1777 tokens，不带时只有 113。
-    我们补的键用**客户端稳定键**而不是会话键：会话键只保会话内命中，每个新会话的
+    （亲和 = 父会话 ?? 分叉源 ?? 本会话），且 responses 路线的 body 构建没有能力
+    开关、恒发；chat 路线则因 Zen 没有 supportsPromptCacheKey 能力位而从不发
+    ——所以只在 responses 上补。实测影响（2026-10-15，muse-spark-1.2-contributor-free，
+    同前缀两连发）：带键时 prompt 缓存命中 1777 tokens，不带时只有 113。
+    补的键用**客户端稳定键**而不是会话键：会话键只保会话内命中，每个新会话的
     第一发都要全量 prefill 整段静态前缀（~2 万 token，实测 +1.7s+）；客户端键让
     同一客户端的所有会话共享同一段缓存，首发就命中。同会话内两者表现等价（都是
     恒定键）。客户端自带键时不动它。
@@ -313,15 +310,14 @@ def send_upstream(
     *,
     stream: bool,
 ) -> UpstreamResponse:
-    """单凭证发送；响应头之前的传输失败按预算重发（见 _retry_backoff）。非 2xx 不在
+    """单凭证发送；响应头之前的传输失败按预算重发（退避曲线在 _retry_backoff 里）。非 2xx 不在
     这里处理——推理层负责透传；重试预算也用尽后原样抛 curl_cffi 的 RequestsError。
 
     重试的必要性来自出口线路：同一台代理打 opencode.ai，新连接会间歇性在握手期被
     掐断（curl 35/56），而且是**成串**的——实测同一分钟内 0/12 全败、几分钟后 3/3
     全通。单凭证没有换号可换，不重试就是客户端可见的 502。重发最多多耗一次上游额度，
     不会造成客户端可见的重复副作用（推理请求无写侧效应）；响应头一到就不再重发——
-    那时错误由推理层按协议报给客户端（流式还有"首包前"这一层，见
-    gateway/stream/retry.py）。
+    那时错误由推理层按协议报给客户端（流式还有"首包前"这一层，由流式层的重试逻辑兜住）。
     """
     url = f"{INFERENCE_BASE.rstrip('/')}{protocol_path(protocol)}"
     headers = build_upstream_headers(protocol, PUBLIC_KEY, ids)

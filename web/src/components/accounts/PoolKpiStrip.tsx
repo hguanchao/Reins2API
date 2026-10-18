@@ -13,8 +13,7 @@ export interface PoolKpiOps {
   } | null;
 }
 
-/**
- * 号池 KPI 条（六格：可用号 / 冷却熔断 / 在途 / 模型 / 24h 请求 / 24h Tokens）。
+/** 号池 KPI 条（六格：可用号 / 冷却熔断 / 在途 / 模型 / 24h 请求 / 24h Tokens）。
  *
  * WorkBuddy 与 Codex 两个页面此前各写了一份逐字相同的 JSX（只差 aria-label）——
  * 同一个指标在两处分别演进就会出现"一个页面的成功率带一位小数、另一个不带"的

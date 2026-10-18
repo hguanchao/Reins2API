@@ -1,7 +1,6 @@
 """models.dev 兜底目录：补厂商 manifest 没声明的上下文窗口、最大输出与输入/输出模态。
 
-移植 workbuddy2api-panel 的 internal/upstream/modelsdev.go（拉取 / 索引 / 采值规则），
-字段策略照它的 context_catalog.go——**输出上限未知就省略，绝不编造**。
+拉取 / 索引 / 采值规则如下所述，字段策略是**输出上限未知就省略，绝不编造**。
 
 字段级查找链（上游动态值由各 provider 自己判断，本模块只管后两级）：
 
@@ -15,10 +14,10 @@
 多 provider 采值：同一裸 id 在 models.dev 里常被多家收录且互相分歧，取值优先级
 官方 vendor 源 > 票数众数 > provider 名字典序。**分歧判定含模态**——limit 相同但
 modalities 不同的条目算两个候选，不会把两家的模态投票混在一起。最后一级是确定性
-tie-break——同一份文档两次拉取必须落同一个值，否则管理台的数字会自己抖动。
+tie-break——同一份上游响应两次拉取必须落同一个值，否则管理台的数字会自己抖动。
 
-与参考实现的一处刻意偏差：**不采用「上下文未知 → 1M 兜底」**。那条兜底服务于客户端
-按 context_length 提前截断的场景（高估优于低估）；网关对外报的是事实，未知就留空。
+刻意不采用「上下文未知 → 1M 兜底」：那条兜底服务于客户端按 context_length
+提前截断的场景（高估优于低估）；网关对外报的是事实，未知就留空。
 """
 
 from __future__ import annotations
@@ -41,12 +40,12 @@ from net.proxy import proxies_for
 URL = "https://models.dev/api.json"
 CACHE_PATH = DATA_DIR / "modelsdev.json"
 
-# 单次拉取超时（连接 / 读取）。参考实现用 5s 总超时；我们这里是后台线程、不占请求
-# 路径，读取放宽到 30s——文档 ~5.6MB，5s 在慢链路上大概率失败，白白丢兜底值。
+# 单次拉取超时（连接 / 读取）。这里是后台线程、不占请求路径，读取放宽到 30s——
+# 响应体 ~5.6MB，5s 在慢链路上大概率失败，白白丢兜底值。
 TIMEOUT = (5.0, 30.0)
-# 响应体上限：文档实测 ~5.6MB，留足余量挡住异常大响应；超限直接放弃（截断会让 JSON 解析失败）
+# 响应体上限：实测 ~5.6MB，留足余量挡住异常大响应；超限直接放弃（截断会让 JSON 解析失败）
 MAX_BODY = 32 << 20
-# 拉取节流（成功与失败同算）：文档是全量聚合体，短窗内不重复打 models.dev
+# 拉取节流（成功与失败同算）：上游返回的是全量聚合体，短窗内不重复打 models.dev
 FETCH_COOLDOWN_S = 300.0
 # 数值上限校验：context / output 超过它视为脏数据丢弃
 VALUE_MAX = 1_000_000_000
@@ -186,7 +185,7 @@ def _fetch() -> None:
 
 
 def _build_index(doc: Any) -> dict[str, dict[str, Any]]:
-    """models.dev 文档 → 裸 id 索引（采值规则见模块 docstring）。"""
+    """models.dev 响应 → 裸 id 索引（采值规则：官方 vendor 源 > 票数众数 > 名字典序）。"""
     if not isinstance(doc, dict):
         return {}
     # 裸 id → 候选值（同值多 provider 只计票不重复存）→ 采值结果
@@ -298,7 +297,7 @@ def _load_cache_locked() -> None:
 def _write_cache_locked() -> None:
     """把本进程问过的模型写进缓存（与既有条目合并，不清空之前的结果）。
 
-    只写问过的模型：文档是全量聚合体，整份落盘（数 MB）没必要——缓存要的是
+    只写问过的模型：上游返回的是全量聚合体，整份落盘（数 MB）没必要——缓存要的是
     「这台网关服务过的模型」，几个到几十条。
     """
     global _cache
@@ -344,7 +343,7 @@ def _as_count(value: Any) -> int | None:
     if isinstance(value, float):
         try:
             return int(value)
-        except (ValueError, OverflowError):   # NaN / inf
+        except (ValueError, OverflowError):   # NaN / inf 这类非有限值
             return None
     if isinstance(value, str):
         text = value.strip()

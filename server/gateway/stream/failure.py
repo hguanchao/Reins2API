@@ -1,7 +1,5 @@
-# Reports a truncated or failed upstream stream to the client in the client's
-# own protocol.
-#
-# 移植自 zen2api protocol/stream/failure.ts。
+# 用客户端自己的协议，把被截断或失败的上游流上报给客户端：把终止原因翻译成
+# 该协议的错误事件写出。
 
 from __future__ import annotations
 

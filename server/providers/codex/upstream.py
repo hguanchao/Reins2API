@@ -31,13 +31,12 @@ from providers.codex.store import Account
 _RESPONSES_PATH = "/responses"
 _MODELS_PATH = "/models"
 
-# 粘性路由令牌：上游在响应头里下发、官方客户端在后续请求里回显（对照
-# codex-rs/codex-api/src/sse/responses.rs:33,66-73 的捕获与
-# core/src/client.rs:2461-2484 的回显），让同一段会话尽量落在同一个后端分片。
+# 粘性路由令牌：上游在响应头里下发、官方客户端在后续请求里回显，让同一段会话
+# 尽量落在同一个后端分片。
 TURN_STATE_HEADER = "x-codex-turn-state"
 
 def codex_headers(account: Account, session_id: str) -> dict[str, str]:
-    """出站头族（最小可信集，见设计文档 §3.2 / §5.4）。
+    """出站头族（最小可信集，只发下面列出的这几个头）。
 
     不发 `Connection`：HTTP/2 明令禁止 connection-specific 头，真实 Codex 客户端
     （reqwest）同样不发。
@@ -66,7 +65,7 @@ def responses_request(
     """POST {base}/responses，恒 stream=True。网络异常抛 curl_cffi RequestsError。
 
     turn_state 非空时带上粘性路由令牌（只对签发它的同一个账号有意义，调用方按
-    账号×会话取值，见 provider._turn_state_for）。
+    账号×会话取值）。
     """
     url = f"{CODEX_BASE}{_RESPONSES_PATH}"
     headers = codex_headers(account, session_id)
@@ -110,14 +109,14 @@ def parse_rate_limits(headers: dict[str, str]) -> dict[str, Any] | None:
     """从 /responses 响应头解析限流窗口快照。
 
     上游在每个响应上带 `x-codex-{primary,secondary}-{used-percent,window-minutes,
-    reset-after-seconds}`（依据见 docs/codex-provider-design.md）。返回 None 表示
+    reset-after-seconds}`。返回 None 表示
     这批头里没有额度信息（错误响应或非 Codex 上游），调用方应保留旧快照。
     """
     lowered = {str(k).lower(): v for k, v in headers.items()}
     now_ms = int(time.time() * 1000)
     out: dict[str, Any] = {}
     # reset-at 是上游自己给的绝对时刻（epoch 秒），比 reset-after-seconds 少一层本地
-    # 时钟漂移，所以两个都给时优先它。它是判断"是否换了窗口"的唯一依据（见 quota.py）。
+    # 时钟漂移，所以两个都给时优先它。它是判断"是否换了窗口"的唯一依据。
     for name, prefix in _RATE_LIMIT_WINDOWS:
         used = _float(lowered.get(prefix + "used-percent"))
         window = _float(lowered.get(prefix + "window-minutes"))

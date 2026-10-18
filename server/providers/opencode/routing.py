@@ -1,4 +1,4 @@
-"""模型索引、SDK→协议映射与路由决策（移植自 zen2api routing/ 四文件）。
+"""模型索引、SDK→协议映射与路由决策（三块职责合并在本模块）。
 
 - model-index：有哪些模型、各说什么协议、凭证实际能到哪些——纯数据，不发请求。
 - protocol-map：SDK → 上游协议的协议知识（上游加新 SDK 时改这里）。
@@ -161,7 +161,7 @@ class Router:
         )
 
     def _anonymous_eligible(self, model: str) -> bool:
-        """目录标价为准；未标价时回退 -free 命名惯例（与 zen2api 一致）。"""
+        """目录标价为准；未标价时回退 -free 命名惯例。"""
         free = self._index.free(model)
         if free is not None:
             return free

@@ -1,4 +1,4 @@
-"""控制台请求流水渲染器（server/scripts/start.py 启动服务后把窗口交给它）。
+"""控制台请求流水渲染器（启动器启动服务后把窗口交给它）。
 
 职责与边界：
 - **只读** logs/server.log（含午夜轮转后的 YYYY-MM-DD.log），跟随滚动；绝不写、
@@ -8,7 +8,7 @@
   gateway/inference.py 的"受理 + 完成"两行拼一个请求行,其余按域渲染。
   全链路纯文本,不用 ANSI 颜色/控制序列——重定向到文件、CI 日志、老终端可读。
 
-依赖的行格式（core/logger.py 的文件 sink 固定形状，改那边要同步改这里）:
+依赖的行格式（日志文件 sink 的固定形状，改那边要同步改这里）：
 
     {YYYY-MM-DD HH:mm:ss.SSS} | {LEVEL:<8} | {name}:{function}:{line} - {message}
 
@@ -236,11 +236,11 @@ def _open_shared(path: Path) -> BinaryIO:
         ]
         handle = create_file(
             str(path),
-            0x80000000,  # GENERIC_READ
-            0x00000001 | 0x00000002 | 0x00000004,  # SHARE_READ | SHARE_WRITE | SHARE_DELETE
+            0x80000000,  # 泛型读（GENERIC_READ）
+            0x00000001 | 0x00000002 | 0x00000004,  # 共享读 | 共享写 | 共享删（SHARE_READ | SHARE_WRITE | SHARE_DELETE）
             None,
-            3,  # OPEN_EXISTING
-            0x00000080,  # FILE_ATTRIBUTE_NORMAL
+            3,  # 只打开已存在文件（OPEN_EXISTING）
+            0x00000080,  # 普通文件属性（FILE_ATTRIBUTE_NORMAL）
             None,
         )
         if not handle or handle == ctypes.c_void_p(-1).value:
@@ -339,7 +339,7 @@ def _select(lines: list[str], *, since: str, tail: int) -> tuple[int, list[str]]
 
 
 def _display_path(path: Path) -> str:
-    """相对仓库根显示(文档/脚本里的说法都是 server/logs/…,与当前目录无关)。"""
+    """对外一律按相对仓库根的路径显示(server/logs/…),与当前目录无关。"""
     project = _DEFAULT_LOG.parent.parent.parent
     try:
         relative = os.path.relpath(path, project)

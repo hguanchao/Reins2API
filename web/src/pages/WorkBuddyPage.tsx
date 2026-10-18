@@ -1,5 +1,4 @@
-/**
- * WorkBuddy 单页：池 KPI + 账号管理（设备码/手动导入）+ 模型目录 + 用量趋势。
+/** WorkBuddy 单页：池 KPI + 账号管理（设备码/手动导入）+ 模型目录 + 用量趋势。
  *
  * 结构对齐 OpenCodePage：panel gw-workspace 卡片根 + mission-strip KPI +
  * gw-grid；数据 10s 轮询 /api/workbuddy/ops + /api/workbuddy/accounts。
@@ -105,7 +104,7 @@ function fmtCooldown(untilMs: number): string {
 }
 
 /** 账号可用性：把生命周期与冷却/熔断归一成「现在能不能被派号」的结论
- *  （判据对照 pool._healthy），徽章给结论、副行给原因与剩余时间。
+ *  （与选号时的健康判定同一套口径），徽章给结论、副行给原因与剩余时间。
  *  只看 active/paused/disabled 会把冷却中的号显示成「可用」，与实际选号结果相反。 */
 function availabilityOf(account: WorkBuddyAccount): {
   label: string;
@@ -154,7 +153,7 @@ function normalizeRate(raw: string): string {
     .trim();
 }
 
-/** 北京日期 YYYY-MM-DD（签到按 UTC+8 结算一天，与后端 checkin.beijing_today 对齐）。 */
+/** 北京日期 YYYY-MM-DD（签到按 UTC+8 结算一天，与后端判定同一个时区口径）。 */
 function beijingToday(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
 }
@@ -319,7 +318,7 @@ function beijingStamp(ms: number): string {
 }
 
 /** 到期档位色：图标与卡片里的到期时刻共用一份映射，读者才知道图标那档色指的是
- *  卡片里的哪一行。色走主题 token（--warn / --destructive），与 icons.css 的分类色
+ *  卡片里的哪一行。色走主题 token（--warn / --destructive），与通用分类色
  *  无关——这里表达的是"急不急"（状态），不是"这是什么东西"。
  *  卡片挂在 portal 下，取不到 .wb-credits 的后代关系，所以映射必须留在 TSX 里
  *  （写在组件类下会被 portal 甩掉），图标也照这份色走。 */
@@ -339,7 +338,7 @@ function cronLooksValid(expr: string): boolean {
 }
 
 /** 定时任务弹窗：四类任务各自独立开关 + 一条 cron（北京时间），可随时手动跑一趟。
- *  时点与开关存在服务端（config.json 的 schedule 段），保存即生效、重启保留。 */
+ *  时点与开关存在服务端配置里，保存即生效、重启保留。 */
 function TaskScheduleDialog({
   open,
   onOpenChange,
@@ -718,7 +717,7 @@ export function WorkBuddyPage() {
               号池还小时不会出现滚动条，涨到几十个号时才不至于把页面拉得过长。 */}
           <div className="gw-table-card">
             <div className="gw-table-scroll">
-              {/* 列宽在 accounts.css 的 .wb-acct-table 里显式分配（table-layout: fixed），
+              {/* 列宽在 .wb-acct-table 里显式分配（table-layout: fixed），
                   与 Codex 账号表同一套做法：列宽不再由"最长的那条内容"决定——uid 那行与
                   历史用量的 2×2 四格会各自把列撑到跟自己一样宽，横向比例就散了 */}
               <Table className="wb-acct-table">
@@ -1163,7 +1162,7 @@ function ActionButton({
   onClick: () => void;
   disabled?: boolean;
   destructive?: boolean;
-  /** 分类色（见 styles/icons.css 映射表） */
+  /** 分类色（与图标同一套分类配色） */
   tone?: string;
 }) {
   return (

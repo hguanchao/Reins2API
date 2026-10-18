@@ -1,4 +1,4 @@
-"""停止原因映射（移植自 zen2api protocol/bridge/stop.ts）。
+"""停止原因映射。
 
 桥上只携带一套规范词表（"stop" / "tool_calls" / "length" / "content_filter" /
 "error" / "stop_sequence"），每个协议把它投影到自己的 finish_reason /

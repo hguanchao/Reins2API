@@ -78,14 +78,14 @@ class _Catalog:
 
     models: dict[str, dict[str, Any]] = field(default_factory=dict)  # 裸名 → 条目
     refreshed_at: str | None = None
-    # 缓存内容的最后变更时间（models.json 的 meta.updated_at_ms）：本进程从快照
+    # 缓存内容的最后变更时间（快照 meta 的 updated_at_ms）：本进程从快照
     # 冷启动时它是唯一的时间线索，与 refreshed_at（本进程刷新时间）分开不混用。
     cached_at_ms: int = 0
 
 
 def _core_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """上游 manifest 条目 → 统一核心字段条目（目录与 models.json 快照共用，
-    见 models_snapshot.core_entry）。manifest 里的 base_instructions 等大块字段
+    """上游 manifest 条目 → 统一核心字段条目（目录与快照共用同一套字段词表）。
+    manifest 里的 base_instructions 等大块字段
     目录侧用不到（ModelInfo 只取名字），不进内存也不落盘。
 
     protocol 一并落盘：快照现在是冷启动的唯一数据源，读的人（包括人工排障）不用
@@ -127,7 +127,7 @@ def _core_entry(entry: dict[str, Any]) -> dict[str, Any]:
 class CodexProvider(AccountRuntime):
     name = "codex"
     upstream_url = CODEX_BASE
-    # 熔断与退避（语义见 providers/account_runtime.py）
+    # 熔断与退避（阈值与时长由下面这几个常量给出）
     breaker_threshold = CODEX_BREAKER_THRESHOLD
     breaker_base_s = CODEX_BREAKER_BASE_S
     breaker_max_s = CODEX_BREAKER_MAX_S
@@ -140,14 +140,14 @@ class CodexProvider(AccountRuntime):
         self._catalog = _Catalog()
         self._init_runtime()  # 刷新串行化（RT 轮换不能双花）
         # x-codex-turn-state：上游下发的粘性路由令牌，按「账号 × 会话」回显（官方
-        # 客户端同款：会话级持有、换账号即重置，见 _note_turn_state 的注释）。
+        # 客户端同款：会话级持有、换账号即重置）。
         # 纯进程内缓存——重启后重新捕获，最多丢一次粘性，无副作用。
         self._turn_states: dict[str, tuple[str, int]] = {}
         self._turn_states_lock = threading.Lock()
         from providers.codex.login import LoginManager
 
         # 不挂 on_account_added：新号入库不再自动拉模型目录（目录只在手动
-        # 「获取模型」时刷新，见 refresh 的 docstring）。
+        # 「获取模型」时刷新）。
         self._login = LoginManager(self._store)
 
     # ── 目录 ──
@@ -375,7 +375,7 @@ class CodexProvider(AccountRuntime):
         *,
         stream: bool,
     ) -> UpstreamResponse:
-        """轮换主循环（见模块 docstring）。stream 参数为客户端意图——打上游恒流式。"""
+        """轮换主循环。stream 参数为客户端意图——打上游恒流式。"""
         try:
             body_dict = json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -498,7 +498,7 @@ class CodexProvider(AccountRuntime):
         # 响应头只有窗口三件套，/usage 才给的字段（积分、重置券、上游自己的 allowed /
         # limit_reached）在这里接过来：两条数据源写的是同一个 JSON 快照，直接覆盖等于
         # 一次普通请求就把主动查询的结果抹掉。代价是这些字段的时效跟着上次主动查询走。
-        # window 是容量估算的窗口基线（见 quota.py），同理不能丢。
+        # window 是容量估算的窗口基线，同理不能丢。
         for key in ("allowed", "limit_reached", "credits", "reset_credits", "window"):
             if key in previous and key not in snapshot:
                 snapshot[key] = previous[key]
@@ -530,9 +530,8 @@ class CodexProvider(AccountRuntime):
         """记住本次响应下发的粘性路由令牌（x-codex-turn-state）。
 
         官方客户端把令牌存在会话上、跟着后续请求回显，换账号即重置——同一段会话
-        因此尽量落回同一个后端分片，缓存与路由都受益（对照 codex-rs 的捕获与回显
-        位置见 upstream.TURN_STATE_HEADER）。网关按「账号 × 会话」存：换号轮换后
-        取不到旧令牌，与官方语义一致。
+        因此尽量落回同一个后端分片，缓存与路由都受益。网关按「账号 × 会话」存：
+        换号轮换后取不到旧令牌，与官方语义一致。
         """
         state = cx_upstream.turn_state_of(headers)
         if not state or not session_id:
@@ -574,8 +573,8 @@ class CodexProvider(AccountRuntime):
     def _mark_window(self, uid: str, snapshot: dict[str, Any], previous: dict[str, Any]) -> None:
         """换了窗口就在快照里重立容量估算的基线（累积 token + 当时的百分比）。
 
-        上游只给整数百分比，绝对容量只能靠"本地服务的 token ÷ 同期百分比变化"反推
-        （见 quota.py），所以基线必须是**窗口内**最早观测到的那个点。窗口的判定看
+        上游只给整数百分比，绝对容量只能靠"本地服务的 token ÷ 同期百分比变化"反推，
+        所以基线必须是**窗口内**最早观测到的那个点。窗口的判定看
         reset_at_ms：每个窗口的重置时刻都不同，它变了就是进了新窗口（百分比被清零，
         旧基线直接失效）。基线记的是**累积** token 数，与估算函数读同一口径做差，
         所以不需要知道窗口起点精确在哪。
@@ -685,7 +684,7 @@ class CodexProvider(AccountRuntime):
             # 额度用尽的 429 不能按"软冷却 + 指数退避"处理：退避最长 2 小时，而额度的恢复
             # 时刻由窗口重置决定（免费档 30 天）——按退避放回池子，它只会被反复选中、反复
             # 撞同一条错误。判定优先用错误体里的结构化信号（官方同款：
-            # error.type=usage_limit_reached 且自带 resets_at，见 classify.quota_signal），
+            # error.type=usage_limit_reached 且自带 resets_at），
             # 再退回固定文案与快照里的明确信号。
             state = current or account
             signal = classify.quota_signal(text, now_ms)
@@ -736,8 +735,8 @@ class CodexProvider(AccountRuntime):
 
         刷新成功要重新读库把新凭据带回来：调用方手里那份是刷新前的快照，拿着它
         发请求等于明知过期还去撞 401，之后还会被判 AUTH 再触发一次同号刷新——
-        新票立刻被再轮换一次，白白多消耗一轮配额（对照 codex2api 的"先落库再
-        发布到运行时账号"）。失败不阻塞本次发送（401 会触发同号重试）。
+        新票立刻被再轮换一次，白白多消耗一轮配额（先落库再把它发布到运行时账号，
+        才是正确的顺序）。失败不阻塞本次发送（401 会触发同号重试）。
         """
         now_ms = int(time.time() * 1000)
         if not account.token_expiring(now_ms, CODEX_REFRESH_AHEAD_S * 1000):
@@ -755,7 +754,7 @@ class CodexProvider(AccountRuntime):
         wait=False（后台巡检）拿不到锁就跳过，留给下一轮或请求路径。
         拿到锁后**重读库**：并发下别人可能刚刷完，用库里最新的 RT 才不会再轮换一次。
 
-        失败分三档处置（对照 codex2api 的永久/不确定/session 兜底分类）：
+        失败分三档处置（永久 / 不确定 / session 兜底）：
         - 上游明确拒绝（TokenRejected）：票已死，直接停用待人工重新授权；
         - 结果不确定（传输失败/5xx/响应畸形）：可能已经把票轮换走了，也可能没发出，
           不据此判死——留给下一轮试，真死了会以 invalid_grant 收敛到上一档；
@@ -779,7 +778,17 @@ class CodexProvider(AccountRuntime):
             try:
                 tokens = oauth.refresh(refresh_token)
             except oauth.TokenRejected as exc:
-                self._mark_needs_reauth(account, f"refresh_token rejected: {exc}")
+                reason = f"refresh_token rejected: {exc}"
+                # 2026-10-17 案例的高频根因：同一份 auth.json 同时活在第二个系统里
+                # （另一个 Codex 客户端/工具），那边的刷新把这里的 RT 轮换掉——导入的
+                # 票第一天就死。先把"另一边在跑"这个最可能的原因告诉运维。
+                if "invalid_refresh_token" in reason:
+                    reason += (
+                        "——该 refresh token 已失效或被源系统轮换：确认这个账号是否"
+                        "还在 CLIProxyAPI/官方 CLI 等其他系统里运行（那边每刷新一次，"
+                        "导入的 RT 即失效）。停掉另一边后在本系统重新授权"
+                    )
+                self._mark_needs_reauth(account, reason)
                 return False
             except Exception as exc:
                 level = logger.info if quiet else logger.warning
@@ -833,7 +842,7 @@ class CodexProvider(AccountRuntime):
     def refresh_expiring(self) -> int:
         """后台巡检：只刷「快过期」的号，返回实际刷新数。
 
-        取舍照 codex2api：**不做全量刷新**——全量刷会让每个号的 refresh_token
+        取舍：**不做全量刷新**——全量刷会让每个号的 refresh_token
         周期性轮换（上游可能因此判失效），也白打上游请求。所以只在距过期不足
         CODEX_REFRESH_AHEAD_S 时才动（与请求路径同一个门槛，巡检才真正替请求
         挡掉同步刷新）。
@@ -918,7 +927,7 @@ class CodexProvider(AccountRuntime):
         """账号行 + 额度容量估算。
 
         估算按需算（纯函数、无副作用）：容量的输入是"窗口基线的累积 token"与"当前
-        累积 token"（见 quota.py），两者都从 requests 库现取——比把推算结果写回
+        累积 token"，两者都从 requests 库现取——比把推算结果写回
         快照更省心，也不会出现"存下来的估算与实际用量脱节"。整表聚合一次，别在循环
         里逐账号查库。
         """
@@ -931,13 +940,13 @@ class CodexProvider(AccountRuntime):
         return summaries
 
     def export_accounts(self, fmt: str) -> Any:
-        """导出账号（cpa / codex2api 形状，见 providers/codex/transfer.py）。"""
+        """导出账号（cpa / codex2api 两种形状）。"""
         from providers.codex import transfer
 
         return transfer.export(self._store.list_accounts(), fmt)
 
     def import_accounts(self, text: str) -> dict[str, Any]:
-        """从 CPA / codex2api 形状的 JSON 导入账号。
+        """从 cpa / codex2api 形状的 JSON 导入账号。
 
         宽容解析（单对象 / 数组 / 带 accounts 的封装），逐条校验；坏条目只记进
         errors 不中断整批。落库走 upsert（INSERT OR REPLACE）——与手动导入同口径：

@@ -1,10 +1,8 @@
-# Cross-protocol streaming: read the upstream stream, convert every event into
-# the client's protocol and write it out.
+# 跨协议流式转码：读上游流，把每个事件转成客户端协议再写出。
 #
-# 移植自 zen2api protocol/stream/transcode.ts：parser →（BridgeStreamEvent）→
-# emitter。TS 的 AbortSignal 已删除：客户端断连表现为 sink.write 抛
-# BrokenPipeError / ConnectionResetError / ConnectionAbortedError，由
-# client_canceled 判定并停止读上游。
+# 数据流是 parser →（BridgeStreamEvent）→ emitter。不接受 AbortSignal：客户端
+# 断连表现为 sink.write 抛 BrokenPipeError / ConnectionResetError /
+# ConnectionAbortedError，由 client_canceled 判定并停止读上游。
 
 from __future__ import annotations
 
@@ -38,7 +36,7 @@ def transcode_stream(
 ) -> StreamOutcome:
     parser = stream_parser(from_proto)
     emitter = stream_emitter(sink, to_proto, model)
-    # 状态放在 dict 里，因为翻转发生在 SSE 回调内部（TS 用对象包一层同因）。
+    # 状态放在 dict 里，因为翻转发生在 SSE 回调内部。
     state = {"termination": "open"}
     read_error: Exception | None = None
 
@@ -54,7 +52,7 @@ def transcode_stream(
                     )
                 )
             except Exception:
-                # The client is already gone; the parse failure is still reported.
+                # 客户端已经走了；解析失败仍要上报。
                 pass
             raise UpstreamStreamFailure()
         for event in events:
@@ -88,8 +86,8 @@ def transcode_stream(
         return StreamOutcome(usage=emitter.usage)
     if state["termination"] == "error":
         return StreamOutcome(usage=emitter.usage, error=UpstreamStreamFailure())
-    # TS 在这里还有 clientCanceled(signal, null) 一支；Python 没有 AbortSignal，
-    # client_canceled(None) 恒为 False，该分支已随 signal 参数删除。
+    # 取消判定在这里没有单独的一支：client_canceled(None) 恒为 False，该分支
+    # 已随信号参数一并删除。
     eof = SseUnexpectedEof()
     emit_error = emit_unexpected_stream_error(emitter, eof)
     if emit_error is not None:

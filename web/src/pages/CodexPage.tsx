@@ -1,5 +1,4 @@
-/**
- * Codex 单页：号池 KPI + 账号管理（OAuth PKCE 登录）+ 模型目录 + 用量趋势 + 最近请求。
+/** Codex 单页：号池 KPI + 账号管理（OAuth PKCE 登录）+ 模型目录 + 用量趋势 + 最近请求。
  *
  * 结构对齐 WorkBuddyPage：panel gw-workspace 卡片根 + mission-strip KPI + gw-grid；
  * 数据 10s 轮询 /api/codex/ops + /api/codex/accounts。
@@ -433,8 +432,7 @@ export function CodexPage() {
   );
 }
 
-/**
- * Codex OAuth 登录对话框：PKCE 授权码 + 本机回调监听（等待完成），粘贴兜底。
+/** Codex OAuth 登录对话框：PKCE 授权码 + 本机回调监听（等待完成），粘贴兜底。
  *
  * OpenAI 只注册了 localhost:1455 这一个回调地址：网关与浏览器同机时由网关直接
  * 监听该端口收回调、自动兑换入池，前端只轮询等完成（同 WorkBuddy 的等待体验）；

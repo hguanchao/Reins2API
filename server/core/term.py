@@ -1,4 +1,4 @@
-"""终端展示网格的唯一来源(start.py 启动器与 core/console_view.py 共用)。
+"""终端展示网格的唯一来源(启动器与请求流水视图共用)。
 
 同一窗口里,启动步骤行与请求流水先后出现,必须同一套列式。行形参考
 Spring Boot 日志(`ts %5p PID --- [thread] logger : msg`),去掉 PID 与
@@ -54,7 +54,7 @@ def message_col() -> int:
 
 
 def now() -> str:
-    """HH:MM:SS.mmm(毫秒取自挂钟,秒以下本地时间足够对齐用)。"""
+    """HH:MM:SS.mmm(毫秒直接取挂钟,秒以下本地时间足够对齐用)。"""
     return time.strftime("%H:%M:%S.") + f"{int(time.time() * 1000) % 1000:03d}"
 
 

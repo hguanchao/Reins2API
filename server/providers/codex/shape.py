@@ -1,10 +1,10 @@
 """Codex 出站请求体归一（Responses 协议 → ChatGPT Codex 后端可接受的形态）。
 
-上游对 HTTP `/responses` 有硬性要求，不归一就 400（依据见设计文档 §3.2）：
+上游对 HTTP `/responses` 有硬性要求，不归一就 400：
   1. `instructions` 必须存在（缺省置 ""）；
   2. 不接受 `previous_response_id` / `prompt_cache_retention` / `safety_identifier` /
      `disable_response_storage` / 顶层 `type`——一律删除；
-  3. `prompt_cache_key` 用客户端键（跨会话的前缀缓存亲和，见 provider.send 注入处）；
+  3. `prompt_cache_key` 用客户端键（跨会话的前缀缓存亲和，由 provider.send 在轮换循环里注入）；
   4. `store=false`（本网关不落上游侧存储），且恒 `stream=true`（上游 SSE 是常态，
      非流式客户端由网关 collapse_stream 折叠）。
 
@@ -32,7 +32,7 @@ _STRIP_FIELDS = (
 
 
 def shape_codex_body(body: dict[str, Any], cache_key: str) -> bool:
-    """就地归一，返回是否发生改动。cache_key = 客户端键（见 identity.client_cache_key），
+    """就地归一，返回是否发生改动。cache_key = 客户端稳定键，
     只在调用方已知 ids 时注入（provider.send 的轮换循环里）；shaped 早退路径传 ""。"""
     changed = False
     if "instructions" not in body:

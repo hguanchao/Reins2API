@@ -18,14 +18,13 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-/**
- * Codex 账号的导入 / 导出对话框。
+/** Codex 账号的导入 / 导出对话框。
  *
- * 格式取自两个参考项目：CLIProxyAPI 把每个账号存成一个 auth JSON（键为
- * `type/email/plan_type/expired/id_token/account_id/access_token/last_refresh/
- * refresh_token`），codex2api 的导出结构体就是照它来的（`cpaExportEntry`），
+ * 账号按单账号 auth JSON 的形状存放，键含 type、email、plan_type、expired、
+ * id_token、account_id、access_token、last_refresh、refresh_token 等，导出用的
+ * 结构体与这一形状一一对应，
  * 而它的导入宽容接受"单对象 / 数组 / 带 accounts 的封装"三种形状。
- * 所以这里：**导入宽容**，**导出分两档**（cpa 给单文件形状，codex2api 给批量迁移封装）。
+ * 所以这里：**导入宽容**，**导出分两档**（单文件形状与批量迁移封装）。
  */
 
 /** 把导出结果落成 .json 下载（前端触发，避免给接口加 Content-Disposition）。 */
@@ -41,7 +40,7 @@ function downloadJson(data: unknown, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-/** 账号数组的封装键（与后端 transfer.parse_entries 同源）：多选文件合并时用它摊平内层。 */
+/** 账号数组的封装键（键名与后端解析一致）：多选文件合并时用它摊平内层。 */
 const WRAPPER_KEYS = ["accounts", "tokens", "data", "auths", "items"];
 
 /** 解析出的 JSON → 账号条目列表：数组原样、封装取内层、其余当单条（形状规则同后端）。 */
@@ -148,7 +147,7 @@ export function CodexImportDialog({
                 const files = Array.from(event.target.files ?? []);
                 event.target.value = "";
                 if (!files.length) return;
-                // 多选合并：CPA 是「一账号一文件」，选一批就摊平成一条账号数组再交给
+                // 多选合并：这种格式是「一账号一文件」，选一批就摊平成一条账号数组再交给
                 // 后端（它本就吃数组）；单个文件（数组/封装/单条）也走同一条路径。
                 const entries: unknown[] = [];
                 const bad: string[] = [];

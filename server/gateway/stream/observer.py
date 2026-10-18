@@ -1,7 +1,4 @@
-# Observes a pass-through stream to collect usage without altering the bytes
-# the client receives.
-#
-# 移植自 zen2api protocol/stream/observer.ts：透传路径上按完整帧采样 usage，
+# 观察透传流以收集 usage，同时不改动客户端收到的字节：按完整帧采样 usage，
 # 客户端拿到的字节一个都不动。
 
 from __future__ import annotations
@@ -39,8 +36,8 @@ class StreamUsageObserver:
     def push(self, chunk: bytes) -> None:
         self._splitter.push(chunk)
 
-    # finish drops an unterminated final record: a usage object from a response
-    # cut off at EOF must not be counted.
+    # finish 丢弃没有终结的末记录：一条在 EOF 处被截断的响应里的 usage 对象
+    # 绝不能被计入。
     def finish(self) -> Usage:
         self._splitter.end()
         return self._usage

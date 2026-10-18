@@ -57,7 +57,7 @@ class _Session:
     created: float
     state: str
     verifier: str
-    status: str = "pending"                  # pending | done | error
+    status: str = "pending"                  # 取值：pending（等待）/ done（完成）/ error（失败）
     result: dict[str, Any] | None = None
     message: str = ""
 

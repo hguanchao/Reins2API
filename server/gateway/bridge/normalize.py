@@ -1,4 +1,4 @@
-"""上行请求归一化：修复会被特定厂商重新校验的 reasoning 历史（移植自 zen2api protocol/bridge/normalize.ts）。
+"""上行请求归一化：修复会被特定厂商重新校验的 reasoning 历史。
 
 客户端自己的思考档位原样透传——网关既不强加也不降级。
 """
@@ -26,8 +26,8 @@ def normalize_tool_reasoning_history(
     vendor = is_reasoning_vendor_identifier(model) or is_reasoning_vendor_identifier(upstream_url)
     widened = vendor or request_enables_reasoning(input)
     if protocol == PROTOCOL_CHAT:
-        # Chat 修复是增量的：只补一个不理解该字段的兼容端点会忽略的
-        # reasoning_content。
+        # Chat 修复是增量的：只追加 reasoning_content 占位值——不理解该字段的
+        # 兼容端点会直接忽略它。
         if not widened:
             return False
         return normalize_chat_tool_reasoning_history(input)
@@ -127,8 +127,8 @@ def normalize_anthropic_tool_thinking_history(input: dict[str, Any]) -> bool:
                     changed = True
             elif kind == "redacted_thinking":
                 has_thinking = True
-                # TS 这里是字面量 '[redacted thinking]'，与 reasoning.ts 的
-                # 导出常量同值，Python 侧统一引用常量。
+                # 占位符原本是手写字面量 '[redacted thinking]'，与 reasoning 模块
+                # 的导出常量同值，这里统一引用常量。
                 content[index] = {
                     "type": "thinking",
                     "thinking": anthropic_redacted_thinking_placeholder,

@@ -120,7 +120,7 @@ def decode_request(input: dict[str, Any]) -> BridgeRequest:
     for i, tool in enumerate(tools):
         if not is_object(tool) or string_at(tool, "type") != "function":
             # 非 function 工具（web_search / custom / 各家服务端工具）不转出去：
-            # StepFun 文档明确 "tools[].type 总是为 function"，step 系模型带
+            # StepFun 约定 tools[].type 恒为 function,step 系模型带
             # type:"web_search" 会整单回 unsupported_content_type。丢掉并记一条
             # 日志——客户端只是拿不到联网搜索，好过整个请求 400。
             logger.warning(

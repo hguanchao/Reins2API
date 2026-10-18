@@ -1,7 +1,7 @@
-"""JSON 取值辅助（移植自 zen2api util/json.ts）。
+"""JSON 取值辅助。
 
 桥接的是形状任意的上游 payload，这些容忍型辅助函数在缺失或类型不符的路径上
-返回零值而不是抛错。与 Go 网关那套 nil-returning 辅助一一对应。
+返回零值而不是抛错（nil-returning 语义）。
 """
 
 from __future__ import annotations

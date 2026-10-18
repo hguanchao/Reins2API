@@ -15,24 +15,49 @@
 ## 接入
 
 ```bash
-# 起服务(默认 127.0.0.1:8787;启动编排:自动装 uv/Node → uv sync → 前端按 mtime 决定是否构建
-#   → 清端口旧实例 → 后台启动 → /healthz 健康检查 → 把窗口移交给实时请求视图。
-#   编排唯一实现在 server/scripts/start.py,根目录 start.sh/start.bat 只是薄壳转发)
-./start.sh                       # bash / Git Bash
+# 起服务(默认 127.0.0.1:8787)。
+#   编排唯一实现在 server/scripts/start.py,根目录 start.sh/start.bat 只是薄壳转发。
+#   四个模式:start(默认) / --status / --stop / --doctor / --attach。
+#   启动顺序:环境探测 → 依赖(指纹没变就跳过 uv sync) → 前端(按输入指纹决定是否构建)
+#     → 优雅停旧实例(控制面排水,超时 20s 才强杀) → 后台拉起 → /healthz 就绪(校验实例号)
+#     → 打印就绪卡 → 把窗口移交给实时请求视图。
+./start.sh                       # bash / Git Bash(不带参数 = 启动;已在跑 = 优雅重启)
 start.bat                        # CMD(双击)
 ./start.sh 9000                  # 指定端口
-./start.sh --rebuild             # 强制重建前端(默认:产物缺失或 web 源码更新时才构建)
+./start.sh --status              # 只报告谁在跑(实例/PID/在途/模型/日志,退出码 0=在跑 3=没跑)
+./start.sh --status --json       # 同上,输出 JSON 供脚本解析
+./start.sh --stop                # 优雅停止(等在途请求收尾;没在跑就是安静的 no-op)
+./start.sh --doctor              # 只体检:uv/node/venv/依赖/产物/端口/配置/目录/控制面
 ./start.sh --attach              # 不重启服务,只挂上控制台视图(看正在跑的服务)
+./start.sh --rebuild             # 强制重建前端(默认按输入指纹判断,不看 mtime)
+./start.sh --skip-web            # 跳过前端整段(后端调试省一次构建)
+./start.sh --resync              # 强制 uv sync(默认依赖声明没变就跳过)
+./start.sh --take-port           # 端口被非本服务进程占用时允许结束它(默认拒绝)
+./start.sh --host 0.0.0.0        # 绑定地址(默认 settings.HOST=127.0.0.1)
+./start.sh --health-timeout 90   # 就绪等待上限秒数(默认 45,CI 环境自动 90)
+./start.sh --drain-timeout 30    # 旧实例排水上限秒数(默认 20)
 ./start.sh --full                # 步骤原始输出全量转发(默认一行摘要,失败才展开尾部)
 ./start.sh --no-follow           # 只启动 + 打印就绪信息即退出(脚本化/CI 用)
-# 再次运行 = 重启(自动结束旧实例);停止 = 结束端口上的进程;直接关窗口不影响后台服务
+# 退出码:0 成功 · 2 参数错 · 3 没在跑(--status) · 4 环境缺失 · 5 依赖/构建失败
+#   6 端口被非本服务占用且未获授权 · 7 另一个启动器在跑 · 8 服务拉起但未就绪
+#
+# 重启是**排水式**而不是硬杀:启动器先经控制面请旧实例停止受理,等在途请求自然收尾
+#   (上限 20s),端口一释放就拉起新实例。客户端侧不再出现"半截流",遥测里也不再凭空
+#   多出 status=499。旧实例(比本版本早的构建/手工启动的)没有控制面,只能强杀并记为 WARN。
+#   就绪判定要求 /healthz 上报的 instance 与重启前那个不同——Windows 的 SO_REUSEADDR
+#   允许两个进程绑同一端口,不比实例号就会把旧实例的答复误认成"新实例已就绪"。
+# 运行记录与控制令牌按端口落在 server/data/(run.<端口>.json、control.<端口>.token,
+#   都在 gitignore 内):--status 拿它和端口上的实况对账,--stop/重启拿令牌走优雅停机。
+#   同一时刻只允许一个启动器(server/data/launcher.lock,持有者已死则自动接管)。
 # 窗口里是实时请求流水(受理/完成两行拼一条请求),只读跟随 server/logs/server.log：
 #   21:24:21.925  →  msg_14550702…  chat      oc:big-pickle        上游 opencode · 非流式 · 免费档 · 塑形
 #   21:24:43.365  ✓  msg_14550702…  chat      oc:big-pickle        200  21.44s · 首字 — · 1.4k↑ 16↓ · 缓存 1.4k
 # 持久化日志只追加、绝不清空：server.log 按日轮转到 YYYY-MM-DD.log(保留 30 天),视图关掉
 #   重开(--attach)也不动它;回看历史用 cd server && uv run python -m core.console_view --tail 200
-# 或前台手动运行
+# 或前台手动运行(控制面在手工启动时同样启用,一样能被 --stop 优雅停掉)
 cd server && uv sync && uv run python main.py --serve 9000
+# 停机(信号):POSIX 上 SIGTERM/SIGINT 走同一条排水路径;Windows 上无窗口进程的 SIGTERM
+#   送不到,所以启动器走控制端点。再收到一次信号 = 立刻退出(连按 Ctrl+C 的语义)。
 
 # 推理(任选协议;模型名用 /v1/models 列出的规范名,或裸名)
 curl http://127.0.0.1:8787/v1/chat/completions \
@@ -63,7 +88,7 @@ curl http://127.0.0.1:8787/v1/messages \
 | `POST /v1/responses` | OpenAI Responses 协议 |
 | `POST /v1/messages` | Anthropic Messages 协议 |
 | `GET /v1/models` | 可服务模型清单(全 provider 合并,规范名 `oc:`/`cn:`/`glb:`/`cx:`) |
-| `GET /healthz` | 健康检查 |
+| `GET /healthz` | 健康检查(兼启动器握手:`{ok,service,instance,pid,uptime_s,in_flight,draining}`,重启后按 instance 对账) |
 | `GET /api/{provider}/ops` | 运维聚合快照(状态+目录+用量;opencode / workbuddy / codex 通用) |
 | `GET /api/{provider}/requests` | 遥测明细分页 |
 | `GET /api/{provider}/usage` | 用量聚合(`1h/24h/7d/30d`,含 by_account) |
@@ -112,9 +137,14 @@ Web 管理台:构建前端后访问 `http://127.0.0.1:8787/`(SPA;根路径会 re
 
 ```
 server/
-├── main.py              入口:注册 provider(opencode + workbuddy + codex) → 起服务
-├── core/                settings(写死值) / logger(北京时间滚动) / console_view(控制台请求流水渲染) / http_body / respond
+├── main.py              入口:注册 provider(opencode + workbuddy + codex) → 起服务 → 登记停机收尾钩子
+├── scripts/start.py     ★ 启动编排唯一实现(四模式:start / --status / --stop / --doctor / --attach)
+│   └── _launcher/       零件:env(工具发现,Windows 的 npm.cmd) / process(端口·进程·记录·锁)
+│                        / build(依赖与前端构建的输入指纹) / report(启动行·就绪卡·体检表)
+├── core/                settings(写死值) / logger(北京时间滚动) / console_view(控制台请求流水渲染)
+│                        / lifecycle(实例身份·在途计数·排水停机·控制令牌) / http_body / respond
 ├── api/server.py        零框架分发层(限流 503/413/408/SPA 托管),路由 /v1 /api /healthz
+│                        /__control/shutdown(回环+令牌,启动器专用:优雅停机)
 ├── gateway/             ★ 与上游无关的协议核心
 │   ├── types.py         Bridge 中间结构 + Usage
 │   ├── protocols/       三个线上协议各一个文件:chat / responses / anthropic

@@ -1,7 +1,6 @@
-"""桥入口：由任意客户端协议构建上游请求体，并把完整上游响应回转（移植自 zen2api protocol/bridge/convert.ts）。
+"""桥入口：由任意客户端协议构建上游请求体，并把完整上游响应回转。
 
-TS 的 convertResponse 收 Buffer 返 Buffer；Python 版收 dict 返 dict，JSON 解析
-由调用方完成。
+请求与响应都以 dict 进出（JSON 解析与序列化由调用方完成）。
 """
 
 from __future__ import annotations

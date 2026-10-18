@@ -13,7 +13,7 @@ import time
 
 from core.logger import logger
 
-# 账号 token 后台巡检间隔（秒）。取舍照 codex2api：固定周期醒来，但**只刷快过期的号**，
+# 账号 token 后台巡检间隔（秒）。固定周期醒来，但**只刷快过期的号**，
 # 不做全量刷新——全量刷会让每个号的 refresh_token 周期性轮换（上游可能因此判失效），
 # 也白打上游请求。刷谁由 provider.refresh_expiring() 自己决定。
 TOKEN_SWEEP_SECONDS = 120
@@ -88,7 +88,7 @@ def _auto_refresh_if_stale(provider) -> None:
 def _token_sweep_loop(provider) -> None:
     """账号 token 后台巡检：固定周期醒来，只刷「快过期」的号。
 
-    门槛与跳过规则见 providers/codex/provider.py 的 refresh_expiring()——与请求路径
+    门槛与跳过规则由 provider 的 refresh_expiring() 定义——与请求路径
     用同一个提前量，巡检才真正替请求挡掉那次同步刷新。没有实现该方法的 provider
     直接不跑（这样以后加新上游可以按需实现）。
     """
@@ -104,6 +104,37 @@ def _token_sweep_loop(provider) -> None:
         time.sleep(TOKEN_SWEEP_SECONDS)
 
 
+def _register_shutdown_hooks() -> None:
+    """排水后的收尾：停排程器、关 SQLite。按注册顺序执行。
+
+    顺序刻意如此：排程器先停（不然它可能在库关闭后又写一条），再关库。DB 连接本来
+    也靠进程退出回收（WAL 下不会损坏），这里显式关是让"排水完成"那一刻状态就是干净的
+    ——启动器紧接着要拉起新实例，新实例第一个动作就是连这些库。
+    """
+    from core import lifecycle
+    from db import stores
+    from gateway.base import registry  # 必须在这里 import：main() 里的同名 import 是局部的
+
+    def _stop_schedulers(_drained: bool) -> None:
+        for name in registry.names:
+            provider = registry.get(name)
+            scheduler = getattr(provider, "scheduler", None)
+            if scheduler is None:
+                continue
+            try:
+                scheduler.stop()
+                logger.info(f"[启动] 已停止排程器 provider={name}")
+            except Exception as exc:
+                logger.warning(f"[启动] 停止排程器失败 provider={name}: {type(exc).__name__}: {exc}")
+
+    def _close_stores(_drained: bool) -> None:
+        for provider_store in stores().values():
+            provider_store.close()
+
+    lifecycle.add_shutdown_hook(_stop_schedulers)
+    lifecycle.add_shutdown_hook(_close_stores)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="reins2api")
     parser.add_argument(
@@ -117,6 +148,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    from core import lifecycle
     from core.settings import CODEX_ENABLED, PORT, WB_ENABLED
     from db import init_stores
     from gateway.base import registry
@@ -133,7 +165,7 @@ def main() -> None:
         registry.register(workbuddy)
         init_stores(registry.names)  # workbuddy.db（requests + accounts 表）
         # 定时任务排程（签到 / 活跃上报 / 猫猫旅行 / token 保活）：时点与四类开关
-        # 见 config.json 的 schedule 段。daemon 线程，四类全关时不空转。
+        # 时点与四类开关在 config.json 的 schedule 段。daemon 线程，四类全关时不空转。
         workbuddy.scheduler.start()
 
     if CODEX_ENABLED:
@@ -157,7 +189,10 @@ def main() -> None:
 
     egress.warm(registry.default.upstream_url)
 
-    logger.info(f"[启动] 已注册 provider: {' '.join(registry.names)}")
+    _register_shutdown_hooks()
+    logger.info(
+        f"[启动] 已注册 provider: {' '.join(registry.names)} instance={lifecycle.INSTANCE_ID}"
+    )
 
     from api.server import serve
 

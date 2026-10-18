@@ -9,10 +9,9 @@ import {
 } from "@/components/ui";
 import { isDefaultRequestQuery, REQUEST_QUERY_DEFAULT, type RequestQuery } from "@/lib/api";
 
-/**
- * 最近请求的筛选条：状态 / 模型 / 账号 + 重置，三个都是同一套 Radix 下拉。
+/** 最近请求的筛选条：状态 / 模型 / 账号 + 重置，三个都是同一套 Radix 下拉。
  *
- * 筛选在**服务端**执行（见 db.request_where）：日志是分页的，只筛当前页会给出
+ * 筛选在**服务端**执行（过滤条件进查询、随分页一起生效）：日志是分页的，只筛当前页会给出
  * "这批就这几条 429"的假象——真实数量可能在别的页里。改条件后页码回到第 1 页。
  *
  * 都是**下拉而不是输入框**：可筛的值本来就只有两类来处——模型来自目录、账号来自

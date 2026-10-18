@@ -1,5 +1,4 @@
-/**
- * Token 用量 + 请求次数组合图(时间范围可选:今日/7天/14天/30天,默认 7 天):
+/** Token 用量 + 请求次数组合图(时间范围可选:今日/7天/14天/30天,默认 7 天):
  * 输入/输出 token 画堆叠面积(左轴),请求次数画折线叠加(右轴),x 为时间桶。
  * 范围状态由页面持有:面板头部用同文件的 UsageRangeSelect 渲染切换(与标题
  * 同一行),组件按 range prop 取数并 10s 轮询(/api/{provider}/usage?range=…)。
@@ -21,7 +20,7 @@ import { Empty, ToggleGroup, ToggleGroupItem } from "@/components/ui";
 import { AUTO_REFRESH_MS } from "@/lib/countdown";
 import { fmtCompact, fmtInt } from "@/lib/utils";
 
-/** 面积/线配色走 CSS 变量（见 tokens.css 的 --chart-*），深浅主题各自一套。
+/** 面积/线配色走 CSS 变量（--chart-*），深浅主题各自一套。
     两个坑：① 这些值只能经 inline style 落到 SVG 上——fill/stroke 作为「表现属性」
     不参与 var() 替换，写 fill="var(--x)" 会渲染成空；② 输出序列不能用绿，
     它与主色 #0d9f6e 色相只差约 3°，两条堆叠面积会糊成一条。 */
@@ -223,7 +222,7 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
     return { pts, tokMax, reqMax, innerW, innerH, base, yTok, yReq, inputPath, outputPath, reqPath, reqDots, xTicks };
   }, [series, W, H]);
 
-  // 横向虚线网格:4 等分（对齐 demo 的疏度——原来的 8 等分网格线太密，抢数据的注意力）
+  // 横向虚线网格:4 等分（原来的 8 等分网格线太密，抢数据的注意力）
   const gridY = Array.from({ length: 5 }, (_, i) => i / 4);
   const n = series.length;
   const innerW = W - PAD_L - PAD_R;
@@ -299,7 +298,7 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
                   x2={W - PAD_R}
                   y1={gy}
                   y2={gy}
-                  // demo：网格虚线用 --border，基线单独用 --border-strong 压住它
+                  // 网格虚线用 --border，基线单独用 --border-strong 压住它
                   style={{ stroke: f === 0 ? "var(--border-strong)" : "var(--border)" }}
                   strokeWidth={1}
                   strokeDasharray={f === 0 ? undefined : "3 4"}
@@ -332,7 +331,7 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
             );
           })}
           {/* 堆叠面积:输入贴底,输出叠上。样式走 style 才能吃到 CSS 变量。
-              填充不透明度、线宽、点半径全部取 demo 的值 */}
+              填充不透明度、线宽、点半径取固定值 */}
           <path
             d={geo.inputPath}
             style={{ fill: C_INPUT, stroke: C_INPUT, fillOpacity: 0.2 }}
@@ -367,7 +366,7 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
                 strokeWidth={1}
                 strokeDasharray="3 3"
               />
-              {/* 悬停桶在三条序列上的落点（demo 的 r=3.4 圆点）：
+              {/* 悬停桶在三条序列上的落点（半径 3.4 的圆点）：
                   输入点在输入线，输出点在堆叠顶（输入+输出），请求点在右轴折线上 */}
               <circle
                 cx={hoverX(hover)}
@@ -409,7 +408,7 @@ export function TokenUsageChart({ provider, range }: { provider: string; range: 
             style={tip.side === "right" ? { right: tip.x, top: tip.top } : { left: tip.x, top: tip.top }}
           >
             <div className="gw-chart-tip-date">{hovered.label}</div>
-            {/* 总量三行：左标签右数值的两列格（demo 的 auto auto / 3px 14px） */}
+            {/* 总量三行：左标签右数值的两列格（左标签右数值两列） */}
             <div className="gw-chart-tip-grid">
               <span className="k">输入</span>
               <span className="v">{fmtInt(hovered.input_tokens)}</span>

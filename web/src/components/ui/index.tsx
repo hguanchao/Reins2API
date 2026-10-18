@@ -20,14 +20,14 @@ import type { ComponentType, ReactNode } from "react";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-// ---------- Button ----------
+// ---------- 按钮 ----------
 
 const buttonVariants = cva(
   "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[10px] text-md font-medium disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-3.5 shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-ring transition-[color,background-color,border-color,opacity,transform,box-shadow] duration-150 ease-out",
   {
     variants: {
       variant: {
-        /* landing 的签名微交互：悬停放大 2%。只给独立按钮（primary/outline），
+        /* 落地页的签名微交互：悬停放大 2%。只给独立按钮（primary/outline），
            行内图标按钮不加——密集行里缩放会抖 */
         default:
           "bg-primary text-primary-foreground hover:brightness-105 hover:scale-[1.02] disabled:bg-muted disabled:text-muted-foreground",
@@ -72,11 +72,11 @@ function Button({
   );
 }
 
-// ---------- Badge ----------
+// ---------- 徽章 ----------
 
 const badgeVariants = cva(
   [
-    /* gap 5px 对齐 demo（原本 gap-1=4px）：徽章里有点标时这 1px 看得出来 */
+    /* gap 5px（原本 gap-1=4px）：徽章里有点标时这 1px 看得出来 */
     "group/badge inline-flex h-[21px] w-fit shrink-0 items-center justify-center gap-[5px]",
     "overflow-hidden rounded-full border border-transparent px-2 py-0.5",
     "text-[11px] font-medium whitespace-nowrap",
@@ -89,12 +89,12 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        /* 语义徽章一律走 tokens.css 里成对的 bg/border/text 三件套，
+        /* 语义徽章一律走成对的 bg/border/text 三件套，
            而不是把文字色按 alpha 混出底色——深色文字混出来的底必然发灰：
-           warning 的 #b45309@10% ≈ 米灰 #f8eee6，而 demo 是浅黄 #fffbeb，
-           success 是灰绿 #e6f1ee vs #ecfdf5。同一套值早已在 tokens.css 里
+           warning 的 #b45309@10% ≈ 米灰 #f8eee6，而浅黄档是 #fffbeb，
+           success 是灰绿 #e6f1ee vs #ecfdf5。同一套值早已是主题 token
            （为 toast 定的），深浅两套主题都跟着走。
-           另：[a]:hover 系列规则已删——全项目没有任何 Badge 在 <a> 里，是死代码。 */
+           另：[a]:hover 系列规则已删——没有任何 Badge 用在 <a> 里，是死代码。 */
         default: "bg-primary text-primary-foreground",
         secondary: "bg-muted text-muted-foreground border-border",
         destructive:
@@ -138,7 +138,7 @@ function Badge({
   );
 }
 
-// ---------- Dialog ----------
+// ---------- 对话框 ----------
 
 function Dialog({
   ...props
@@ -182,9 +182,9 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          /* 定位（fixed + 居中）由 motion.css 的 .ap-dialog-content 接管。
+          /* 定位（fixed + 居中）由 .ap-dialog-content 接管。
              不要再写 -translate-y-1/2：Tailwind v4 把它编译成 translate 属性，
-             会与 motion.css 的 transform: translateY(-50%) 叠加成 -100%，
+             会与 .ap-dialog-content 的 transform: translateY(-50%) 叠加成 -100%，
              弹窗整体上移半个身位、高弹窗顶部直接出屏。
              超高内容靠 max-h + 内部滚动保持顶部可达 */
           "ap-dialog-content bg-card text-card-foreground fixed z-[70] grid h-fit max-h-[min(90vh,920px)] w-full max-w-[calc(100%-2rem)] gap-4 overflow-y-auto overscroll-contain rounded-lg border border-border p-5 shadow-[var(--shadow-pop)] sm:max-w-lg",
@@ -246,10 +246,9 @@ function DialogTitle({
   );
 }
 
-// ---------- Empty ----------
+// ---------- 空状态 ----------
 
-/**
- * 空状态:图标 + 一行文案 + 可选的下一步动作。
+/** 空状态:图标 + 一行文案 + 可选的下一步动作。
  * 默认文案「暂无数据」;只有状态语义确实不同(如加载失败)时才通过 text 覆盖。
  * `action` 用来给「第一次打开就是这样」的空态一个出口(如空号池里的「添加账号」)——
  * 没有出口的空屏只告诉用户"这里什么都没有",不告诉他下一步该做什么。
@@ -284,7 +283,7 @@ function Empty({
   );
 }
 
-// ---------- Input ----------
+// ---------- 输入框 ----------
 
 function Input({
   className,
@@ -306,7 +305,7 @@ function Input({
   );
 }
 
-// ---------- Pagination ----------
+// ---------- 分页 ----------
 
 const DEFAULT_SIZES = [20, 50, 100] as const;
 
@@ -449,7 +448,7 @@ export function Pagination({
   );
 }
 
-// ---------- Select ----------
+// ---------- 下拉选择 ----------
 
 /** shadcn/ui Select 根组件（Radix） */
 function Select({
@@ -598,9 +597,9 @@ function SelectScrollDownButton({
   );
 }
 
-// ---------- Toaster ----------
+// ---------- 全局提示 ----------
 
-/** 全局 Toaster：右上角；跟随浅/深色；样式由 index.css 的 data-sonner 规则接管。 */
+/** 全局 Toaster：右上角；跟随浅/深色；样式由全局样式里 data-sonner 的规则接管。 */
 function Toaster({ ...props }: ToasterProps) {
   const { resolved } = useTheme();
 
@@ -634,10 +633,9 @@ function Toaster({ ...props }: ToasterProps) {
   );
 }
 
-// ---------- Table ----------
+// ---------- 表格 ----------
 
-/**
- * shadcn Table。
+/** shadcn 风格的表格组件。
  * 默认不包 overflow 容器，避免与外层 ScrollArea / sticky 列双重滚动冲突。
  * 需要自带横向滚动时传 ``scrollable``。
  */
@@ -690,7 +688,7 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
       data-slot="table-row"
       className={cn(
         "border-b transition-colors duration-150",
-        /* 行分隔线的颜色由 base.css 的 [data-slot="table-row"] 规则统一给（--hairline）；
+        /* 行分隔线的颜色由 [data-slot="table-row"] 的规则统一给（--hairline）；
            不写在这里是因为 border-b-[var(--x)] 在 Tailwind 里宽度/颜色有歧义，
            而内联 style 会挡住调用方的 className 覆盖 */
         className,
@@ -705,7 +703,7 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        /* 不做 uppercase：本项目列头中英混排（「7d 请求」「24h Tokens」），
+        /* 不做 uppercase：列头中英混排（「7d 请求」「24h Tokens」），
            强制大写会渲染成「7D 请求」这种半截大写的怪样子 */
         "text-fg-subtle h-9 bg-[var(--table-header)] px-3.5 text-left align-middle text-[11px] font-semibold whitespace-nowrap",
         "[&:has([role=checkbox])]:w-10 [&:has([role=checkbox])]:pr-0 [&:has([role=checkbox])]:pl-3",
@@ -721,7 +719,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
     <td
       data-slot="table-cell"
       className={cn(
-        /* py 11px 对齐 demo 的 td padding；不用固定 h-10，双行单元格要自适应 */
+        /* py 11px 是单元格的固定内边距；不用固定 h-10，双行单元格要自适应 */
         "px-3.5 py-[11px] align-middle",
         "[&:has([role=checkbox])]:w-10 [&:has([role=checkbox])]:pr-0 [&:has([role=checkbox])]:pl-3",
         className,
@@ -731,8 +729,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
   );
 }
 
-/**
- * 表格空状态行：列头保持可见，仅在表体渲染一行居中提示。
+/** 表格空状态行：列头保持可见，仅在表体渲染一行居中提示。
  * 自带焦点中和（hover 背景/首列左阴影不响应），避免整表消失的问题；
  * colSpan 必须覆盖全部列数。
  */
@@ -755,7 +752,7 @@ function TableEmptyRow({
   );
 }
 
-// ---------- Tabs ----------
+// ---------- 标签页 ----------
 
 function Tabs({
   className,
@@ -804,7 +801,7 @@ function TabsTrigger({
   );
 }
 
-// ---------- Toggle ----------
+// ---------- 开关 ----------
 
 const toggleVariants = cva(
   [
@@ -836,7 +833,7 @@ const toggleVariants = cva(
   },
 );
 
-// ---------- ToggleGroup ----------
+// ---------- 开关组 ----------
 
 const ToggleGroupContext = React.createContext<
   VariantProps<typeof toggleVariants>
@@ -910,11 +907,11 @@ function ToggleGroupItem({
   );
 }
 
-// ---------- DropdownMenu ----------
+// ---------- 下拉菜单 ----------
 
 /** 行内操作列的「更多」菜单（Radix）。
     低频与危险动作收在这里，常驻图标只留三个——操作列从 5 个图标缩到 4 个，
-    账号/凭证那类会被挤断的列才有宽度可分（见 accounts.css 的列宽分配）。 */
+    账号/凭证那类会被挤断的列才有宽度可分。 */
 function DropdownMenu({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
@@ -986,7 +983,7 @@ function DropdownMenuSeparator({
   );
 }
 
-// ---------- Tooltip ----------
+// ---------- 提示浮层 ----------
 
 function TooltipProvider({
   delayDuration = 200,

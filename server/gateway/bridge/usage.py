@@ -1,4 +1,4 @@
-"""Usage 解码与编码（移植自 zen2api protocol/bridge/usage.ts）。
+"""Usage 解码与编码。
 
 各协议围绕缓存读写切分 prompt token 的方式不同，桥只携带一套归一化形状，
 每个编码器恰好拆一次缓存字段。

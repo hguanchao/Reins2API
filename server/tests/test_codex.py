@@ -1275,9 +1275,35 @@ def test_refresh_rejected_rt_disables_account():
                 assert provider.refresh_expiring() == 0
 
             assert calls == ["RT-dead"]           # 停用后巡检不再拿死票去打上游
+        finally:
+            store.close()
+
+
+def test_invalid_refresh_token_is_terminal_and_points_to_source():
+    """auth.openai.com 对死 RT 的现行回答是 401 + invalid_refresh_token：
+    必须终局停用（而不是当"结果不确定"每 2 分钟白打上游），且运维消息要点到
+    "另一个系统（CLIProxyAPI/官方 CLI）轮换了这张票"这个高频根因。"""
+    import providers.codex.oauth as cx_oauth
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = CodexStore(Path(tmp) / "codex.db")
+        try:
+            _seed_account(store, "acc-1", refresh_token="RT-imported",
+                          token_expires_ms=int(time.time() * 1000) + 1_000)
+            provider = CodexProvider(store=store)
+
+            def rejected(_refresh_token):
+                raise cx_oauth.TokenRejected(
+                    'token 端点 HTTP 401 code=invalid_refresh_token: '
+                    '{"error":{"code":"invalid_refresh_token"}}'
+                )
+
+            with _patched(cx_oauth, "refresh", rejected):
+                assert provider._try_refresh(store.get_account("acc-1"), wait=False) is False
+
             dead = store.get_account("acc-1")
-            assert dead.status == "disabled"
-            assert "invalid_grant" in dead.status_reason
+            assert dead.status != "active"            # 终局：不再每轮重试
+            assert "CLIProxyAPI" in dead.status_reason
         finally:
             store.close()
 

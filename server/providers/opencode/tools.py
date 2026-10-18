@@ -27,7 +27,7 @@ from gateway.types import PROTOCOL_ANTHROPIC, PROTOCOL_CHAT
 # bash 不再注入——上游认识 bash 且会校验其定义，而网关手上没有 bash 的官方定义。
 CORE_TOOLS = ("shell", "edit", "glob", "grep", "read")
 
-# 这份快照抓取自哪个官方 CLI 版本。上游按**同版本 CLI** 的工具定义逐字段比对，
+# 这份快照对应哪个官方 CLI 版本。上游按**同版本 CLI** 的工具定义逐字段比对，
 # 版本漂移（UA 升了、快照没重抓）= 定义过时 = 整批 403；capture_gap() 在 provider
 # 启动时对账。改 UA 版本（settings.OPENCODE_CLI_VERSION）时必须同步更新这里。
 CAPTURED_CLI_VERSION = "2.0.29"

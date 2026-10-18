@@ -1,11 +1,9 @@
-# Same-protocol pass-through: copy the upstream SSE bytes straight to the
-# client while observing usage, then report a stream that ended without a
-# terminal event.
+# 同协议透传：把上游 SSE 字节原样拷给客户端，同时旁路观察 usage，最后对"没有
+# 终止事件就结束"的流做上报。
 #
-# 移植自 zen2api protocol/stream/forward.ts。与 TS 的唯一差别：sink 收 bytes，
-# 上游 chunk 原样转发（TS 这里要过 TextDecoder 再写字符串，Python 不再需要，
-# 也避免了把非法 UTF-8 换成 U+FFFD 的副作用）；TS 只在读完后 flush 一次，这里
-# 每块都 flush——Python 的 sink 可能攒批，攒到流结束才发就不是流了。
+# 与转码路径的差别：sink 收 bytes，上游 chunk 原样转发，不必先按字符解码再编码，
+# 也避免了把非法 UTF-8 换成 U+FFFD 的副作用；而且每块都 flush，而不是留到读完
+# 只做一次——sink 可能攒批，攒到流结束才发就不是流了。
 
 from __future__ import annotations
 

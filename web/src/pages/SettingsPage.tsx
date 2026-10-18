@@ -1,5 +1,4 @@
-/**
- * 系统配置单页：出站代理三档（直连 / 跟随系统 / 手动填写）。
+/** 系统配置单页：出站代理三档（直连 / 跟随系统 / 手动填写）。
  *
  * 结构：panel gw-workspace（与 OpenCode 同款卡片根）> gw-panel 表单区。
  * 保存走 POST /api/config，后端立即生效并落盘，无需重启。
@@ -23,7 +22,7 @@ const PROXY_OPTIONS: Array<{
   mode: ProxyMode;
   label: string;
   icon: typeof Zap;
-  /** 分类色（见 styles/icons.css）：未选中时显示，选中态统一走品牌绿 */
+  /** 分类色：未选中时显示，选中态统一走品牌绿 */
   tone: string;
   /** 卡片副行说明；跟随系统那档没有静态说明（选中时该行让位给出口 IP 实况） */
   desc?: string;
@@ -68,7 +67,7 @@ function hostLooksValid(host: string): boolean {
 }
 
 /** 手动地址的结构校验，返回错误文案（空串 = 通过）。
- *  口径对着后端 net.proxy._normalize_proxy_url：没写 scheme 的值按 http:// 处理，
+ *  口径与后端一致：没写 scheme 的值按 http:// 处理，
  *  所以这里也不要求必须写 scheme；但代理地址该有的部分（主机、端口）都得齐。
  *  空值也返回文案（调用方拿它禁用保存），但空值的这句文案不展示。 */
 function manualProxyError(address: string): string {
@@ -125,7 +124,7 @@ export function SettingsPage() {
   }, []);
 
   // 探测可能跑十几秒（三个 echo 依次兜底）：回来时组件可能已经不在了，
-  // 用 ref 记存活，别对已卸载的组件 setState（与 fetchConfig 的 alive 同一个道理）。
+  // 用 ref 记存活，别对已卸载的组件 setState（同首载拉取处理存活标志的做法）。
   const aliveRef = useRef(true);
   useEffect(() => {
     aliveRef.current = true;

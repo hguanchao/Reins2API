@@ -8,7 +8,7 @@ from typing import Any
 
 CORS_ORIGIN = "*"
 # 管理面与推理端点共用的 CORS 头集合：单一来源，OPTIONS 预检与普通响应都取这里，
-# 避免两处各写一份后漂移（此前 api/server.py 与 core/respond.py 各持一份）。
+# 避免两处各写一份后漂移（此前管理面与响应辅助各持一份）。
 CORS_METHODS = "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
 CORS_HEADERS = (
     "Content-Type, Authorization, X-Api-Key, HTTP-Referer, X-Title, "

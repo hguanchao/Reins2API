@@ -1,4 +1,4 @@
-"""Bridge 中间结构（移植自 zen2api protocol/types.ts）。
+"""Bridge 中间结构。
 
 每个外部协议先解码成这些协议无关的形状，再编码进上游协议——一条转换路径服务
 全部九个方向。JSON payload 在 Python 里始终是松散 dict/list（绝不建严格模型），

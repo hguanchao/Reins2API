@@ -1,4 +1,4 @@
-"""HTTP body 读取（带界客户端等待时间）。移植自 grok-rego core/http_body.py。"""
+"""HTTP body 读取：按 Content-Length 读满，并给客户端等待时间设上限。"""
 
 from http.server import BaseHTTPRequestHandler
 

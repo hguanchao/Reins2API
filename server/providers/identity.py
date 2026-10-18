@@ -2,8 +2,8 @@
 
 放在 providers/ 顶层而非某个 provider 包里：OpenCode 与 WorkBuddy 都需要
 「会话稳定、请求唯一」的标识，WorkBuddy 直接复用即可——插件轴要求 provider
-之间互不 import，共享逻辑必须上提到共享层。派生算法移植自 OpenCode 的
-packages/schema/src/identifier.ts 与 session-id.ts / session-message.ts：
+之间互不 import，共享逻辑必须上提到共享层。派生形态与官方 OpenCode 客户端
+一致：
 
     ses_ + descending()   —— 会话 ID
     msg_ + ascending()    —— 用户消息 ID
@@ -12,9 +12,9 @@ descending/ascending 即 create(true)/create(false)：6 字节时间戳十六进
 （12 字符）+ 14 位 base62 随机；时间戳部分取
 (Date.now() * 0x1000 + 同毫秒内自增序号) 的低 48 位，session 那支按位取反。
 
-粒度按上游 session/llm/request.ts：x-opencode-session 整个会话复用同一个值，
+粒度：x-opencode-session 整个会话复用同一个值，
 x-opencode-request 每条用户消息（即每个请求）一个。**但 x-opencode-request 不再
-出网**（2026-10-14 起上游明确拒收，见 opencode/upstream.py），request 现在只作
+出网**（2026-10-14 起上游明确拒收），request 现在只作
 本地追踪用（响应头 x-request-id 与日志）。
 
 2026-10-14 起上游按**编码**校验 session：只有官方 descending() 编出来的形态放行，
@@ -66,8 +66,8 @@ def _gen_suffix() -> str:
 
 
 def header_value(headers: dict[str, str], name: str) -> str:
-    """取一个头部值。请求头在 entry 处已归一成小写键的 plain str（见
-    inference._lower_headers），所以这里不处理重复头列表。"""
+    """取一个头部值。请求头在入口处已归一成小写键的 plain str，
+    所以这里不处理重复头列表。"""
     return (headers.get(name.lower()) or "").strip()
 
 
@@ -98,8 +98,8 @@ def canonical_session_id(signal: str) -> str:
     正式编码的请求进到配额层（429 FreeUsageLimitError），而"形态对但计数器区
     漂移"与"随机尾巴"两种非官方编码全部 403 FreeTierError（"free tier can only
     be used from within OpenCode"）。若有日上游放开校验，本函数连同
-    is_official_session 一并可以删（session 直接透传信号即可）——删除前提见
-    README 的复测约定。
+    is_official_session 一并可以删（session 直接透传信号即可）——删除前提是复测
+    确认上游不再按编码校验。
     """
     digest = hashlib.sha256(f"ses\x00{signal}".encode()).digest()
     return f"ses_{_descending_time_part(digest[:6])}{_base62_fixed(digest[6:16], 14)}"
@@ -239,7 +239,7 @@ def derive_request_ids(
         project=opencode_project_id("global"),
         parent_session=_parent_session_for(
             first_string(
-                # 官方客户端带父会话时两个头都发（model-request.ts:283-290），
+                # 官方客户端带父会话时两个头都发，
                 # 先到先得，任一个都是同一取值。
                 header_value(headers, "x-opencode-parent-session-id"),
                 header_value(headers, "x-parent-session-id"),

@@ -84,7 +84,7 @@ class AccountStore:
 
     @classmethod
     def valid_uid(cls, uid: str) -> bool:
-        """uid 白名单校验（各子类的字符集与长度见 uid_re）。"""
+        """uid 白名单校验（匹配各子类声明的 uid_re 字符集与长度）。"""
         return isinstance(uid, str) and bool(cls.uid_re.match(uid))
 
     # ── 低层读写（全部持锁）──

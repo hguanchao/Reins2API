@@ -36,16 +36,15 @@ WEB_DIST_DIR = PROJECT_DIR / "web" / "dist"    # 前端构建产物（Vite 默�
 # 发送重试：单凭证没有换 key 这一路，但"响应头之前"的传输失败（出口线路会间歇性
 # 掐 TLS 握手）重发是安全的——请求多半根本没送到上游。这类失败是**成串**出现的
 # （2026-10-17 实测：同一分钟内 0/12 全被掐，几分钟后又 3/3 通），所以次数给足 +
-# 几何退避。判定依据是"响应头一个字节都没到"，不再按错误码白名单（见
-# opencode/upstream._is_retryable_transport）。
+# 几何退避。判定依据是"响应头一个字节都没到"，不再按错误码白名单。
 OPENCODE_TRANSPORT_ATTEMPTS = 4        # 发送次数上限（= 至多 3 次重发）
 OPENCODE_TRANSPORT_BACKOFF_S = 0.3     # 首次重发前等待，之后逐次翻倍
 OPENCODE_TRANSPORT_BACKOFF_MAX_S = 2.0 # 单次等待上限（0.3/0.6/1.2/2.0…）
 
 # 出站伪装的 CLI 版本：进 UA（opencode/latest/<版本>/cli），同时是目录的门控参数与
 # 工具定义比对的参考版本——上游把请求带的工具定义与同版本 CLI 的官方定义逐字段
-# 比对，改 UA 版本而不换 opencode_tools.json 就是批量 403（tools.capture_gap()
-# 会在 provider 启动时对账喊出来）。
+# 比对，所以改 UA 版本就必须同步更换出站工具定义，否则是批量 403（provider 启动
+# 时会把这两个版本对账并告警）。
 OPENCODE_CLI_VERSION = "2.0.29"
 
 # 模型目录 TTL：快照拉取超过这个年龄，启动时自动补拉一次（官方客户端每次启动都拉；
@@ -54,14 +53,14 @@ OPENCODE_CLI_VERSION = "2.0.29"
 # 空目录 / 无 meta（老快照升级）视为过期，升级后自动补拉一次。
 OPENCODE_CATALOG_TTL_S = 86400
 
-# 流式"首包前"重发（网关层，全 provider 共用；见 gateway/stream/retry.py）：
+# 流式"首包前"重发（网关层，全 provider 共用）：
 # 上游回了 2xx 但一个字节都没吐出来就断——下游还什么都没收到，重发零副作用。
 # 有字节吐给下游之后一律不重发：chat SSE 没有断点续传，重发等于让模型重新推理，
 # 客户端看到的就是"思考断掉又重新开始"。次数别给大：每次重发内部还有一轮发送重试。
 STREAM_RETRY_ATTEMPTS = 2              # 上游流尝试次数上限（= 至多 1 次重发）
 STREAM_RETRY_BACKOFF_S = 0.5           # 首包前重发的等待
 
-# ── WorkBuddy provider（写死参数，取舍依据见 docs/workbuddy-provider-design.md §9.2）──
+# ── WorkBuddy provider（写死参数：池与轮换 / 冷却 / 熔断 / 选号 / 签到排程）──
 WB_ENABLED = True
 WB_UPSTREAM_BASE = "https://copilot.tencent.com"   # chat/refresh/models 域（CN）
 WB_GLOBAL_BASE = "https://www.workbuddy.ai"        # global 域（chat/refresh/models/billing 同域）
@@ -98,7 +97,7 @@ WB_COOLDOWN_WAF = 600
 
 # 熔断与禁用
 WB_BREAKER_THRESHOLD = 3       # 连续失败次数
-WB_BREAKER_BASE_S = 1800       # base ×2^n
+WB_BREAKER_BASE_S = 1800       # 退避基准 ×2^n
 WB_BREAKER_MAX_S = 21600       # 封顶 6h
 WB_SESSION_INVALID_LIMIT = 3   # refresh 后仍 session 失效的连续次数 → disabled
 
@@ -113,8 +112,8 @@ WB_NEGATIVE_CACHE_BASE_S = 6 * 3600
 WB_NEGATIVE_CACHE_MAX_S = 24 * 3600
 WB_NEGATIVE_CACHE_SHIFT = 4    # 指数退避的位移上限（命中次数封顶后再乘也没意义）
 
-# 选号：快过期加成 + 成本分层 + Top-N 候选 + 防惊群（只对 WorkBuddy 生效，见
-# providers/account_pool.py 的默认失效钩子——Codex 无 credits/倍率概念，行为不变）
+# 选号：快过期加成 + 成本分层 + Top-N 候选 + 防惊群（只对 WorkBuddy 生效——Codex
+# 无 credits/倍率概念，这些钩子不介入，行为不变）
 WB_PREFER_EXPIRING = True      # 快过期待花积分优先消耗
 WB_EXPIRING_SOON_H = 168       # 「快过期」窗口（小时，7 天）；包到期 ≤ now+窗口 计入
 WB_EXPIRING_SLOTS = 3.0        # 快过期账号在候选集里的虚拟实例权重（×N）
@@ -123,13 +122,13 @@ WB_MIN_PICK_GAP_MS = 100       # 同号撞号窗口：该窗口内刚被选中�
 WB_COST_EXPLORE_S = 1800       # 成本分层条件探索窗口（秒）；0 = 关闭探索
 WB_MODEL_COST_TTL_S = 6 * 3600 # 实测扣费观测有效期（秒）；过期的观测不再参与分层
 
-# ── 签到与定时任务（billing / growth 域；见 providers/workbuddy/{checkin,growth,scheduler}.py）──
+# ── 签到与定时任务（billing / growth 域）──
 # 四类任务各自独立排程、各有开关（管理台可改，落盘 server/config.json 的 schedule 段）：
 #   签到 09/21 点（末尾自动跑连登管家：兑换已解锁档位 + 抽完抽奖次数）
 #   活跃上报 10 点（点亮连登 / 解锁 first_buddy 领养 + streak 自检）
 #   猫猫旅行 09/21 点（无猫领养 / idle 派出 / arrived 领奖，与签到解耦的独立排程）
 #   token 保活 22 点（全账号续期；连续 3 次 session 失效才自动禁用）
-# 挂在整点后的第几分钟触发见 WB_SCHEDULE_MINUTE：整点齐射是最容易被上游记成
+# 挂在整点后的第几分钟触发由 WB_SCHEDULE_MINUTE 决定：整点齐射是最容易被上游记成
 # 机器特征的形态，错开几分钟便宜且无害。
 # 不适用账号在发请求前短路：global 域没有 CN 任务体系（growth/report 缺席）、
 # 企业号上游一律拒绝（既无签到也无成长中心），空撞既是日志噪音也是风控特征。
@@ -159,19 +158,19 @@ CODEX_AUTH_BASE = "https://auth.openai.com"            # OAuth 授权/兑换/刷
 
 # OAuth（PKCE 授权码）。client_id 与 redirect_uri 是 Codex CLI 内置的公开固定值，
 # OpenAI 只注册了 localhost:1455 这一个回调，不可更改——所以授权必须在能访问
-# localhost:1455 的机器上完成；远程部署时用「粘贴回调 URL」的方式（见 login.py）。
+# localhost:1455 的机器上完成；远程部署时用「粘贴回调 URL」的方式（在别处完成授权、把回调 URL 粘回来）。
 CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
 CODEX_SCOPES = "openid profile email offline_access"
 CODEX_REFRESH_SCOPES = "openid profile email"
 CODEX_LOGIN_TTL_S = 600        # 登录会话（state/verifier）有效期，与弹窗倒计时同源
 
-# 出站身份（对齐 Codex CLI 指纹的最小可信集；取值见 docs/codex-provider-design.md §3.2）
+# 出站身份（对齐 Codex CLI 指纹的最小可信集）
 # 该版本同时是模型目录的门控参数：/models?client_version=X 只下发
 # minimal_client_version ≤ X 的模型，0.153.3 会漏掉需要 0.155.0 的 gpt-6-luna。
 CODEX_CLI_VERSION = "0.155.0"
 # 官方 UA 形态（codex-rs/login/src/auth/default_client.rs 的 get_codex_user_agent）：
-#   {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}[ (suffix)]
+# 形状：{originator}/{version} ({os_type} {os_version}; {arch}) {terminal}[ (suffix)]
 # originator 默认就是 codex_cli_rs，后缀只有 app-server/桌面通道注入时才有
 # （2026-03 的 codex-tui 兼容 workaround 已从官方仓库移除）——所以 CLI 形态是
 # 四段、无后缀。前缀与 Originator 头同源，本文件下一行即 codex_cli_rs。
@@ -196,12 +195,12 @@ CODEX_STICKY_GC_S = 300
 CODEX_COOLDOWN_SOFT_BASE = 600  # 429/限流软冷却基数，×2 指数
 CODEX_COOLDOWN_SOFT_MAX = 7200
 CODEX_COOLDOWN_AUTH = 1800      # 401/凭证失效冷却（等刷新或人工重新授权）
-CODEX_COOLDOWN_NOT_FOUND = 60   # 404
+CODEX_COOLDOWN_NOT_FOUND = 60   # 404（资源不存在）
 CODEX_COOLDOWN_WAF = 600        # Cloudflare 拦截
 
 # 熔断与禁用
 CODEX_BREAKER_THRESHOLD = 3    # 连续失败次数
-CODEX_BREAKER_BASE_S = 1800    # base ×2^n
+CODEX_BREAKER_BASE_S = 1800    # 退避基准 ×2^n
 CODEX_BREAKER_MAX_S = 21600    # 封顶 6h
 CODEX_REFRESH_AHEAD_S = 600    # token 到期前主动刷新窗口（请求路径与后台巡检同一门槛）
 

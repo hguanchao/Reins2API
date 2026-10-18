@@ -1,4 +1,4 @@
-"""Reasoning 控制：思考预算与 effort 档位的双向映射（移植自 zen2api protocol/bridge/reasoning.ts）。
+"""Reasoning 控制：思考预算与 effort 档位的双向映射。
 
 档位是有序且两两可辨的，客户端刻意选的预算往返后不能被改写：
 Anthropic -> Chat -> Anthropic 的一轮不得把 32000 改写成 8192（预算靠

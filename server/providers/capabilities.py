@@ -10,12 +10,13 @@ None（或干脆不写）表示「不知道」，机制只负责把有依据的�
 两层能力也要分开表达：
 
 - **传输层**（`accepted_parts`）：上游会不会因为这种 content part 直接报错。
-  parts.py 只按这个集合决定「放行 / 无损改写 / 降级」，不认识任何厂商名。
+  附件归一逻辑只按这个集合决定「放行 / 无损改写 / 降级」，不认识任何厂商名。
 - **模型层**（模态与 `supports_*`）：part 能送到也不代表模型能用——上游常把送不到
   或看不懂的内容静默丢掉，这时只有模型的回答能说明真相。这一层由目录元数据 +
   provider 档案表达。
 
-各 provider 的取值依据（探针与日期）见 tests/upstream_evidence.md。
+各 provider 的取值都是上游实测结论：`accepted_parts` 只放验证过的 part 类型，
+`defaults` 只填有实测依据的能力位。重测后先更新实测记录，再回来同步这两个字段。
 """
 
 from __future__ import annotations
@@ -49,11 +50,11 @@ CAPABILITY_KEYS: frozenset[str] = frozenset({
 
 @dataclass(frozen=True)
 class UpstreamProfile:
-    """一个 provider 的上游档案（取值依据见 tests/upstream_evidence.md）。"""
+    """一个 provider 的上游档案（各字段取值都来自上游实测）。"""
 
     name: str
-    # 传输层：上游接受的 chat content part 类型；不在集合里的 part 由 parts.py
-    # 归一（能无损升级时）或降级成省略说明。
+    # 传输层：上游接受的 chat content part 类型；不在集合里的 part 由附件归一
+    # （能无损升级时）或降级成省略说明。
     accepted_parts: frozenset[str] = frozenset({"text", "image_url"})
     # 模型层默认值：目录元数据没声明时用。None / 缺省 = 不知道，不输出。
     defaults: Mapping[str, Any] = field(default_factory=dict)

@@ -1,4 +1,4 @@
-"""管理面（api/server.py）的分发契约测试。
+"""管理面（api 层）的分发契约测试。
 
 为什么单独立文件：api 层此前**一条测试都没有**（所有管理端点都靠手点页面验证），
 而它是"面板能不能用"的唯一入口。这里把 _ApiHandler 挂到真实 HTTP 服务器上（临时
@@ -177,12 +177,12 @@ class _Client:
         self.base = base
 
     def raw(
-        self, method: str, path: str, body: Any = None
+        self, method: str, path: str, body: Any = None, headers: dict[str, str] | None = None
     ) -> tuple[int, bytes, dict[str, str]]:
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(
             self.base + path, data=data, method=method,
-            headers={"Content-Type": "application/json", "Connection": "close"},
+            headers={"Content-Type": "application/json", "Connection": "close", **(headers or {})},
         )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
@@ -191,12 +191,12 @@ class _Client:
             return error.code, error.read(), dict(error.headers)
 
     def call(
-        self, method: str, path: str, body: Any = None
+        self, method: str, path: str, body: Any = None, headers: dict[str, str] | None = None
     ) -> tuple[int, dict[str, Any]]:
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(
             self.base + path, data=data, method=method,
-            headers={"Content-Type": "application/json", "Connection": "close"},
+            headers={"Content-Type": "application/json", "Connection": "close", **(headers or {})},
         )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
@@ -208,7 +208,7 @@ class _Client:
 class _Server:
     """上下文管理器：真实 HTTP 服务 + 桩 provider + 临时配置/临时遥测库。
 
-    绝不碰生产状态：config.json 改指临时文件（PUT /schedule 会落盘）、遥测库改指
+    绝不碰生产状态：配置落盘改指临时文件（PUT /schedule 会落盘）、遥测库改指
     临时目录、注册表用完还原。测试跑完机器上什么都不该变。
     """
 
@@ -220,7 +220,7 @@ class _Server:
 
     def __enter__(self) -> _Client:
         self._tmp = Path(tempfile.mkdtemp(prefix="reins2api-api-test-"))
-        # ① 配置落盘改到临时目录（否则 PUT /api/*/schedule 会改真实 config.json）
+        # ① 配置落盘改到临时目录（否则 PUT /api/*/schedule 会改真实配置）
         self._config_path = app_config.CONFIG_PATH
         self._config_cache = app_config._cache
         app_config.CONFIG_PATH = self._tmp / "config.json"
@@ -288,6 +288,58 @@ def test_system_and_config_endpoints() -> None:
         # 坏代理模式 → 400（ValueError 阶梯），不是 500
         status, body = client.call("POST", "/api/config", {"proxy": {"mode": "wild"}})
         assert status == 400 and "proxy.mode" in _error(body), (status, body)
+
+
+def test_healthz_identity_and_control_face() -> None:
+    """启动器依赖的两件事：/healthz 报实例身份，控制面只认令牌。
+
+    身份块是"重启后打到的是不是新实例"的唯一依据；控制面是"能不能优雅停"的唯一依据。
+    两者都是启动器与服务的握手面，形状一漂移，症状是"重启静默退化成强杀"或
+    "误报就绪"——都比启动失败更难查，所以在这里钉住。
+    """
+    from core import lifecycle
+
+    lifecycle.reset_for_tests()
+    tmp = tempfile.mkdtemp(prefix="reins2api-control-test-")
+    try:
+        with _Server() as client:
+            status, body = client.call("GET", "/healthz")
+            assert status == 200, (status, body)
+            assert len(str(body.get("instance"))) == 8, body
+            assert body.get("pid") and body.get("in_flight") == 0, body
+            assert body.get("draining") is False, body
+            # 探活与在途计数互不干扰：探完 in_flight 还是 0（探活自己不算"在干活"）
+            assert lifecycle.active_requests() == 0, lifecycle.active_requests()
+
+            token = lifecycle.init_control(port=8787, data_dir=Path(tmp))
+            assert token, "控制令牌没生成"
+
+            status, body = client.call("POST", "/__control/shutdown")
+            assert status == 403 and "令牌" in _error(body), (status, body)
+            status, body = client.call(
+                "POST", "/__control/shutdown", None, headers={"X-Control-Token": "wrong"}
+            )
+            assert status == 403, (status, body)
+            assert lifecycle.draining() is False, "没带对令牌就排水了"
+
+            status, body = client.call(
+                "POST", "/__control/shutdown", None, headers={"X-Control-Token": token}
+            )
+            assert status == 200 and _ok(body)["accepted"] is True, (status, body)
+            assert lifecycle.draining() is True, "控制面受理了却没开始排水"
+
+            # 排水开始后新请求一律 503（明确说"正在停机"），别让客户端当业务失败去重试
+            status, body = client.call("GET", "/api/config")
+            assert status == 503 and "停机" in _error(body), (status, body)
+            # 控制面自身仍可用：重复请求回 accepted=False，不是错误
+            status, body = client.call(
+                "POST", "/__control/shutdown", None, headers={"X-Control-Token": token}
+            )
+            assert status == 200 and _ok(body)["accepted"] is False, (status, body)
+    finally:
+        lifecycle.reset_for_tests()
+        shutil.rmtree(tmp, ignore_errors=True)
+    assert lifecycle.draining() is False, "复位没清掉排水状态"
 
 
 def test_unknown_path_is_404() -> None:
@@ -460,9 +512,9 @@ def test_codex_specific_surface() -> None:
 
 
 def test_spa_static_serving_headers() -> None:
-    """SPA 静态托管：哈希产物长缓存、index.html 必须 no-cache、文件按原样送出。
+    """SPA 静态托管：哈希产物长缓存、SPA 入口 HTML 必须 no-cache、文件按原样送出。
 
-    index.html 一旦被长缓存，用户就永远拿到旧包（它指着上一版的哈希文件名）——
+    SPA 入口 HTML 一旦被长缓存，用户就永远拿到旧包（它指着上一版的哈希文件名）——
     这条断言是"发版后页面能更新"的保险。
     """
     dist = Path(tempfile.mkdtemp(prefix="reins2api-web-test-"))
@@ -476,8 +528,8 @@ def test_spa_static_serving_headers() -> None:
             for path, expected_cache, size in (
                 ("/assets/index-B3f9x2.js", "immutable", 14),
                 ("/index.html", "no-cache", 15),
-                ("/", "no-cache", 15),          # 目录路径 → index.html
-                ("/opencode/whatever", "no-cache", 15),  # SPA 回退 → index.html
+                ("/", "no-cache", 15),          # 目录路径 → 入口 HTML
+                ("/opencode/whatever", "no-cache", 15),  # SPA 回退 → 入口 HTML
             ):
                 status, _body, headers = client.raw("GET", path)
                 assert status == 200, (path, status)

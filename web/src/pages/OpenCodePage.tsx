@@ -1,5 +1,4 @@
-/**
- * OpenCode 单页：状态 KPI + 模型目录 + 模型调用折线图 + 最近请求。
+/** OpenCode 单页：状态 KPI + 模型目录 + 模型调用折线图 + 最近请求。
  *
  * 结构：panel gw-workspace（卡片即页面根）> mission-strip + gw-grid，
  * 数据 10s 轮询 /api/opencode/ops + /api/opencode/requests。
@@ -81,7 +80,7 @@ function fmtReasoning(metadata: Record<string, unknown>): string {
   return metadata.reasoning === true ? "支持" : "—";
 }
 
-/** 模型详情弹窗:排版同 grok-rego 号池账号详情(两列卡片网格 + 全宽描述 + 关闭按钮) */
+/** 模型详情弹窗:两列卡片网格 + 全宽描述 + 关闭按钮 */
 function ModelDetailDialog({
   model,
   open,
@@ -193,8 +192,7 @@ export function OpenCodePage() {
   const [usageRange, setUsageRange] = useState<UsageRange>("7d");
   const seq = useRef(0);
 
-  /**
-   * 拉取聚合快照 + 最近请求（当前页）。
+  /** 拉取聚合快照 + 最近请求（当前页）。
    * soft=true 走静默刷新（保留旧数据，不打扰）；轮询路径只换用量与请求明细，
    * 模型目录/目录状态不跟着 10s 轮询动，仅在首载、full=true（手动刷新目录）、
    * 或手上目录为空（后端启动竞态）时更新。
@@ -266,7 +264,7 @@ export function OpenCodePage() {
   const failRate = totals && totals.requests > 0
     ? (totals.failed / totals.requests) * 100
     : 0;
-  // 缓存命中率：缓存 token / 输入 token（分档同 grok-rego：≥85 优 / ≥60 中 / 其余差）
+  // 缓存命中率：缓存 token / 输入 token（分档：≥85 优 / ≥60 中 / 其余差）
   const cachedTokens = totals?.cached_tokens ?? 0;
   const inputTokens = totals?.input_tokens ?? 0;
   const cacheRate = inputTokens > 0 ? (Math.min(cachedTokens, inputTokens) / inputTokens) * 100 : 0;

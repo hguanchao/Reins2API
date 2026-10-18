@@ -3,8 +3,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui";
 import type { AccountRecentRequest } from "@/lib/api";
 import { fmtSeconds } from "@/lib/format";
 
-/**
- * 最近请求一格：时间戳 + 最近若干次请求的柱状图（Codex 账号池与 WorkBuddy 表格共用）。
+/** 最近请求一格：时间戳 + 最近若干次请求的柱状图（Codex 账号池与 WorkBuddy 表格共用）。
  *
  * 每根柱 = 一次请求：成功绿、失败红、还没跑满的位置留一个椭圆点（靠左补空，最新的
  * 总在最右）。**柱数按时间戳的宽度动态定**（5~14 根）——柱排与上方时间戳两端对齐，
@@ -15,7 +14,7 @@ import { fmtSeconds } from "@/lib/format";
  * 不会一路冒提示。
  */
 
-/** 柱宽与间距必须与 styles/accounts.css 的 .acct-spark 一致（柱数是按它们反解的）。 */
+/** 柱宽与间距必须与 .acct-spark 的样式一致（柱数是按它们反解的）。 */
 const BAR_WIDTH = 4;
 const BAR_GAP = 2;
 /** 柱数上下限：够不着 5 根就没有"一串轨迹"的意思；超过 14 根一行既放不下也不必要。 */
@@ -41,7 +40,7 @@ export function fmtStampFull(ms: number): string {
  *
  *  一律带"前"：裸的「2天」「5分钟」在中文里不是一句能读出来的时间表达——只有把列头
  *  「最近请求」当主语才勉强猜得出意思。多这一个字换来句子完整，而外层宽度正是按这段
- *  文字反解柱数的（见 .acct-spark 注释），所以取"2天前"而不是更长的"2 天前"。
+ *  文字反解柱数的（.acct-spark 与这段文字同宽），所以取"2天前"而不是更长的"2 天前"。
  *  不足 1 秒（含时钟漂移导致的"未来时间"）统一显示「刚刚」，不写"0秒前"。 */
 export function fmtStamp(ms: number): string {
   if (!ms) return "—";

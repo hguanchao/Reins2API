@@ -366,7 +366,7 @@ class StreamParserBase:
             self.tool_names[key] = name
 
 
-# ── 共享小工具（原 parser.py 的模块级函数）──
+# ── 共享小工具 ──
 
 
 def js_string(value: Any, fallback: str = "") -> str:

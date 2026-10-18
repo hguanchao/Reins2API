@@ -39,7 +39,7 @@ class ModelUnavailable(RuntimeError):
 
 
 def random_id(prefix: str, size: int) -> str:
-    """prefix_ + size 字节随机 hex（移植自 zen2api util/identity.ts randomID）。"""
+    """prefix_ + size 字节随机 hex。"""
     return f"{prefix}_{secrets.token_hex(size)}"
 
 
@@ -50,7 +50,7 @@ class RequestIDs:
     project: str
     parent_session: str = ""
     # 客户端稳定键（ip+UA 哈希，跨会话不变）：prompt_cache_key 用它而不是会话键，
-    # 同一客户端的新会话第一发才能吃到上段静态前缀缓存（见 identity.client_cache_key）。
+    # 同一客户端的新会话第一发才能吃到上段静态前缀缓存。
     client: str = ""
 
 

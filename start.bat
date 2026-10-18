@@ -1,6 +1,7 @@
 @echo off
 REM Reins2API launcher: delegates to server/scripts/start.py (env setup, deps, build,
 REM port cleanup, start, health check, console view).
+REM Modes: start (default) / --status / --stop / --doctor / --attach (run with /?)
 REM Keep this file ASCII-only: cmd mis-parses UTF-8 Chinese batch files on GBK consoles.
 setlocal
 set "SERVER_DIR=%~dp0server"

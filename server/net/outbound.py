@@ -3,7 +3,7 @@
 Why：顶层 `crequests.post(...)` 每调一次铸一个全新 Session——TCP+TLS+HTTP/2
 每笔请求全套重来，实测 opencode.ai 新建 0.81s vs 复用 0.31s，三个 provider 的
 每一笔出站（含流式）都在白付这笔握手。网关的 handler 线程随 keep-alive 连接
-存活（api/server.py `protocol_version = "HTTP/1.1"`），把 Session 挂在
+存活（HTTP/1.1 长连接），把 Session 挂在
 threading.local 上，同一线程终生复用同一条连接；流式泵（inference._pump）
 也在同一个 handler 线程内跑完，**不存在跨线程共享 easy 句柄**——curl_cffi 的
 句柄是 thread-local 的（0.16 默认），实测多线程共享一个 Session 反而拿不到
@@ -18,7 +18,7 @@ Cookie 保真：顶层 API 每次请求都是空 Cookie 环境起手；这里的
 生灭，短 RPC 拿不到复用也不付额外代价。
 
 调用方式与 curl_cffi 顶层 API 同形（post/get/request 直传全部参数），
-模块别名惯例沿用 `crequests`（见各 provider upstream 的 import 注释）；
+模块别名惯例沿用 `crequests`（各 provider 出站模块都按这个名字导入）；
 同 `crequests.RequestsError` / `crequests.Response` 原样再导出，异常类型
 仍是同一个类，任何模块的 except 都能照常捕获。
 """
@@ -54,7 +54,7 @@ def _call(method: str, url: str, **kwargs):
     try:
         return getattr(s, method)(url, **kwargs)
     finally:
-        # 逐请求清 Cookie（见模块注）：保连接、不保状态。清 jar 不影响已经
+        # 逐请求清 Cookie：保连接、不保状态。清 jar 不影响已经
         # 开始的流式响应——那只是本会话 Cookie 存储，不是连接上的字节流。
         s.cookies.clear()
 

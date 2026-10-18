@@ -1,11 +1,9 @@
-# Collapse one complete upstream SSE stream into the equivalent single
-# (non-streaming) response document in the same protocol. It exists for lanes
-# that only serve streaming responses: the gateway forces stream:true on the
-# wire and collapses the events back so clients asking for plain JSON work.
+# 把一条完整的上游 SSE 流折叠成同一协议下等价的单个（非流式）响应体。它存在
+# 的理由：有些线路只对外提供流式响应——网关在线路上强制 stream:true，再把事件折
+# 叠回去，于是要普通 JSON 的客户端照样能拿到结果。
 #
-# 移植自 zen2api protocol/stream/collapse.ts。TS 返回 JSON Buffer，Python 直接
-# 返回 encode_bridge_response 的 dict；坏流抛 UpstreamStreamFailure（消息保持
-# 原样），被截断的流抛 SseUnexpectedEof。
+# 直接返回 encode_bridge_response 生成的 dict（而不是先编码成 JSON 字节）；坏流抛
+# UpstreamStreamFailure（消息保持原样），被截断的流抛 SseUnexpectedEof。
 
 from __future__ import annotations
 

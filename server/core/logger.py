@@ -1,10 +1,10 @@
-"""日志配置模块（移植自 grok-rego core/logger.py，LOG_DIR 改从 settings 取）。
+"""日志配置模块（LOG_DIR 从 settings 取）。
 
 控制台彩色输出 + 当前文件 server.log（TRACE 全等级）。
 每天午夜滚动为 yyyy-mm-dd.log（北京时间），保留 30 天。
 日志时间统一为北京时间（UTC+8），与数据库遥测时间戳一致。
 
-进程级 stdout/stderr 由启动脚本丢进空设备（见 server/scripts/start.py）——
+进程级 stdout/stderr 由启动脚本丢进空设备——
 server.log 是唯一日志落点，不另开 serve.err/serve.out。
 
 msg 文案规范（全仓库 logger 调用统一遵守）:
@@ -13,7 +13,7 @@ msg 文案规范（全仓库 logger 调用统一遵守）:
 
 - 域标签固定词表——平台层: 启动/配置/目录/快照/token/遥测/推理/桥接/附件/
   代理/出口/API；提供者模块内部一律用 [opencode] [workbuddy] [codex]。
-  目录/token 的后台编排（main.py、api 层）用功能域并带 provider= 键。
+  目录/token 的后台编排（入口与 api 层）用功能域并带 provider= 键。
 - key=value 空格分隔，= 两侧不留空格；键用英文小写
   （request/session/uid/provider/model/proto/stream/status/models/errors/...）。
 - 标识符统一截断: uid 一律前 8 位 + `…`，session/state 同。
@@ -87,7 +87,7 @@ def _retain_dated(_files: list) -> None:
                 pass
 
 
-# loguru 记录时间取自 aware_now()（默认系统本地时区），此处替换为北京时间
+# loguru 记录时间默认取 aware_now()（系统本地时区），此处替换为北京时间
 _loguru_logger.aware_now = _beijing_now
 
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -102,9 +102,9 @@ logger.add(
     colorize=True,
 )
 
-# 文件行格式被 core/console_view.py 按固定形状解析（控制台请求流水）——改这里要同步改它：
+# 文件行格式被控制台请求流水视图按固定形状解析——改这里要同步改它：
 #   {时间(含毫秒)} | {级别:<8} | {模块:函数:行} - [域] 事件短语 key=value
-# 两侧的耦合由 tests/test_console_view.py::test_file_format_parses 钉住（格式一漂移就红）。
+# 两侧的耦合由测试钉住（格式一漂移就红）。
 FILE_LINE_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
 )

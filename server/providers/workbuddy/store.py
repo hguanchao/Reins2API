@@ -1,4 +1,4 @@
-"""workbuddy 账号存储：data/workbuddy.db 的 accounts 表（设计见 docs §6.2）。
+"""workbuddy 账号存储：data/workbuddy.db 的 accounts 表。
 
 SQLite 管道（连接/PRAGMA/DDL/幂等补列/CRUD/运行态更新）全部继承自
 `providers.account_store.AccountStore`，这里只声明 workbuddy 的列集与数据类：
@@ -257,7 +257,7 @@ class WorkBuddyStore(AccountStore):
         """refresh 成功后的凭据写回（单事务原子）。
 
         走 write_with_retry：RT 已经在上游轮换过，这一笔写丢了库里就只剩废票
-        （与 codex 同口径，见 providers/account_store.write_with_retry）。
+        （与 codex 同口径：写库失败必须靠重试兜住，不能让已轮换的 RT 丢在内存里）。
         """
         now_ms = int(time.time() * 1000)
         sets: list[str] = ["access_token = ?", "token_expires_ms = ?", "updated_ms = ?"]
@@ -277,7 +277,7 @@ class WorkBuddyStore(AccountStore):
 
 
 def valid_uid(uid: str) -> bool:
-    """uid 白名单校验（口径 = WorkBuddyStore.uid_re，实现见 account_store 基类）。"""
+    """uid 白名单校验：合法集 [A-Za-z0-9_-]、长度 ≤ 64，由基类按 uid_re 实现。"""
     return WorkBuddyStore.valid_uid(uid)
 
 

@@ -1,4 +1,4 @@
-"""把桥值变回线上形状的小工具（移植自 zen2api protocol/bridge/text.ts）。"""
+"""把桥值变回线上形状的小工具。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def schema_or_default(value: Any) -> Any:
 
 
 def as_prefix(id: str, prefix: str) -> str:
-    """把上游 id 规整成目标协议使用的前缀，文档与 id 不再自相矛盾。"""
+    """把上游 id 规整成目标协议使用的前缀：剥掉异协议前缀后再冠目标前缀。"""
     if id.startswith(f"{prefix}_"):
         return id
     value = id

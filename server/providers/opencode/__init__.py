@@ -2,7 +2,7 @@
 
 组装路由/发现/上游/身份各模块，实现 gateway.base.Provider 契约。
 凭证体系已按项目决策砍掉：单一 public 凭证、恒匿名档；发送只在"响应头之前"的传输
-失败上重试一次（见 upstream.send_upstream），其余错误一律交推理层透传。
+失败上重试一次，其余错误一律交推理层透传。
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ class OpenCodeProvider:
         self._router = Router(self._index)
         self._lock = threading.Lock()
         self._refreshed_at: str | None = None
-        # 快照内容的最后变更时间（models.json 的 meta.updated_at_ms）；本进程从快照
+        # 快照内容的最后变更时间（落盘快照元数据 updated_at_ms）；本进程从快照
         # 冷启动时它是唯一的时间线索，与 refreshed_at（本进程刷新时间）分开。
         self._cached_at_ms = 0
         # 工具定义快照版本与出站 UA 版本对账：上游逐字段比对工具，版本漂移的
@@ -68,7 +68,7 @@ class OpenCodeProvider:
             # "新增 112、共 10 个"这种自相矛盾的提示。
             previous = {entry["id"] for entry in self._router.list()}
         records, available, errors, snapshot_models = discover(ZEN_BASE, PUBLIC_KEY)
-        # 一条记录都没拿到 = 能力目录整源失败（文档大、超时或形状变了），不是"上游
+        # 一条记录都没拿到 = 能力目录整源失败（目录体量大、超时或形状变了），不是"上游
         # 删光了模型"：不覆盖旧索引，且不当成刷新成功——否则日志会写"刷新完成
         # protocols=0"掩盖真故障，界面也拿不到失败回报。
         if not records:
@@ -95,7 +95,7 @@ class OpenCodeProvider:
             listed = {entry["id"] for entry in self._router.list()}
         added = sorted(listed - previous)
         removed = sorted(previous - listed)
-        # 统一核心字段条目落 data/models.json（能力目录拉失败时为空，不覆盖旧快照）；
+        # 统一核心字段条目落盘快照（能力目录拉失败时为空，不覆盖旧快照）；
         # 凭证可见清单随 meta 落盘：冷启动没有它就只能按"清单未知"兜底，会把凭证
         # 到不了的模型也对外声明。
         if snapshot_models:

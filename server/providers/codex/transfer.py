@@ -1,14 +1,14 @@
-"""Codex 账号的导入 / 导出（对接 CLIProxyAPI(CPA) 与 codex2api 的 JSON 形状）。
+"""Codex 账号的导入 / 导出（`cpa` 单账号 auth JSON 与 `codex2api` 迁移封装两种形状）。
 
-格式事实（取自两个参考项目的源码）：
-  - **CPA**：CLIProxyAPI 把每个账号存成一个 auth JSON 文件，键为
+格式事实：
+  - **cpa**：每个账号存成一个 auth JSON 文件，键为
     `type / email / plan_type / expired / id_token / account_id / access_token /
     last_refresh / refresh_token`（codex 另有 `codex_5h/7d_used_percent`、
     `codex_5h/7d_reset_at`、`codex_usage_updated_at` 等额度字段）。
-  - **codex2api**：它的导出结构体就叫 `cpaExportEntry`——**导出即 CPA 形状**，
-    只是打成"一账号一文件"的 ZIP；而它的导入解析（`parseImportJSONTokens`）
+  - **codex2api**：导出结构体名是 `cpaExportEntry`——**导出即 cpa 形状**，
+    只是打成"一账号一文件"的 ZIP；导入解析（`parseImportJSONTokens`）
     宽容接受三种形状：单个对象、扁平数组、以及带 `accounts` 的封装
-    （sub2api 迁移包）。
+    （迁移包）。
 
 所以这里的分工是：**导入宽容**（三种形状都收，字段按名取值），**导出分两档**——
 `cpa` 给单个 auth 文件的形状（多账号输出数组），`codex2api` 给批量迁移的封装
@@ -23,11 +23,11 @@ from typing import Any
 from providers.codex import oauth
 from providers.codex.store import Account
 
-# 单账号 auth 文件里**总是**写出的键（与 cpaExportEntry 的 omitempty 取舍一致）
+# 单账号 auth 文件里**总是**写出的键（空值也写，便于对端按固定键表读取）
 _ALWAYS = ("type", "email", "expired", "id_token", "account_id", "access_token",
            "last_refresh", "refresh_token")
 
-# 导入时找"账号数组"的封装键（codex2api 用 accounts；其余是同类工具的常见叫法）
+# 导入时找"账号数组"的封装键（accounts 是主键，其余是同类工具常见的叫法）
 _WRAPPER_KEYS = ("accounts", "tokens", "data", "auths", "items")
 
 
@@ -52,7 +52,7 @@ def _pct(value: Any) -> str:
 
 
 def to_entry(account: Account) -> dict[str, Any]:
-    """账号 → CPA 形状的一条（codex2api 的 cpaExportEntry 同款键名）。"""
+    """账号 → cpa 形状的一条（键名即单账号 auth 文件的键表）。"""
     rate = account.rate_limit or {}
     primary = rate.get("primary") or {}
     secondary = rate.get("secondary") or {}
@@ -178,7 +178,7 @@ def _expires_ms(value: Any) -> int:
 
 
 def _rate_limit(entry: dict[str, Any]) -> dict[str, Any]:
-    """把 cpa 的 codex_5h/7d_* 额度字段还原成我们的 rate_limit 快照（拿不到就给空）。"""
+    """把 cpa 的 codex_5h/7d_* 额度字段还原成 rate_limit 快照（拿不到就给空）。"""
     out: dict[str, Any] = {}
     for name, prefix, minutes in (("primary", "codex_5h_", 300), ("secondary", "codex_7d_", 10080)):
         used = entry.get(prefix + "used_percent")

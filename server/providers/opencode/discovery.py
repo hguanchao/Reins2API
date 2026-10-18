@@ -1,4 +1,4 @@
-"""模型发现（移植自 zen2api routing/discovery.ts）：拉两个来源并解析成索引记录。
+"""模型发现：拉两个来源并解析成索引记录。
 
   * {upstream}/v1/models —— 凭证可见清单，可用性的权威来源：缺在这里的模型
     上游会拒绝 "not supported"，绝不能对外广告。
@@ -58,8 +58,8 @@ def discover(
     """返回 (records, available, errors, snapshot_models)。available 为 None 表示清单
     从未拉到（无凭证或请求失败），调用方视作"可用性未知"。
 
-    snapshot_models 是能力目录里本网关服务的那部分模型投影成的**统一核心字段条目**
-    （见 models_snapshot.core_entry），供 data/models.json 快照使用。
+    snapshot_models 是能力目录里本网关服务的那部分模型投影成的**统一核心字段条目**，
+    供落盘快照使用。
     """
     errors: list[str] = []
 
@@ -161,11 +161,11 @@ def _parse_capabilities(
 def _snapshot_entry(
     model_id: str, model: dict[str, Any], protocol: str, free: bool
 ) -> dict[str, Any]:
-    """models.dev 条目 → models.json 统一核心字段（见 models_snapshot.core_entry）。
+    """models.dev 条目 → models.json 的统一核心字段条目。
 
     protocol / free 是路由必需项、max_input / structured_output 是详情弹窗要显示的
     字段：冷启动不再打上游，索引只能由快照重建，缺了它们重启后模型不可路由或字段
-    全空（见 record_from_snapshot 的逆向投影）。
+    全空（由 record_from_snapshot 逆向投影补回）。
     """
     limit = model.get("limit") if is_object(model.get("limit")) else {}
     modalities = model.get("modalities") if is_object(model.get("modalities")) else {}
@@ -277,7 +277,7 @@ def _metadata_for(model: dict[str, Any]) -> dict[str, Any]:
             metadata["inputModalities"] = modalities["input"]
         if isinstance(modalities.get("output"), list):
             metadata["outputModalities"] = modalities["output"]
-    # 透传展示用字段（TS 版丢弃；本项目管理台要显示，属增强偏差）
+    # 纯展示用字段（不参与路由决策，仅为管理台显示而保留）
     if isinstance(model.get("name"), str):
         metadata["name"] = model["name"]
     if isinstance(model.get("description"), str):

@@ -81,7 +81,7 @@ def request_where(status: str = "", model: str = "", account: str = "") -> tuple
 
 @dataclass
 class RequestRecord:
-    """字段顺序与 db/schema.py 的 DDL 保持一致（主键 → 标识 → 路由 → 特征 → 用量 → 来源 → 结果 → 时间）。"""
+    """字段顺序与建表 DDL 保持一致（主键 → 标识 → 路由 → 特征 → 用量 → 来源 → 结果 → 时间）。"""
 
     # 主键与标识（id 是请求 ID，落到 request_id 列）
     id: str = ""

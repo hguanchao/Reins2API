@@ -1,6 +1,6 @@
 """workbuddy 上游客户端：端点、头族、refresh、模型目录、余额。
 
-移植 wb2api headers.go / client.go 出站面（端口级）。HTTP 统一 curl_cffi
+HTTP 统一 curl_cffi
 `impersonate="chrome"` + `net.proxy.proxies_for()`（与全项目出口决策同一条路）；
 chat 恒 stream=True（上游拒绝非流式），超时语义 = 连接 15s + 空闲掐流
 （curl_cffi stream 模式 LOW_SPEED 监控），短 RPC 120s 总上限。
@@ -43,7 +43,7 @@ V3_CONFIG_PATH = "/v3/config"
 USER_RESOURCE_PATH = "/billing/meter/get-user-resource"
 USER_RESOURCE_PATH_V2 = "/v2/billing/meter/get-user-resource"
 # 企业版额度不属「个人资源包」体系：get-user-resource* 对企业号恒返回空 Accounts
-# （实测 code 0 且 Accounts null），企业额度走这个端点（wb2api enterpriseResource）。
+# （实测 code 0 且 Accounts null），企业额度走这个端点。
 ENTERPRISE_USAGE_PATH = "/v2/billing/meter/get-enterprise-user-usage"
 
 # 「不限量」在企业额度里的等价表示（limitNum < 0）：余额给一个不可能触顶的大数、
@@ -51,7 +51,7 @@ ENTERPRISE_USAGE_PATH = "/v2/billing/meter/get-enterprise-user-usage"
 ENTERPRISE_UNLIMITED_REMAIN = 1 << 40
 ENTERPRISE_UNLIMITED_TOTAL = -1.0
 
-# /v3/config 对 UA 敏感（UA 常量见 default_user_agent 之后定义）。
+# /v3/config 对 UA 敏感（UA 常量紧随 default_user_agent 定义）。
 V3_CONFIG_PRODUCT = "SaaS"
 
 
@@ -82,14 +82,14 @@ def default_user_agent(realm: str = "cn") -> str:
 # /v3/config 对 UA 敏感：必须能解析出 CodeBuddy 版本号，否则 400 code=12403；
 # 且不同 UA 下发不同规模的模型集合——global 必须用完整桌面端 UA 才拿得到含
 # gpt-6-* 在内的完整目录，裸 `CLI/<v>` 与 IDE UA 都会被降级。故 global 复用
-# default_user_agent("global")，CN 沿用 IDE UA。（各 UA 的下发条数与日期见
-# tests/upstream_evidence.md）
+# default_user_agent("global")，CN 沿用 IDE UA。（实测：完整桌面端 UA 下发 28 条，
+# 裸 CLI 降级成 22 条，IDE UA 只剩别名/路由条目）
 V3_CONFIG_UA_CN = "CodeBuddyIDE/4.12.0 CodeBuddy/4.12.0"
 V3_CONFIG_UA_GLOBAL = default_user_agent("global")
 
 
 # ── 按账号域（realm）分流 ────────────────────────────────────────
-# wb2api client.go chatBase/billingBase：CN 与 global 是两套互不相通的上游部署，
+# CN 与 global 是两套互不相通的上游部署，
 # 账号凭证、模型目录、定价各自独立——chat/refresh/models/billing 全部按 realm 选 base。
 
 
@@ -114,7 +114,7 @@ def _host(account: Account) -> str:
     )
 
 
-# ── 头族构造（headers.go CommonHeaders / ChatHeaders / BillingHeaders / RefreshHeaders）──
+# ── 头族构造（common / chat / billing / refresh 四组）──
 
 
 def common_headers(account: Account) -> dict[str, str]:
@@ -147,8 +147,8 @@ def chat_headers(account: Account, conversation_id: str = "",
         headers["x-no-authorization"] = "1"
     if account.uid:
         headers["x-user-id"] = account.uid
-    # 域头按 realm 分发（wb2api ChatHeaders）：CN 缺省 X-No-* 约定（与官方 CLI 一致）；
-    # global 显式声明无企业 + 国际版域（对齐 intl 项目出站头，防风控按缺省判定）。
+    # 域头按 realm 分发：CN 缺省 X-No-* 约定（与官方 CLI 一致）；
+    # global 显式声明无企业 + 国际版域（国际版出站头形态，防风控按缺省判定）。
     if account.realm == "global":
         headers["x-no-enterprise-id"] = "1"
         headers["x-domain"] = "www.workbuddy.ai"
@@ -257,7 +257,7 @@ def chat_request(account: Account, body: bytes, *, conversation_id: str = "",
 def refresh_request(account: Account) -> dict[str, Any]:
     """POST token/refresh，返回 data 字段 {accessToken, refreshToken, expiresIn, domain}。
 
-    上游统一信封 {code, msg, data}（wb2api doJSON 同款拆包）：code != 0 或缺
+    上游统一信封 {code, msg, data}（逐层拆包取 data）：code != 0 或缺
     accessToken 视为失败。失败抛 RequestsError（网络）或 ValueError（需重新登录）。
     """
     url = f"{chat_base(account).rstrip('/')}{REFRESH_PATH}"
@@ -332,7 +332,7 @@ def fetch_models(account: Account) -> list[dict[str, Any]]:
     return [e for e in by_id.values() if not is_non_chat_model(e)]
 
 
-# ── 限时优惠（wb2api v3ModelPromotion / promoActive / applyModelPromotions 移植）──
+# ── 限时优惠（modelPromotions 的解析与生效判定）──
 # /v3/config data.modelPromotions：deepseek 系错峰五折、限时免费等。Credits 字段是
 # 牌价（转正后基准倍率），生效价 = 牌价 × factor；「错峰使用」类只有时段文案无
 # 机器可读 factor，仅透出标签与说明。
@@ -434,7 +434,7 @@ _GEN_TAGS = ("text-to-image", "text-to-video", "image-to-video", "image-to-image
 
 
 def is_non_chat_model(entry: dict[str, Any]) -> bool:
-    """非对话模型过滤（wb2api nonChatModel）：嵌入/补全/代码专用前缀、
+    """非对话模型过滤：嵌入/补全/代码专用前缀、
     maxOutputTokens ≤ 256、图片/视频生成类标签——选上去只会报 11102。"""
     model_id = str(entry.get("id") or "").lower()
     if any(model_id.startswith(p) for p in ("nes-", "completion-", "codewise-")):
@@ -490,7 +490,7 @@ def fetch_credits_detail(account: Account, *, expiring_within_ms: int = 0) -> Cr
     """POST get-user-resource（企业号走企业额度端点）→ 聚合余额 + 快过期分桶。
 
     个人资源包聚合（ProductCode p_tcaca）；remain 负值钳 0；上游缺 size 的
-    包按 remain 兜底。billing 路径按 realm 分流（wb2api billingMeterPaths）：
+    包按 remain 兜底。billing 路径按 realm 分流：
     global 首选无 /v2 前缀（404 回落 /v2），CN 固定 /v2。
 
     `expiring_within_ms` > 0 时，对「到期时刻 ≤ now+窗口」的包单独累加余额；
@@ -533,7 +533,7 @@ def fetch_credits_detail(account: Account, *, expiring_within_ms: int = 0) -> Cr
         text = response.text[:120] if response is not None else ""
         raise ValueError(f"user-resource status {status}: {text}")
     envelope = response.json()
-    # 上游统一信封 {code, msg, data}（wb2api doJSON 同款拆包）：真正的
+    # 上游统一信封 {code, msg, data}（逐层拆包）：真正的
     # {Response:{Data:{Accounts}}} 负载在 data 字段里。
     if not isinstance(envelope, dict):
         raise ValueError("user-resource parse: unexpected envelope")
@@ -588,7 +588,7 @@ def _num(value: Any) -> float | None:
 def _fetch_enterprise_detail(account: Account, *, expiring_within_ms: int = 0) -> CreditsDetail:
     """企业额度：POST get-enterprise-user-usage（空体）→ remain/total（+周期到期分桶）。
 
-    字段口径照 wb2api enterpriseResource（兼容上游两套命名）：
+    字段口径（兼容上游两套命名）：
       - `limitNum` / `limit_num`：分配给该账号的周期额度；**负值 = 不限量**
       - `credit`（已用积分，浮点）优先，缺省回落 `used_num`
       - `cycleEndTime` 优先、缺省回落 `cycleResetTime`：周期到期时刻（快过期分桶同个人口径）

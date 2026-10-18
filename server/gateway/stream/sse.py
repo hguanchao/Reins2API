@@ -1,8 +1,7 @@
-# SSE reading and writing primitives. The upstream speaks Server-Sent Events on
-# every protocol, so one reader serves the pass-through, transcode and collapse
-# paths.
+# SSE 读写原语。上游在每个协议上都讲 Server-Sent Events，所以透传、转码与折叠
+# 三条路径共用同一个读取器。
 #
-# 移植自 zen2api protocol/stream/sse.ts。半包处理是本移植的最高风险点，三条铁律：
+# 半包处理是本层风险最高的一环，三条铁律：
 #   1. 缓冲一律是 bytes（bytearray/bytes 连接），不提前按字符切；
 #   2. 只有收齐一个换行的“完整行”、或收齐 \n\n 分隔的“完整帧”才做 utf-8 解码——
 #      UTF-8 多字节序列不含 0x0A，按 \n 切分永远不会劈开一个字符；
@@ -34,12 +33,12 @@ class StreamSink(Protocol):
 
 
 def _decode(raw: bytes) -> str:
-    """只对完整行/完整帧解码；非法字节按 TextDecoder 默认替换为 U+FFFD。"""
+    """只对完整行/完整帧解码；非法字节替换为 U+FFFD。"""
     return raw.decode("utf-8", errors="replace")
 
 
 class SseLineDecoder:
-    """字节流 → 完整 SSE 记录（对照 sse.ts SseLineDecoder 的状态机）。
+    """字节流 → 完整 SSE 记录的状态机。
 
     关键点：一条记录只有在空行分隔符到达时才派发，所以尾部没有换行的残缺记录
     永远不会被误当成完整帧——被截断的流由 end() 报 SseUnexpectedEof。
@@ -74,10 +73,9 @@ class SseLineDecoder:
                 f"upstream SSE record exceeds {MAX_RECORD_BYTES // (1024 * 1024)}MB"
             )
 
-    # end processes a trailing line that arrived without a newline, then reports
-    # an unterminated record as a truncated stream.
+    # end 冲出尾包里没有换行跟着的最后一行，再把未终结的记录按截断流上报。
     #
-    # 尾包没有换行也要冲出：先按最后一行消费（注意这里不再剥 \r，与 TS 一致），
+    # 尾包没有换行也要冲出：先按最后一行消费（这里不再剥 \r），
     # 再检查是否还有未被空行终结的 data——有就是被截断的流。
     def end(self) -> None:
         if self._buffer:
@@ -87,12 +85,12 @@ class SseLineDecoder:
             raise SseUnexpectedEof()
 
     def _consume_line(self, line: str) -> None:
-        # SSE 行语义（对照 TS consumeLine）：
+        # SSE 行语义：
         #   空行    → 冲出一条记录
         #   ':' 开头 → 注释/心跳行，忽略
         #   event:  → 记录事件名（剥两端空白）
         #   data:   → 追加一行数据（记录内多行 data 以 \n 拼接）
-        #   其余字段（id: / retry: 等）→ 忽略，与 TS 一致
+        #   其余字段（id: / retry: 等）→ 忽略
         if line == "":
             self._flush()
             return
@@ -145,7 +143,7 @@ class SseFrameSplitter:
                 f"upstream SSE frame exceeds {MAX_RECORD_BYTES // (1024 * 1024)}MB"
             )
 
-    # end drops a trailing partial frame: an unterminated record is not a frame.
+    # end 丢弃尾部残留的半帧：没有终结的记录不算一帧。
     def end(self) -> None:
         self._buffer = b""
 
@@ -197,5 +195,5 @@ def read_sse(chunks: Iterable[bytes], handler: SseHandler) -> None:
 
 
 def close_iterator(iterator: Iterator[bytes]) -> None:
-    """等价于 TS 的 reader.cancel()：释放上游连接（异常路径上尤其重要）。"""
+    """释放上游连接（异常路径上尤其重要）。"""
     close_quietly(iterator)

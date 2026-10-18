@@ -35,8 +35,7 @@ import { cn, fmtCompact } from "@/lib/utils";
 import { ActivityCell } from "./ActivityCell";
 import { UsageStatsCell } from "./UsageStatsCell";
 
-/**
- * Codex 号池账号列表：与 WorkBuddy 号池同一套表格（表头 + 行）。
+/** Codex 号池账号列表：与 WorkBuddy 号池同一套表格（表头 + 行）。
  *
  * 列：凭证 / 套餐 / 可用状态 / 最近请求（带结果条）/ 历史用量（**全时段**）/ 额度 / 操作。
  * 与 WorkBuddy 表格同款 `gw-table-card` + `gw-table-scroll`（窄屏横向滚动）。
@@ -85,7 +84,7 @@ function stateOf(account: CodexAccount): {
     return { label: "熔断中", tone: "destructive" };
   }
   if (account.cooldown_until_ms > now) {
-    // 额度用尽也走冷却（见后端 provider 的 QUOTA_COOLDOWN_KIND）：状态机一致，但文案必须
+    // 额度用尽也走冷却（冷却原因记为 quota）：状态机一致，但文案必须
     // 分开——「冷却中」像是刚被罚过，「额度耗尽」是在等窗口重置，运维要看的是后者。
     if (account.cooldown_kind === "quota") {
       return { label: "额度耗尽", tone: "destructive" };
@@ -119,8 +118,7 @@ function expiresIn(ms: number): string {
   return `凭证 ${days} 天后到期`;
 }
 
-/**
- * 额度：一条**剩余水位条**（还剩多少）+ 一行额度明细（主窗口剩余 · 重置倒计时 · 副窗口剩余）。
+/** 额度：一条**剩余水位条**（还剩多少）+ 一行额度明细（主窗口剩余 · 重置倒计时 · 副窗口剩余）。
  * 条子按剩余量画：满格 = 额度充足，抽空 = 用尽；条尾的百分比与它同口径。
  * 不再有 head 行：那一行只有一个数字，白白把这一格撑成三行，明细并进 foot 一行说完。
  * 两条窗口各画一根条会让这一列变成全行最重的部分，所以副窗口只给数字。
@@ -155,7 +153,7 @@ function QuotaCell({
   // 实测有账号 used_percent=100 但 allowed=true —— 光看百分比会误报已用尽。
   const exhausted = rateLimit?.limit_reached === true || rateLimit?.allowed === false || used >= 100;
   // 条子画的是**剩余**水位，所以分档也按剩余量走：剩 ≤30% 转琥珀、≤10% 转红；
-  // 剩 0%（用尽）时填充被抽空，改为由底轨承担"用尽"的表达（见 accounts.css）。
+  // 剩 0%（用尽）时填充被抽空，改为由底轨承担"用尽"的表达。
   const tone = remaining <= 0 ? "is-out" : remaining <= 10 ? "is-bad" : remaining <= 30 ? "is-warn" : "";
   const credits = rateLimit?.credits;
   // 副窗口只在**长度大于 0** 时才说。上游在没有第二窗口时会发一组全 0 的占位
@@ -166,7 +164,7 @@ function QuotaCell({
       ? `${windowLabel(secondary.window_minutes)} 剩余 ${Math.max(0, 100 - secondary.used_percent).toFixed(0)}%`
       : "";
   // 容量估算：上游只给整数百分比、不给绝对上限，"这个号大概能吃多少 token"是拿本
-  // 网关服务的 token 除以同期百分比变化反推出来的（后端 quota.py）。有数字时它**替代**
+  // 网关服务的 token 除以同期百分比变化反推出来的。有数字时它**替代**
   // 百分比那句：百分比只是过程量，容量才是能用来判断的数；估值与百分比二选一，
   // 不并列（并列会出现两个都在说"还剩多少"的字段）。没数字时才退回百分比。
   const hasCapacity = estimate != null && !estimate.pending && estimate.capacity != null;
@@ -218,7 +216,7 @@ function IconAction({
   onClick: () => void;
   disabled?: boolean;
   danger?: boolean;
-  /** 分类色（见 styles/icons.css 映射表）；danger 的红色优先级更高，不与之并用 */
+  /** 分类色（与图标同一套分类配色）；danger 的红色优先级更高，不与之并用 */
   tone?: string;
 }) {
   return (
@@ -256,7 +254,7 @@ export function CodexAccountList({
   return (
     <div className={cn("gw-table-card", accounts.length === 0 && "is-empty")}>
       <div className="gw-table-scroll">
-        {/* 列宽在 accounts.css 的 .acct-table 里显式分配（table-layout: fixed），
+        {/* 列宽在 .acct-table 里显式分配（table-layout: fixed），
             不再由"最长的那条内容"决定——否则凭证列的邮箱、额度列的明细会各自
             把列撑到跟自己一样宽，横向比例散掉 */}
         <Table className="acct-table">

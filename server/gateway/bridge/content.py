@@ -1,4 +1,4 @@
-"""三个线上协议的内容块编解码（移植自 zen2api protocol/bridge/content.ts）。"""
+"""三个线上协议的内容块编解码。"""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def decode_openai_blocks_checked(value: Any) -> list[BridgeBlock]:
         elif kind == "input_image":
             blocks.append(new_block("image", {"url": string_at(raw, "image_url")}))
         elif kind in ("video_url", "input_video"):
-            # 视频：chat 的 video_url 与部分客户端的 input_video 同形（StepFun 文档的
+            # 视频：chat 的 video_url 与部分客户端的 input_video 同形（StepFun 约定的
             # video_url.url 只收 http/https；data URL 原样带过，收不收由上游定）
             blocks.append(
                 new_block(
@@ -118,7 +118,7 @@ def _audio_media_type(format: str) -> str:
 
 
 def _audio_format(media_type: str) -> str:
-    """media_type → input_audio.format。"""
+    """media_type → input_audio.format 的反向映射。"""
     return "wav" if media_type.strip().lower().endswith(("wav", "wave")) else "mp3"
 
 
@@ -393,7 +393,7 @@ def encode_anthropic_blocks(blocks: list[BridgeBlock]) -> list[Any]:
                     }
                 )
         elif block.kind == "audio":
-            # Anthropic 协议没有音频块：降级为可见占位（见 omitted_block_text）
+            # Anthropic 协议没有音频块：降级为可见文字占位（把附件名与类型写进文本，不静默丢弃）
             parts.append({"type": "text", "text": omitted_block_text(block)})
         elif block.kind == "file":
             source: dict[str, Any] | None = None

@@ -18,8 +18,7 @@ import { effortTone, fmtSeconds, protocolTone, statusTone } from "@/lib/format";
 import type { RequestQuery, RequestRow, RequestSortKey } from "@/lib/api";
 import { cn, fmtClock, fmtCompact, fmtInt, latencyMark, shortClientUa } from "@/lib/utils";
 
-/**
- * 最近请求明细表（OpenCode / WorkBuddy / Codex 三页共用）。
+/** 最近请求明细表（OpenCode / WorkBuddy / Codex 三页共用）。
  *
  * accountLabelFor 传入时多渲染一列「账号」（号池 provider 才有归属账号，uid → 显示名）；
  * 不传则与旧 OpenCode 表逐字一致。列结构、单元格样式与分档规则集中在这里，
@@ -173,7 +172,7 @@ export function RequestsTable({
                     </TableCell>
                     <TableCell>
                       <span className="inline-flex items-center gap-1 text-xs">
-                        {/* 灰底实心（= demo 的 badge-neutral），不是白底描边：
+                        {/* 灰底实心（= secondary 变体的灰底），不是白底描边：
                             协议是"分类标签"，与状态徽章同一套实心视觉 */}
                         <Badge variant="secondary">{row.client_protocol}</Badge>
                         {row.upstream_protocol !== row.client_protocol ? (
@@ -213,10 +212,10 @@ export function RequestsTable({
                       <Badge variant={statusTone(row.http_status)}>{row.http_status || "—"}</Badge>
                     </TableCell>
                     <TableCell>
-                      {/* 上首字、下总耗时（对齐 demo 的 .cell-2 双行格）。
+                      {/* 上首字、下总耗时（两行格 .cell-2）。
                          首字为 0 说明是失败请求或旧记录，显示「—」而不是 0.0s。
                          is-compact：两行同为 11px，比邻列小一档。
-                         分档见 lib/utils.latencyMark：首字 >10s 琥珀 / >30s 红；
+                         分档规则：首字 >10s 琥珀 / >30s 红；
                          总耗时只在「>30s 且 <10 tok/s」时红——长而快是正常生成。
                          注意非流式客户端的首字恒为 0（整包被缓冲），是「—」不是慢。 */}
                       <div className="cell-2 is-compact items-start">
@@ -261,13 +260,13 @@ export function RequestsTable({
                         </TooltipContent>
                       </Tooltip>
                     </TableCell>
-                    {/* 缓存独立成列（对齐 demo）：命中率要能独立扫视比较，
+                    {/* 缓存独立成列：命中率要能独立扫视比较，
                         塞在 Token 格内只能靠悬停才发现 */}
                     <TableCell>
                       <CacheCell cacheTokens={row.cached_tokens} promptTokens={row.input_tokens} />
                     </TableCell>
                     {/* 原因：只有非 200 才显示上游原始报错；成功请求显示占位「—」，
-                        与 demo 一致（留空会让整列看起来缺内容） */}
+                        与这一列一致（留空会让整列看起来缺内容） */}
                     <TableCell>
                       {row.http_status !== 200 && row.error_message ? (
                         <Tooltip>

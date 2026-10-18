@@ -1,14 +1,14 @@
-"""出站代理解析（移植自 zen2api upstream/proxy.ts）。
+"""出站代理解析。
 
 direct / system（环境变量 → Windows WinINET 注册表）/ manual 三档，
-统一旁路列表匹配。三档的取值来自 core.config（server/config.json，管理面可改），
+统一旁路列表匹配。三档的取值来自运行时配置（server/config.json，管理面可改），
 改配置调 invalidate() 即可立即生效，不用重启。
 
 system 档 30s TTL：每次请求重读会开注册表查询，从不重读则先启动代理后开网关
 必须重启。manual 档按 (mode, url) 变更检测重读，避免每请求重复解析。
 
-与 TS 的允许偏差：注册表用 Python 标准库 winreg 直读（TS 因 Node 无注册表
-API 才 exec reg.exe）。
+注册表用 Python 标准库 winreg 直读，不必绕道外部命令（exec reg.exe 那条路
+是给没有注册表 API 的运行时用的）。
 """
 
 from __future__ import annotations

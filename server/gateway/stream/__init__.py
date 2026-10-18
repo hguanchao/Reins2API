@@ -1,10 +1,11 @@
-# SSE 流处理层（移植自 zen2api protocol/stream/*.ts）。
+# SSE 流处理层：按上游协议读事件流，分别走同协议透传、跨协议转码与整体折叠
+# 三条路，失败一律翻成客户端协议的错误事件。
 #
 # 公开 API：
 #   StreamSink         下游写出口（Protocol；write 收 bytes，写失败即客户端断连）
 #   StreamStats        上游侧实况（尝试次数/字节数/静默时长），掐流日志用
 #   StreamOutcome      一次流式请求的最终结果（usage + error）
-#   retrying_chunks    上游块流 → "首包前可重发"的字节迭代器（见 retry.py）
+#   retrying_chunks    上游块流 → "首包前可重发"的字节迭代器
 #   forward_stream     同协议透传（字节原样拷贝 + 旁路观察 usage）
 #   transcode_stream   跨协议转码（parser → BridgeStreamEvent → emitter）
 #   collapse_stream    把整条上游流折叠成单个响应 dict（非流式回包用）

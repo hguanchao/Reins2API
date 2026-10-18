@@ -1,6 +1,6 @@
 """Codex 上游错误分类：状态码 + 错误体 → 罚号/换号/透传决策。
 
-分类驱动三件事（与 workbuddy/classify.py 同构）：
+分类驱动三件事（与 workbuddy 的错误分类同一套口径）：
   - 是否换号重试（RETRYABLE）；
   - 罚号策略（冷却时长 / 喂熔断 / 禁用）；
   - 是否原样透传客户端（请求级错误不罚号）。
@@ -40,13 +40,13 @@ def quota_exhausted_message(body: str) -> bool:
     return any(hint in lowered for hint in QUOTA_MESSAGE_HINTS)
 
 
-# 额度类错误的结构化字段（官方 codex-api/src/api_bridge.rs:192-226 解析同一组）：
+# 额度类错误的结构化字段（官方后端按同一组键解析）：
 #   {"error": {"type": "usage_limit_reached", "message": "…", "plan_type": "pro",
 #              "resets_at": <epoch 秒>, "limit_window_minutes": 300}}
 # resets_at 是**窗口重置的绝对时刻**——文案只说明"用尽了"，它才说明"什么时候回来"。
 _QUOTA_ERROR_TYPES = ("usage_limit_reached",)
 # 官方把这两个 code 也当额度类失败（InsufficientQuota）：积分/余额耗尽，
-# 没有重置时刻可等（api_bridge.rs 同一段的 insufficient_quota / credit_balance_exhausted）。
+# 没有重置时刻可等（insufficient_quota / credit_balance_exhausted）。
 _QUOTA_ERROR_CODES = ("insufficient_quota", "credit_balance_exhausted")
 
 

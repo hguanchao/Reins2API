@@ -1,18 +1,24 @@
-"""Reins2API HTTP 服务（零框架：标准库 ThreadingHTTPServer，分发层移植自 grok-rego）。
+"""Reins2API HTTP 服务（零框架：标准库 ThreadingHTTPServer）。
 
 路由:
   /v1/*        推理端点（chat / responses / messages / models）→ gateway.inference
-  /healthz     健康检查
+  /healthz     健康检查（含实例身份块,启动器靠它对账"端口上答话的是哪个进程"）
   /api/*       管理面（无鉴权；OpenCode 运维聚合 + 遥测明细）
   其余 GET     SPA 静态托管（web/dist 存在时）
+
+停机（core/lifecycle.py）:SIGTERM/SIGINT 与 POST /__control/shutdown 走同一条排水路径——
+停止受理 → 等在途请求收尾（上限 20s）→ 跑收尾钩子 → 刷净日志。
 """
 
 from __future__ import annotations
 
+import contextlib
+import hmac
 import json
 import mimetypes
 import os
 import posixpath
+import signal
 import socket
 import threading
 import time
@@ -21,6 +27,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from core import config as app_config
+from core import lifecycle
 from core.cron import CronError
 from core.cron import parse as parse_cron
 from core.http_body import IncompleteRequestBodyError, RequestBodyTooLarge, read_request_body
@@ -35,11 +42,13 @@ from net import egress
 from net import proxy as outbound_proxy
 
 _MAX_BODY = 1_000_000
-_API_PREFIXES = ("/api", "/v1", "/healthz")
+_API_PREFIXES = ("/api", "/v1", "/healthz", "/__control")
 _WEB_INDEX = "index.html"
+# 控制端点：不面向客户端，只给本机的启动器（挡在前面的是回环绑定 + 令牌两件事）
+_CONTROL_PATH = "/__control"
 
 
-# ── SPA 静态托管（移植自 grok-rego） ──────────────────────────────
+# ── SPA 静态托管 ─────────────────────────────────────────────
 
 
 def _web_root() -> str | None:
@@ -69,7 +78,7 @@ def _cache_control(relative_path: str) -> str:
     Vite 给每个 js/css/字体文件名带内容哈希（assets/index-B3f9x2.js），内容换了
     文件名就换——这类文件可以 immutable 长缓存，页面刷新不再重下几 MB 的包。
     index.html 与其它按固定名发布的文件相反：它们**指**那些哈希文件，缓存住会让
-    用户永远拿到旧包，所以必须 no-cache（每次带 ETag/If-None-Match 复用，见下）。
+    用户永远拿到旧包，所以必须 no-cache（每次带 ETag/If-None-Match 复用）。
     """
     normalized = relative_path.replace("\\", "/")
     if "/assets/" in f"/{normalized}":
@@ -135,11 +144,49 @@ def _json_body(handler: BaseHTTPRequestHandler) -> Any:
     return json.loads(raw.decode("utf-8"))
 
 
+def _handle_control_api(
+    method: str, path: str, _query: dict[str, list[str]], handler: BaseHTTPRequestHandler
+) -> bool:
+    """本机启动器专用控制面：优雅停机。
+
+    两把锁同时到位才放行：① 只认回环对端（服务即使绑了 0.0.0.0，LAN 上来的请求也进不来）；
+    ② 令牌（server/data/control.token，由服务启动时落盘）。第二道专治浏览器 CSRF——网页
+    能往 127.0.0.1 发请求，但读不到本地文件里的令牌。REINS2API_CONTROL=off 可整个关掉。
+    """
+    if not path.startswith(_CONTROL_PATH):
+        return False
+    if path != f"{_CONTROL_PATH}/shutdown" or method != "POST":
+        error_json(handler, 404, f"not found: {path}")
+        return True
+    peer = handler.client_address[0] if handler.client_address else ""
+    if peer not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+        logger.warning(f"[API] 控制面拒绝非回环来源 peer={peer}")
+        error_json(handler, 403, "控制面只接受回环调用")
+        return True
+    expected = lifecycle.control_token()
+    if not expected:
+        error_json(handler, 403, "控制面未启用（REINS2API_CONTROL=off）")
+        return True
+    provided = handler.headers.get("X-Control-Token") or ""
+    if not hmac.compare_digest(provided, expected):
+        logger.warning("[API] 控制面令牌不匹配 path=shutdown")
+        error_json(handler, 403, "令牌无效")
+        return True
+    started = lifecycle.begin_drain("control-api")
+    send_json(handler, 200, {
+        "ok": True,
+        "data": {"accepted": started, "instance": lifecycle.INSTANCE_ID},
+    })
+    return True
+
+
 def _handle_system_api(
     method: str, path: str, _query: dict[str, list[str]], handler: BaseHTTPRequestHandler
 ) -> bool:
-    if method == "GET" and path in ("/api/health", "/healthz"):
-        send_json(handler, 200, {"ok": True, "service": "reins2api"})
+    if method in ("GET", "HEAD") and path in ("/api/health", "/healthz"):
+        # 编排脚本按这一行判断就绪：ok 之外还带实例身份（instance/pid/uptime/in_flight/
+        # draining）——重启后要求 instance 与重启前不同，防止打到没走成的旧实例。
+        send_json(handler, 200, {"ok": True, "service": "reins2api", **lifecycle.instance_info()})
         return True
     return False
 
@@ -200,7 +247,7 @@ def _handle_provider_api(
     """Provider 运维端点（按 provider 名泛化）：/api/{provider}/{refresh|ops|requests|usage}。"""
     if not path.startswith("/api/"):
         return False
-    parts = path.split("/")  # ["", "api", provider, action]
+    parts = path.split("/")  # 切分后：["", "api", provider, action]
     if len(parts) != 4:
         return False
     name = parts[2]
@@ -377,7 +424,7 @@ def _handle_workbuddy_api(
 
     路由形态：/api/workbuddy/{accounts|login|state}[/...]；ops/requests/usage
     由泛化的 _handle_provider_api 先行处理，此处只收专属面。
-    与 codex 共用的形态走 _pool_* 助手（见下方"号池管理面共用实现"）。
+    与 codex 共用的形态走 _pool_* 助手（账号列表/导入/删除/动作/状态同一套实现）。
     """
     parts = path.split("/")
     if len(parts) < 4 or parts[1] != "api" or parts[2] != "workbuddy":
@@ -522,7 +569,7 @@ def _empty_account_stats() -> dict[str, int]:
 
 
 def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
-    """按账号聚合 requests 遥测（统计单一代数事实源，docs §7.2）。
+    """按账号聚合 requests 遥测（与请求日志同源，数字不漂移）。
 
     按 provider 参数化（号池 provider 共用：workbuddy / codex）——遥测在各 provider
     自己的库里，所以必须传对名字。返回 {uid: {total, stats, last_used_ms, daily, recent}}：
@@ -594,7 +641,7 @@ def _account_stats(provider_name: str) -> dict[str, dict[str, Any]]:
 def _refresh_after_import(provider: Any) -> None:
     """导入账号后的补刷（后台线程）：补快过期的凭证 + 额度。
 
-    导入的号 AT 常是旧的（CPA 导出里 expired 早就过了），凭证不先补，额度查询走不动；
+    导入的号 AT 常是旧的（导出文件里 expired 早就过了），凭证不先补，额度查询走不动；
     两步都只告警不抛出——真失败了留给后台巡检/手动刷兜底，不能反过来影响导入结果。
     额度这一步是给「刚导入还没有成功请求」的号填数的：响应头回填要等下一次成功
     请求，全新导入的号不该在额度列空着。**不再补拉模型目录**：目录只在手动
@@ -618,7 +665,7 @@ def _handle_codex_api(
 
     路由形态：/api/codex/{accounts|login|state}[/...]；ops/requests/usage 由泛化的
     _handle_provider_api 先行处理，此处只收专属面。
-    与 workbuddy 共用的形态走 _pool_* 助手（见「号池管理面共用实现」）。
+    与 workbuddy 共用的形态走 _pool_* 助手（账号列表/导入/删除/动作/状态同一套实现）。
     """
     parts = path.split("/")
     if len(parts) < 4 or parts[1] != "api" or parts[2] != "codex":
@@ -638,7 +685,7 @@ def _handle_codex_api(
         return True
 
     if method == "GET" and action == "accounts" and len(parts) == 5 and parts[4] == "export":
-        # 导出账号为 CPA / codex2api 形状的 JSON（前端拿到后自行触发下载）
+        # 导出账号为兼容格式的 JSON（格式名由 format 参数给出；前端拿到后自行触发下载）
         fmt = str((query.get("format") or ["cpa"])[0] or "cpa").strip().lower()
         if fmt not in ("cpa", "codex2api"):
             fmt = "cpa"
@@ -646,7 +693,7 @@ def _handle_codex_api(
         return True
 
     if method == "POST" and action == "accounts" and len(parts) == 5 and parts[4] == "import":
-        # 导入 CPA / codex2api 形状的 JSON（宽容解析；坏条目只计入 skipped）
+        # 导入兼容格式的 JSON（宽容解析；坏条目只计入 skipped）
         body = _json_body(handler)
         payload = body if isinstance(body, dict) else {}
         text = payload.get("json")
@@ -663,7 +710,7 @@ def _handle_codex_api(
             send_json(handler, 502, {"ok": False, "error": f"导入失败: {type(exc).__name__}: {exc}"})
             return True
         if summary["imported"] + summary["updated"] > 0:
-            # 新号入库后补凭证与额度（见 _refresh_after_import）；逐号打上游，
+            # 新号入库后补凭证与额度（后台线程）；逐号打上游，
             # 挂后台线程不占导入响应。模型目录不在这里刷——那是手动「获取模型」的事。
             threading.Thread(
                 target=_refresh_after_import, args=(provider,), daemon=True
@@ -733,6 +780,7 @@ def _handle_api(
     method: str, path: str, query: dict[str, list[str]], handler: BaseHTTPRequestHandler
 ) -> bool:
     for route_handler in (
+        _handle_control_api,
         _handle_system_api,
         _handle_config_api,
         _handle_provider_api,
@@ -793,34 +841,47 @@ class _ApiHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
-        try:
-            if path.startswith("/v1"):
-                inference.handle(self, method, path, query)
-                return
-            if _handle_api(method, path, query, self):
-                return
-            if try_serve_web(self, method, path):
-                return
-        except RequestBodyTooLarge as e:
-            error_json(self, 413, str(e))
-            return
-        except ValueError as e:
-            error_json(self, 400, str(e))
-            return
-        except RuntimeError as e:
-            error_json(self, 409, str(e))
-            return
-        except json.JSONDecodeError:
-            error_json(self, 400, "无效 JSON")
-            return
-        except (TimeoutError, IncompleteRequestBodyError):
+        control = path.startswith(_CONTROL_PATH)
+        probe = path in ("/healthz", "/api/health")
+        if lifecycle.draining() and not control:
+            # 排水中：keep-alive 连接上还会到新请求（连接早就建好了），这里明确回 503 +
+            # Connection: close，别让客户端把"服务正在退场"读成"处理失败"去重试原始请求。
+            error_json(self, 503, "服务正在停机")
             self.close_connection = True
-            error_json(self, 408, "客户端请求读取超时或未完整发送")
             return
-        except Exception:
-            logger.exception("[API] 未处理异常")
-            error_json(self, 500, "internal server error")
-            return
+        # 在途计数的口径是"真的有活要干"：控制面与健康探活都不算——否则
+        # ① 每次 --status 都会把"在途 1"（它自己）读成有请求在处理；
+        # ② 排水等待会被启动器的探活钉子死死顶住，每次都白等一轮探活超时。
+        scope = contextlib.nullcontext() if (control or probe) else lifecycle.request_scope()
+        with scope:
+            try:
+                if path.startswith("/v1"):
+                    inference.handle(self, method, path, query)
+                    return
+                if _handle_api(method, path, query, self):
+                    return
+                if try_serve_web(self, method, path):
+                    return
+            except RequestBodyTooLarge as e:
+                error_json(self, 413, str(e))
+                return
+            except ValueError as e:
+                error_json(self, 400, str(e))
+                return
+            except RuntimeError as e:
+                error_json(self, 409, str(e))
+                return
+            except json.JSONDecodeError:
+                error_json(self, 400, "无效 JSON")
+                return
+            except (TimeoutError, IncompleteRequestBodyError):
+                self.close_connection = True
+                error_json(self, 408, "客户端请求读取超时或未完整发送")
+                return
+            except Exception:
+                logger.exception("[API] 未处理异常")
+                error_json(self, 500, "internal server error")
+                return
         error_json(self, 404, f"not found: {path}")
 
 
@@ -860,8 +921,31 @@ class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._request_slots.release()
 
 
+def _install_signal_handlers() -> None:
+    """SIGTERM/SIGINT → 同一条排水路径（与控制端点同一入口）。
+
+    第二个信号是逃生门：排水中的进程再收到一次信号就直接退（Ctrl+C 连按的语义是
+    "别等了"）——否则用户以为在强退，其实只是又排了一次水。
+
+    Windows 上只有 SIGTERM 能被 taskkill（不带 /F）送到，SIGBREAK 在非交互式控制台
+    （CREATE_NO_WINDOW）不可靠，所以只挂这两个；启动器在 Windows 上走控制端点。
+    """
+
+    def _handler(signum: int, _frame: Any) -> None:
+        name = signal.Signals(signum).name
+        if not lifecycle.begin_drain(f"signal-{name}"):
+            logger.warning(f"[API] 再次收到 {name}, 立即退出")
+            os._exit(0)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            pass  # 非主线程（测试里挂载服务）或平台不支持，忽略
+
+
 def serve(host: str | None = None, port: int | None = None) -> None:
-    """启动服务（阻塞）。"""
+    """启动服务（阻塞，直到收到停机请求）。"""
     from core.settings import HOST as DEFAULT_HOST
     from core.settings import PORT as DEFAULT_PORT
 
@@ -875,14 +959,30 @@ def serve(host: str | None = None, port: int | None = None) -> None:
             pass
     server = _BoundedThreadingHTTPServer((bind_host, bind_port), _ApiHandler)
     server.daemon_threads = True
-    logger.success(f"[API] 服务已启动 addr={bind_host}:{bind_port}")
+    lifecycle.bind_server(server)
+    _install_signal_handlers()
+    token = lifecycle.init_control(port=bind_port)
+    logger.success(
+        f"[API] 服务已启动 addr={bind_host}:{bind_port} instance={lifecycle.INSTANCE_ID} "
+        f"pid={lifecycle.PID}"
+    )
     routes = "/v1/* (推理)  /api/* (管理)"
     if _web_root():
         routes += "  /* (Web UI)"
     logger.info(f"[API] 路由: {routes}")
+    if token:
+        logger.info(f"[API] 控制面已启用 path={_CONTROL_PATH}/shutdown (回环 + 令牌)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        # 未挂上信号处理器时（非主线程/异常环境）的兜底；正常路径走 lifecycle。
         logger.info("[API] 收到中断信号, 停止服务")
     finally:
-        server.server_close()
+        # 排水线程是 daemon：这里不等它，`serve_forever()` 一返回进程就退出，
+        # 排水等待/收尾钩子/日志刷盘全被掐断（实测只留下一条"停机开始"）。
+        if lifecycle.draining():
+            lifecycle.wait_for_drain()
+        try:
+            server.server_close()
+        except Exception:
+            pass

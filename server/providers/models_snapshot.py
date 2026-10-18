@@ -1,4 +1,4 @@
-"""上游模型目录快照：`server/data/models.json`。
+"""上游模型目录快照（JSON 文件，落在 DATA_DIR 下）。
 
 三个 provider 共用同一套**统一字段名**，只保留排查/对照要看的核心信息——上游
 原样条目又大又杂（codex manifest 单条可达 40+ KB，光 base_instructions 就 17 KB），
@@ -9,7 +9,7 @@
      "codex": [ … ],
      "meta": {"<provider>": {"updated_at_ms": …, …}}}
 
-条目由各 provider 用 core_entry() 构造（字段含义见其 docstring）；上游没声明的
+条目由各 provider 用 core_entry() 构造，字段含义写在 CORE_FIELDS 词表里；上游没声明的
 字段省略——**不落 False/0 冒充「确定没有」**。
 
 这份快照同时是**冷启动的唯一数据源**（关掉自动刷新后，重启靠它重建内存目录，
@@ -18,8 +18,8 @@ free、extras）。`meta.<provider>` 是与条目形状无关的旁挂信息：`
 是**目录内容最后变更时间**（内容没变就不动它），opencode 另存凭证可见清单。
 
 写入策略：只替换本次刷新的那个 provider 的键，其余原样保留；内容与现快照一致
-时不写盘（不抖 mtime、不产生无意义写入），确实要变时先把现文件轮转成
-`models.json.bak` 再原子替换。写入失败只告警，绝不阻塞刷新（与遥测同姿态）。
+时不写盘（不抖 mtime、不产生无意义写入），确实要变时先把现文件轮转成带 .bak
+后缀的副本再原子替换。写入失败只告警，绝不阻塞刷新（与遥测同姿态）。
 """
 
 from __future__ import annotations
@@ -40,10 +40,10 @@ _lock = threading.Lock()
 
 
 def backup_path() -> Path:
-    """轮转目标（models.json.bak）。
+    """轮转目标（现文件的 .bak 副本）。
 
     从 PATH 派生而不是另立常量：测试会把 PATH 重绑到临时目录，两个常量会漂移，
-    于是合成内容被轮转写进真实 data/（踩过这个坑）。绑定关系由这里保证。
+    于是合成内容被轮转写进真实数据目录（踩过这个坑）。绑定关系由这里保证。
     """
     return PATH.with_name(PATH.name + ".bak")
 

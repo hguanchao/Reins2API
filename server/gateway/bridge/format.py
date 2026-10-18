@@ -1,4 +1,4 @@
-"""结构化输出形状（移植自 zen2api protocol/bridge/format.ts）。
+"""结构化输出形状。
 
 Chat 与 Responses 的 format 类型名一致，但 json_schema 的嵌套层级不同，
 所以每个方向有自己的投影。目标协议没有等价物的值直接省略而不是让请求失败。
@@ -29,7 +29,7 @@ def chat_response_format(format: Any) -> Any:
                     nested[key] = format[key]
         if len(nested) == 0:
             return None
-        # name 是必填（StepFun 文档：json_schema.name required）。客户端没给就补一个：
+        # name 是必填（StepFun 约定 json_schema.name required）。客户端没给就补一个：
         # 裸 schema 在 chat 上游会被直接 400，比丢一个默认名糟得多。
         nested.setdefault("name", "structured_output")
         return {"type": "json_schema", "json_schema": nested}

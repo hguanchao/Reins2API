@@ -15,8 +15,7 @@ import {
 import { useTheme, type ThemeMode } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-/**
- * WorkBuddy 品牌标（官方 logo mark，填充型 SVG，currentColor 跟随主题色）。
+/** WorkBuddy 品牌标（官方标志，填充型 SVG，currentColor 跟随主题色）。
  * lucide 图标是描边体系，这里以同签名组件接入 nav 的 icon 槽——调用方传的
  * strokeWidth 对填充型图标无意义，解构丢弃。
  */
@@ -39,8 +38,7 @@ function WorkBuddyMark({ strokeWidth: _strokeWidth, ...rest }: SVGProps<SVGSVGEl
   );
 }
 
-/**
- * OpenAI 品牌标（Codex 上游的官方 logo mark，填充型 SVG，currentColor 跟随主题色）。
+/** OpenAI 品牌标（Codex 上游的官方标志，填充型 SVG，currentColor 跟随主题色）。
  * 与 WorkBuddyMark 同签名接入 nav 的 icon 槽：strokeWidth 对填充型图标无意义，丢弃。
  */
 function OpenAIMark({ strokeWidth: _strokeWidth, ...rest }: SVGProps<SVGSVGElement>) {
@@ -62,8 +60,7 @@ function OpenAIMark({ strokeWidth: _strokeWidth, ...rest }: SVGProps<SVGSVGEleme
   );
 }
 
-/**
- * Reins2API 品牌标：几何化的 R 字标。
+/** Reins2API 品牌标：几何化的 R 字标。
  *
  * 三笔构成：竖主干、上环（正圆弧）、右下直腿。刻意的取舍是**只留这三笔**——
  * 不做字母装饰、不加圆点，靠统一的 3.2 笔画与正圆环的精确几何立住分量；
@@ -166,7 +163,7 @@ export function AppShell() {
       null = 还没量到,此时不渲染——否则它会带着 transform 过渡从 left:0 飞进来。 */
   const [indicatorCenter, setIndicatorCenter] = useState<number | null>(null);
 
-  // 滚动下放到 .main 后,切页不会自动回到顶部(浏览器只在文档滚动时重置)。
+  // 滚动下放到 .main 后,切页不会自动回到顶部(浏览器只在整页滚动时重置)。
   // 这里在路由变化时手动归零,免得从长页面切到短页面时停在半途。
   useLayoutEffect(() => {
     mainRef.current?.scrollTo({ top: 0 });
@@ -235,8 +232,7 @@ export function AppShell() {
         </div>
       </header>
 
-      {/* main 是唯一的滚动容器：内容从它的顶上滚过去、钻到 header（绝对定位，
-          见 base.css）的磨砂底下；内容列的最大宽度与居中由 .main 的内边距实现。 */}
+      {/* main 是唯一的滚动容器：内容从它的顶上滚过去、钻到 header（绝对定位）的磨砂底下；内容列的最大宽度与居中由 .main 的内边距实现。 */}
       <main className="main" ref={mainRef}>
         <PageEnter>
           <Outlet />
@@ -246,9 +242,7 @@ export function AppShell() {
   );
 }
 
-/**
- * 路由切换：轻量淡入（仅 opacity，Edge 友好）。
- */
+/** 路由切换：轻量淡入（仅 opacity，Edge 友好）。 */
 export function PageEnter({
   children,
   className,

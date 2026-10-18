@@ -232,7 +232,7 @@ class CodexStore(AccountStore):
 
 
 def valid_uid(uid: str) -> bool:
-    """uid 白名单校验（口径 = CodexStore.uid_re，实现见 account_store 基类）。"""
+    """uid 白名单校验（字符集与长度即 CodexStore.uid_re）。"""
     return CodexStore.valid_uid(uid)
 
 

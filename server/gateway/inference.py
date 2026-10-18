@@ -1,10 +1,10 @@
-"""推理端点编排（移植自 zen2api endpoints/inference.ts）。
+"""推理端点编排。
 
 三个客户端协议端点共用本模块：路由模型 → 桥转换请求 → 免费档塑形 → 上游
 （单凭证单次尝试）→ 回译响应（流式转码/透传，或折叠回 JSON）→ 遥测落库。
 管理与推理都无鉴权；安全前提是默认只监听 127.0.0.1。
 
-流式细节沿用 grok-rego 已验证的零框架写法：Connection: close + 逐块 flush，
+流式细节沿用已验证的零框架写法：Connection: close + 逐块 flush，
 客户端断连表现为 BrokenPipe 族异常。
 """
 
@@ -54,7 +54,7 @@ from gateway.types import (
 )
 from net import egress
 
-# 对齐 zen2api express.json 的 32mb 上限
+# 请求体字节上限：声明的 Content-Length 超过它即拒绝读取（32mb）
 MAX_BODY = 32 * 1024 * 1024
 
 # 路径 → 协议：唯一出处是 types.protocol_path 的反向映射（改协议路径只改一处）
@@ -65,7 +65,7 @@ _PATH_PROTOCOLS = {
 
 
 def handle(handler: BaseHTTPRequestHandler, method: str, path: str, query: dict) -> None:
-    """api/server.py 的 /v1 分发入口。"""
+    """/v1 请求的分发入口：模型列表与三个协议端点。"""
     if method == "GET" and path == "/v1/models":
         _send_models(handler)
         return
@@ -130,7 +130,7 @@ def _serve(handler: BaseHTTPRequestHandler, external: str) -> None:
             )
             store(name).log_request(record)
         # 完成行：本请求的结果摘要（状态/耗时/首字/用量/账号/错误），与"受理"行配对
-        # 成控制台的每次请求流水（渲染见 core/console_view.py）。
+        # 成控制台的每次请求流水。
         logger.info(_completion_line(record, name))
 
 
@@ -157,7 +157,7 @@ def _client_label(handler: BaseHTTPRequestHandler) -> str:
 
 def _reasoning_effort(body: dict) -> str:
     """客户端声明的思考强度：OpenAI 风格 reasoning_effort 字符串，或 Responses
-    风格 reasoning.effort（同 grok-rego _extract_meta）。仅记录，不改请求。"""
+    风格 reasoning.effort。仅记录，不改请求。"""
     raw = body.get("reasoning_effort")
     if isinstance(raw, str) and raw.strip():
         return raw.strip()[:32]
@@ -240,7 +240,7 @@ def _serve_inner(
         _send_error(handler, external, 400, str(exc), "invalid_request_error", extra)
         return 400
 
-    # 本项目恒匿名档：塑形无条件执行（上游对免费档强制"流式 + agent 工具集"）
+    # 恒匿名档：塑形无条件执行（上游对免费档强制"流式 + agent 工具集"）
     upstream_body, shaped = provider.shape(upstream_body, route.protocol)
     record.is_shaped = shaped
     # 桥透传的是客户端规范名（opencode/xxx），上游只认裸模型名
@@ -249,7 +249,7 @@ def _serve_inner(
     client_stream = body.get("stream") is True
 
     # 受理行：路由已定、即将发上游。与末尾的完成行配对，构成控制台的"每次请求"
-    # 流水（渲染见 core/console_view.py）——字段集固定，键名别改。
+    # 流水——字段集固定，键名别改。
     logger.info(
         f"[推理] 受理 request={ids.request} provider={provider.name} model={model} "
         f"upstream={route.upstream_model} proto={route.protocol} stream={client_stream} "
@@ -257,7 +257,7 @@ def _serve_inner(
     )
 
     # 出站唯一序列化点：孤立代理项在这里统一 toWellFormed，不能让 .encode("utf-8")
-    # 把客户端送来的畸形串崩成 500（见 jsonutil）。字节留一份——首包前重发必须发
+    # 把客户端送来的畸形串崩成 500。字节留一份——首包前重发必须发
     # 同一份 body。
     body_bytes = encode_json_body(upstream_body)
     try:
@@ -308,13 +308,13 @@ def _serve_inner(
     def _stamp_first_byte() -> None:
         # 基准取 record.created_ms 而不是 _serve 的 started：这个闭包活在
         # _serve_inner 里，started 是 _serve 的局部变量，不在作用域内。
-        # created_ms 正是由 started 算出的（见 _serve），所以基准一致。
+        # created_ms 正是由 started 算出的，所以基准一致。
         record.first_byte_ms = int(time.time() * 1000) - record.created_ms
 
     result.stamp_first_chunk(_stamp_first_byte)
 
     def _resend() -> UpstreamResponse:
-        """首包前重发一次（节奏与判据见 gateway/stream/retry.py）。
+        """首包前重发一次（重发节奏与判据由流重试层决定）。
 
         只在"下游一个字节都没写出"时被调用，所以重发不会造成客户端可见的重复。
         非 2xx 无法再改状态码（响应头已发出）：把上游错误体当流错误报给客户端——
@@ -447,7 +447,7 @@ def _stream_response(
         for key, value in extra.items():
             handler.send_header(key, value)
         handler.end_headers()
-        # 无 Content-Length 的响应靠关闭连接定界（grok-rego 已验证的写法）
+        # 无 Content-Length 的响应靠关闭连接定界
         handler.close_connection = True
         return _pump_stream(handler, external, route, result, record, status, resend)
     finally:
@@ -502,7 +502,7 @@ def _pump_stream(
 
     _apply_usage(record, outcome.usage)
     # 掐流/重发日志的 key=value 尾巴：停止在哪、静默多久、重发过几次都留痕
-    # （控制台渲染见 core/console_view.py，键名是契约）。
+    # （键名是渲染契约）。
     trace = (
         f"attempts={stats.attempts} retries={stats.retries} "
         f"up_chunks={stats.up_chunks} up_bytes={stats.up_bytes} "
@@ -579,9 +579,8 @@ def _upstream_error_message(result: UpstreamResponse) -> str:
 
 
 def _send_models(handler: BaseHTTPRequestHandler) -> None:
-    """模型列表。能力块由 **provider** 算好（厂商字段名只活在 provider 里：
-    providers/profiles.py 的上游档案 + providers/capabilities.py 的合并规则），
-    gateway 只负责平铺输出——它不认识任何厂商字段名。"""
+    """模型列表。能力块由 **provider** 算好（厂商字段名只活在 provider 层：
+    上游档案 + 能力合并规则），gateway 只负责平铺输出——它不认识任何厂商字段名。"""
     data = []
     for info in registry.list_models():
         entry = {
@@ -606,7 +605,7 @@ def _send_models(handler: BaseHTTPRequestHandler) -> None:
 def _completion_line(record: RequestRecord, provider_name: str) -> str:
     """完成行文本（[推理] 完成 …）。
 
-    渲染器按 `key=` 取列（core/console_view.py），所以键名与取值形状是契约；
+    渲染器按 `key=` 取列，所以键名与取值形状是契约；
     空账号/空错误直接省略键，渲染器按缺失处理。
     """
     parts = [
@@ -624,7 +623,7 @@ def _completion_line(record: RequestRecord, provider_name: str) -> str:
     if record.account_uid:
         parts.append(f"acct={record.account_uid[:8]}…")
     if record.error_message:
-        # 值含空格要加引号（logger.py 文案规范）；换行会把一条日志拆成多行、
+        # 值含空格要加引号（日志文案规范）；换行会把一条日志拆成多行、
         # 内层引号会提前闭合，两者都先压平。
         flat = " ".join(str(record.error_message).split()).replace('"', "'")
         parts.append(f'err="{flat}"')

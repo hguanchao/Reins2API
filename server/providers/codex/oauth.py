@@ -1,6 +1,6 @@
 """Codex OAuth：PKCE 授权码流程（授权 URL / code 兑换 / token 刷新 / id_token 解析）。
 
-事实依据（取自参考实现 codex2api，见 docs/codex-provider-design.md §3.1）：
+端点与取值：
 授权 `{AUTH}/oauth/authorize`、兑换与刷新 `{AUTH}/oauth/token`；client_id 与
 redirect_uri 是 Codex CLI 内置的公开固定值。刷新走 grant_type=refresh_token，
 响应可能换发新 refresh_token（RT 轮换）——没换发时调用方应保留旧值。
@@ -46,7 +46,7 @@ class TokenData:
     expires_in: int = 0
 
     def expires_ms(self) -> int:
-        """绝对过期毫秒；expires_in 缺失/非正按 3600s 兜底（与参考实现一致）。"""
+        """绝对过期毫秒；expires_in 缺失/非正按 3600s 兜底。"""
         import time
 
         seconds = self.expires_in if self.expires_in > 0 else 3600
@@ -79,7 +79,7 @@ def new_state() -> str:
 
 
 def authorize_url(state: str, challenge: str, redirect_uri: str = CODEX_REDIRECT_URI) -> str:
-    """组装授权链接（参数全集见设计文档 §3.1）。"""
+    """组装授权链接（参数即下面列出的全集）。"""
     params = {
         "response_type": "code",
         "client_id": CODEX_CLIENT_ID,
@@ -99,7 +99,7 @@ class TokenRejected(RuntimeError):
 
     终局：这张 RT 已经死了（被别的持有者换走、过期或被撤销），重试与换代理都
     换不出票，只能人工重新授权/重新导出。判据只认错误体里的 code——CF/网页
-    拦截返回的 HTML 没有 code，那种归到"结果不确定"（见 RefreshUncertain）。
+    拦截返回的 HTML 没有 code，那种归到"结果不确定"（RefreshUncertain）。
     """
 
 
@@ -108,15 +108,20 @@ class RefreshUncertain(RuntimeError):
 
     请求可能已经到了上游并把 RT 轮换走（新票在这里就丢了），也可能压根没发出去。
     两种都不该据此判死账号：留给下一次刷新去试，真死了会拿到 invalid_grant
-    收敛到 TokenRejected。取舍对照 codex2api 的 ErrCodexRefreshUncertain。
+    收敛到 TokenRejected。
     """
 
 
-# 上游明说"这组凭证不行"的错误码（白名单对照 codex2api 的 isNonRetryable）
+# 上游明说"这组凭证不行"的错误码白名单。
+# invalid_refresh_token 是 2026-10-17 的新案例：auth.openai.com 对死 RT 报的是
+# HTTP 401 + `{"error":{"code":"invalid_refresh_token"}}`（导入的 RT 被源系统
+# 轮换后的标准回答）——缺席会把它误判成"结果不确定"，巡检从此每 2 分钟白打一次
+# 上游永不收敛（当日实测 23ed3e3e 就是这样转了一下午）。
 _REJECTED_CODES = frozenset({
     "invalid_grant", "invalid_client", "unauthorized_client", "access_denied",
     "refresh_token_reused", "refresh_token_invalidated", "refresh_token_expired",
     "refresh_token_revoked", "token_invalidated",
+    "invalid_refresh_token",
 })
 
 
@@ -217,21 +222,21 @@ def exchange_code(code: str, verifier: str, redirect_uri: str = CODEX_REDIRECT_U
 def refresh(refresh_token: str, refresh_reason: str = "proactive_expiry") -> TokenData:
     """RT 换 AT（grant_type=refresh_token）。
 
-    refresh_reason 对齐官方 codex-rs 的 client.rs：`refresh_reason` 作为独立表单
-    字段随 grant 发出，值域 proactive_expiry / scheduled / unauthorized_recovery /
-    forced（我们今天的全部触发线都是"临期主动刷"，恒用 proactive_expiry；
-    scheduled 是官方 8 天保活的维护线程语义，网关没有这条线程）。
+    refresh_reason 与官方客户端一致：`refresh_reason` 作为独立表单字段随 grant
+    发出，值域 proactive_expiry / scheduled / unauthorized_recovery / forced
+    （当前全部触发线都是"临期主动刷"，恒用 proactive_expiry；scheduled 是官方
+    8 天保活的维护线程语义，网关没有这条线程）。
 
     失败抛 TokenRejected（这张票已死，终局）或 RefreshUncertain（交换可能已经
-    发生但结果没拿到）——两者的后续处置完全不同，见 _post_token。
+    发生但结果没拿到）——两者的后续处置完全不同，由 _post_token 按判据分抛。
     """
     return _post_token({
         "grant_type": "refresh_token",
         "client_id": CODEX_CLIENT_ID,
         "refresh_token": refresh_token,
         "scope": CODEX_REFRESH_SCOPES,
-        # 字段名与值域照抄官方（client.rs `refresh`）：多余在于伪装精确度，
-        # 缺失不会 400——但上游风控 SQL 里它就是官方客户端与非官方流量的分水岭。
+        # 字段名与值域与官方客户端完全一致：多余在于伪装精确度，
+        # 缺失不会 400——但上游风控里它就是官方客户端与非官方流量的分水岭。
         "refresh_reason": refresh_reason,
     })
 
