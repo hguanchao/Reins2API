@@ -22,6 +22,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -31,8 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api import server as api
 from core import config as app_config
+from db import RequestRecord, init_stores, store
 from db import _stores as _db_stores
-from db import init_stores
 from gateway.base import registry
 
 # ── 各管理端点里用到的口径常量（断言用绝对数字，防止"改成 0 也过"） ──
@@ -370,6 +371,48 @@ def test_provider_common_surface(stub: str = "workbuddy") -> None:
 
         # 非法 range 回落 7d（不 400：只读端点宁可给默认值）
         status, body = client.call("GET", f"/api/{stub}/usage?range=999y")
+        assert status == 200 and _ok(body)["range"] == "7d", (status, body)
+
+
+def test_workbuddy_credits_burn_surface() -> None:
+    """积分消耗端点：窗口消耗来自 requests 的 credit 列，续航来自账号的余额观测。
+
+    重点是**同源**：写进遥测库的 credit 决定合计与日均，账号桩给余额，两者在响应里
+    对得上；观测不到计费的请求单独计数、不混进消耗（前端据此显示"未观测"）。
+    """
+    server = _Server("workbuddy")
+    with server as client:
+        now = int(time.time() * 1000)
+        server.providers["workbuddy"].accounts = [
+            {"uid": "u_1", "status": "active", "label": "主力", "credits_remain": 10.0},
+        ]
+        provider_store = store("workbuddy")
+        provider_store.log_request(RequestRecord(
+            id="m1", account_uid="u_1", model="cn:glm-5.2", credit=2.0, is_routed=True,
+            http_status=200, created_ms=now - 3_600_000, input_tokens=100, output_tokens=50,
+        ))
+        provider_store.log_request(RequestRecord(
+            id="m2", account_uid="u_1", model="cn:glm-5.2", credit=0.0, is_routed=True,
+            http_status=200, created_ms=now - 1_800_000,
+        ))
+        provider_store.log_request(RequestRecord(
+            id="m3", account_uid="u_1", model="cn:glm-5.2", credit=None, is_routed=True,
+            http_status=200, created_ms=now - 900_000,
+        ))
+
+        status, body = client.call("GET", "/api/workbuddy/credits/burn?range=7d")
+        data = _ok(body)
+        assert status == 200 and data["range"] == "7d", (status, body)
+        assert data["totals"]["credits"] == 2.0, data["totals"]
+        assert data["totals"]["free_requests"] == 1, data["totals"]
+        assert data["totals"]["unknown_requests"] == 1, data["totals"]
+        row = next(item for item in data["accounts"] if item["uid"] == "u_1")
+        assert row["label"] == "主力" and row["remain"] == 10.0, row
+        assert row["eta_days"] == round(10.0 / row["per_day"], 1), row
+        assert row["unknown_requests"] == 1, row
+
+        # 非法 range 回落 7d（与 usage 同一条"只读端点给默认值"的规矩）
+        status, body = client.call("GET", "/api/workbuddy/credits/burn?range=999y")
         assert status == 200 and _ok(body)["range"] == "7d", (status, body)
 
 

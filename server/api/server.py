@@ -35,6 +35,7 @@ from core.logger import logger
 from core.respond import CORS_HEADERS, CORS_METHODS, CORS_ORIGIN, error_json, send_json
 from core.settings import WEB_DIST_DIR
 from db import store
+from db.credits import summarize_burn
 from db.usage import is_range, summarize, window_start_ms
 from gateway import inference
 from gateway.base import registry
@@ -469,6 +470,18 @@ def _handle_workbuddy_api(
 
     if method == "GET" and action == "state" and len(parts) == 4:
         _reply_state(handler, provider)
+        return True
+
+    if method == "GET" and action == "credits" and len(parts) == 5 and parts[4] == "burn":
+        # 积分消耗（请求口径）：按 usage.credit 逐请求累计，配账号当前余额观测算续航。
+        # 与用量图读同一份窗口数据（同源不漂移）；聚合是纯函数，住在 db/credits.py。
+        range_key = str((query.get("range") or ["7d"])[0] or "7d")
+        if not is_range(range_key):
+            range_key = "7d"
+        now = int(time.time() * 1000)
+        rows = store("workbuddy").window_rows(window_start_ms(range_key, now))
+        data = summarize_burn(rows, provider.account_summaries(), range_key, now)
+        send_json(handler, 200, {"ok": True, "data": data})
         return True
 
     if method == "POST" and action == "login" and len(parts) == 5 and parts[4] == "start":

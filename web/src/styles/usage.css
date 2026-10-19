@@ -249,3 +249,117 @@
   box-shadow: 0 0 0 3px var(--ring);
   border-radius: 4px;
 }
+
+/* ── 积分消耗与续航（WorkBuddy 号池面板） ──────────────────────
+   四格 KPI + 一列时间桶柱（CSS 柱，不引图表库：条子的高度语义直接、悬停用原生
+   title）+ 账号消耗表 + 后端给的口径说明。柱形沿用账号行"最近请求"那排柱子的
+   视觉语言（细条 + 主色），全站只有这一处画"钱"，不与 token 图的面积抢辨识度。 */
+
+.credit-burn {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.credit-burn-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 18px;
+}
+
+.credit-burn-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.credit-burn-kpi-label {
+  color: var(--fg-subtle);
+  font-size: var(--fs-xs);
+}
+.credit-burn-kpi-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+.credit-burn-kpi-value.is-warn {
+  color: var(--warn);
+}
+.credit-burn-kpi-sub {
+  color: var(--fg-subtle);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 时间桶柱：等宽槽位、条子贴底。零消耗的桶留空槽（对齐时间轴，不画假高度）。 */
+.credit-burn-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 120px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.credit-burn-slot {
+  flex: 1 1 0;
+  min-width: 2px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  cursor: default;
+}
+.credit-burn-slot > i {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  border-radius: 2px 2px 0 0;
+  background: var(--border-strong);
+}
+.credit-burn-slot > i.is-on {
+  background: var(--signal);
+  opacity: 0.85;
+}
+.credit-burn-slot:hover > i.is-on {
+  opacity: 1;
+}
+
+.credit-burn-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -8px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-2xs);
+}
+
+.credit-burn-table {
+  overflow-x: auto;
+}
+.credit-burn-name {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.credit-burn-missing {
+  color: var(--fg-subtle);
+  cursor: default;
+}
+.credit-burn-table .is-warn,
+.credit-burn-kpi-value.is-warn {
+  color: var(--warn);
+}
+.credit-burn-table .is-bad {
+  color: var(--destructive);
+}
+
+.credit-burn-note {
+  margin: 0;
+  color: var(--fg-subtle);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}

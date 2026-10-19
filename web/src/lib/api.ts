@@ -139,6 +139,9 @@ export interface RequestRow {
   output_tokens: number;
   reasoning_tokens: number;
   cached_tokens: number;
+  /** 上游计费量（积分；workbuddy 的 usage.credit）。null = 未观测（旧记录/上游未下发），
+   *  0 = 实测免费——两者不是一回事，别把 null 当 0 用 */
+  credit: number | null;
   client_ip: string;
   /** 出口 IP：上游看到的地址（后端探测缓存回填；空 = 该请求落库时还没探到） */
   egress_ip: string;
@@ -461,6 +464,80 @@ export function fetchWorkBuddyAccounts(): Promise<WorkBuddyAccount[]> {
   return fetchPoolAccounts<WorkBuddyAccount>("workbuddy");
 }
 
+// ─── 积分消耗与续航（WorkBuddy；请求口径 + 余额观测现算） ──────
+
+/** 消耗图的一个时间桶：积分消耗 + 请求数（免费观测单独计数，别把它当"没花钱"忽略）。 */
+export interface CreditsBurnPoint {
+  at: number;
+  label: string;
+  credits: number;
+  requests: number;
+  free_requests: number;
+}
+
+/** 一个账号的消耗行；续航在无消耗或无余额观测时为 null（界面给原因，不给瞎猜的数）。 */
+export interface CreditsBurnAccount {
+  uid: string;
+  label: string;
+  realm: string;
+  status: string;
+  /** 窗口内观测到的消耗合计（只有上游下发了计费字段的请求才计入） */
+  credits: number;
+  requests: number;
+  /** 到达上游但没有计费观测的请求数（旧记录/上游未下发）——单独披露，不混进消耗 */
+  unknown_requests: number;
+  per_day: number;
+  remain: number | null;
+  remain_observed_ms: number;
+  expiring: number;
+  expiring_at_ms: number;
+  last_at_ms: number;
+  /** 预计可用天数（余额 ÷ 窗口日均消耗）；null = 无消耗或余额未观测 */
+  eta_days: number | null;
+}
+
+export interface CreditsBurnModel {
+  model: string;
+  credits: number;
+  requests: number;
+  unknown_requests: number;
+  tokens: number;
+  /** 实测单价（每千 token）；没有观测到消耗时为 null */
+  credits_per_1k: number | null;
+}
+
+/** 积分消耗报告（GET /api/workbuddy/credits/burn）。 */
+export interface CreditsBurnReport {
+  range: UsageRange;
+  bucket: string;
+  window_ms: number;
+  totals: {
+    credits: number;
+    requests: number;
+    observed_requests: number;
+    unknown_requests: number;
+    free_requests: number;
+    unrouted: number;
+    per_day: number;
+  };
+  pool: {
+    remain: number | null;
+    known_accounts: number;
+    unknown_accounts: number;
+    per_day: number;
+    eta_days: number | null;
+  };
+  series: CreditsBurnPoint[];
+  by_model: CreditsBurnModel[];
+  accounts: CreditsBurnAccount[];
+  /** note 是给界面直接展示的口径说明（消耗从哪来、续航怎么算、为什么会偏乐观） */
+  meta: { elapsed_days: number; now_ms: number; note: string };
+}
+
+export function fetchWorkBuddyCreditsBurn(range: UsageRange): Promise<CreditsBurnReport> {
+  return request<CreditsBurnReport>(`/api/workbuddy/credits/burn?range=${range}`);
+}
+
 export function deleteWorkBuddyAccount(uid: string): Promise<{ deleted: string }> {
   return deletePoolAccount("workbuddy", uid);
 }
@@ -716,6 +793,23 @@ export interface CodexAccount extends AccountTelemetry {
     capacity_high?: number;
     remaining_tokens?: number;
   };
+  /**
+   * 撑到重置投影：按窗口内实测的百分比爬升速率，推算当前用量能否撑到窗口重置。
+   * pending = 还出不了速率（基线未建立 / 观测时长或跨度不够），界面显示「观察中」。
+   * 精度是整数百分比的硬限制（见后端 providers/codex/quota.py），只当粗判。
+   */
+  quota_projection?: {
+    pending: boolean;
+    /** pending 的原因：baseline（还没建基线）/ samples（样本不足） */
+    reason?: "baseline" | "samples";
+    rate_pct_per_h?: number;
+    hours_left?: number;
+    hours_to_reset?: number;
+    /** 能否撑到重置（hours_left ≥ hours_to_reset） */
+    suffices?: boolean;
+    span_percent?: number;
+    elapsed_h?: number;
+  } | null;
 }
 
 export function fetchCodexOps(): Promise<CodexOps> {

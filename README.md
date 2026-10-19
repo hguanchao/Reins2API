@@ -9,7 +9,7 @@
 - **分库遥测**:每个上游一个 SQLite 文件(`server/data/opencode.db`、`server/data/workbuddy.db`、`server/data/codex.db`),用量与请求日志同源;另有 `server/data/models.json` 保存各上游模型目录快照——三家**统一核心字段**(`id`/`name`/`description`/`context_window`/`max_output_tokens`/`input_modalities`/`output_modalities`/`supports_images`/`supports_reasoning`/`supports_tool_call`/`reasoning_efforts`/`default_effort`/`protocol`/`free`/`extras`,上游没声明的字段省略),形状 `{"opencode":[],"workbuddy":{"cn":[],"glb":[]},"codex":[],"meta":{"<provider>":{"updated_at_ms":…}}}`,每次刷新覆盖对应键,供排查/对照。**模型目录只在页面点「获取模型」时刷新**(`POST /api/{provider}/refresh`),启动只读这份快照(缓存为空才兜底拉一次);内容有变才写盘,写前把现文件轮转成 `models.json.bak`
 - **WorkBuddy 号池**:多账号加权选号(快过期积分加权 + 成本分层 + Top-5 候选 + 防惊群)、冷却/熔断、会话粘性、token 自动刷新、OAuth 设备码登录、DSML 工具调用标记还原;四类定时任务(签到+连登管家 / 活跃上报 / 猫猫旅行 / token 保活)各有独立开关与时点(见 `docs/workbuddy-provider-design.md`)
 - **Codex 号池**:ChatGPT 账号 OAuth(PKCE 授权码)接入、多账号加权选号、冷却/熔断、会话粘性、refresh_token 轮换与自动刷新、模型目录按账号下发(见 `docs/codex-provider-design.md`)
-- **管理台**:OpenCode 状态页、WorkBuddy 号池页(含定时任务弹窗、暂停选号单列统计;账号表**积分列**在主行「剩余 / 总」下再给一行**快过期提示**——<7 天橙色、<1 天红色,数据全部来自本地库、打开页面不打上游;列里没有数字时给原因:查询失败 / 上游未返回资源包 / 尚未查过)、Codex 页、系统配置页
+- **管理台**:OpenCode 状态页、WorkBuddy 号池页(含定时任务弹窗、暂停选号单列统计;**积分消耗与续航**面板——窗口消耗/日均/全池预计可用天数 + 每账号一行,消耗按上游末帧 `usage.credit` 逐请求累计、余额取最近一次观测,上游没下发计费字段的请求只计数不计入;账号表**积分列**在主行「剩余 / 总」下再给一行**快过期提示**——<7 天橙色、<1 天红色,数据全部来自本地库、打开页面不打上游;列里没有数字时给原因:查询失败 / 上游未返回资源包 / 尚未查过)、Codex 页(额度列含**撑到重置投影**:按窗口内实测的百分比爬升速率推算能否顶到重置,样本不足显示「观察中」)、系统配置页
 - **插件轴**:`providers/` 按上游分包,后期加新上游 = 一个包 + 一行注册
 
 ## 接入
@@ -92,6 +92,7 @@ curl http://127.0.0.1:8787/v1/messages \
 | `GET /api/{provider}/ops` | 运维聚合快照(状态+目录+用量;opencode / workbuddy / codex 通用) |
 | `GET /api/{provider}/requests` | 遥测明细分页 |
 | `GET /api/{provider}/usage` | 用量聚合(`1h/24h/7d/30d`,含 by_account) |
+| `GET /api/workbuddy/credits/burn` | 积分消耗与续航:窗口内按 `usage.credit` 逐请求累计的消耗 + 每账号日均与"预计可用天数"(余额观测 ÷ 日均消耗;观测不到计费的请求单独计数,不混进消耗) |
 | `GET/POST/DELETE /api/workbuddy/accounts[/{uid}]` | 账号列表 / 手动导入 / 删除 |
 | `POST /api/workbuddy/accounts/{uid}/action` | pause / resume / disable / revive / refresh |
 | `POST /api/workbuddy/accounts/{uid}/checkin` | 立即签到(force 绕过本地台账,上游幂等兜底) |

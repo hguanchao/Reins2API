@@ -635,6 +635,8 @@ def _apply_usage(record: RequestRecord, usage: Usage) -> None:
     record.output_tokens = usage.output
     record.reasoning_tokens = usage.reasoning
     record.cached_tokens = usage.cached
+    # 上游计费量（积分；None = 上游没给该字段 = 未观测，不落成 0）
+    record.credit = usage.credit
 
 
 def _send_error(

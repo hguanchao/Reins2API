@@ -127,8 +127,30 @@ def test_record_persists_first_byte_ms():
             store.close()
 
 
-# ── 明细筛选与排序（必须落在 SQL 侧：日志是分页的，只筛当前页会给出假象）──
+def test_record_persists_credit_and_distinguishes_none_from_zero():
+    """积分计费量落库：NULL = 未观测、0 = 实测免费——两者必须能分开读回来。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ProviderStore("t", Path(tmp) / "t.db")
+        try:
+            store.log_request(RequestRecord(
+                id="charged", created_ms=1_700_000_000_000, credit=1.25, http_status=200,
+            ))
+            store.log_request(RequestRecord(
+                id="free", created_ms=1_700_000_001_000, credit=0.0, http_status=200,
+            ))
+            store.log_request(RequestRecord(
+                id="unknown", created_ms=1_700_000_002_000, http_status=200,
+            ))
+            _, rows = store.recent(limit=10)
+            by_id = {r["request_id"]: r for r in rows}
+            assert by_id["charged"]["credit"] == 1.25
+            assert by_id["free"]["credit"] == 0.0
+            assert by_id["unknown"]["credit"] is None
+        finally:
+            store.close()
 
+
+# ── 明细筛选与排序（必须落在 SQL 侧：日志是分页的，只筛当前页会给出假象）──
 
 def test_recent_filters_status_model_and_account():
     with tempfile.TemporaryDirectory() as tmp:
@@ -259,6 +281,35 @@ def test_migration_adds_first_byte_ms_to_legacy_db():
             store.log_request(RequestRecord(id="new", created_ms=2, first_byte_ms=50))
             _, rows = store.recent(limit=1)
             assert rows[0]["first_byte_ms"] == 50
+        finally:
+            store.close()
+
+
+def test_migration_adds_credit_to_legacy_db():
+    """老库补 credit 列：旧行一律 NULL（未观测），不能用 0 冒充"免费"。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "legacy-credit.db"
+        legacy_ddl = "\n".join(
+            line for line in schema.DDL.splitlines() if "credit" not in line
+        )
+        assert "credit" not in legacy_ddl
+        conn = sqlite3.connect(str(path))
+        conn.executescript(legacy_ddl)
+        conn.execute(
+            "INSERT INTO requests (created_ms, created_at, http_status) VALUES (1, 'x', 200)"
+        )
+        conn.commit()
+        conn.close()
+
+        store = ProviderStore("legacy-credit", path)
+        try:
+            cols = {r[1] for r in store._conn.execute("PRAGMA table_info(requests)")}
+            assert "credit" in cols
+            _, rows = store.recent(limit=1)
+            assert rows[0]["credit"] is None  # 升级前的行没有观测，不是 0
+            store.log_request(RequestRecord(id="new", created_ms=2, credit=2.5))
+            _, rows = store.recent(limit=1)
+            assert rows[0]["credit"] == 2.5
         finally:
             store.close()
 

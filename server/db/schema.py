@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS requests (
     output_tokens      INTEGER      NOT NULL DEFAULT 0,
     reasoning_tokens   INTEGER      NOT NULL DEFAULT 0,
     cached_tokens      INTEGER      NOT NULL DEFAULT 0,
+    -- 上游计费量（积分；workbuddy 的 usage.credit）。NULL = 未观测（上游没给该字段
+    -- 或跨协议时无此概念），0 = 实测免费（限免期/夜间免费）——两者必须分开。
+    credit             REAL,
     -- 来源
     client_ip          VARCHAR(45)  NOT NULL DEFAULT '',
     egress_ip          VARCHAR(45)  NOT NULL DEFAULT '',  -- 出口 IP：上游看到的地址（探测缓存回填；空 = 当时还没探到）
@@ -85,4 +88,6 @@ ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("account_uid", "TEXT NOT NULL DEFAULT ''"),
     # 首字耗时晚于以上各列加入；老库整列缺失，默认 0 = 无数据（前端显示「—」）
     ("first_byte_ms", "INTEGER NOT NULL DEFAULT 0"),
+    # 上游计费量（积分）：可空，老库补出来的行一律 NULL（未观测），不拿 0 冒充免费
+    ("credit", "REAL"),
 )

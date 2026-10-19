@@ -71,6 +71,26 @@ def is_ok(row: dict[str, Any]) -> bool:
     return 200 <= status < 300
 
 
+def bucket_plan(range_key: str, now_ms: int) -> tuple[str, int, int, int]:
+    """该 range 的 (bucket, bucket_ms, start, count)。
+
+    同类图表（积分消耗）复用它取同一套时间桶与窗口起点——各算一套迟早会对不上，
+    界面上就会出现"token 图与积分图小时对不齐"这种查不出原因的错位。
+    两种窗口形态都支持：居中的 UI 四档与旧的滚动窗口（1h/24h）。
+    """
+    if range_key in _CENTERED:
+        return _centered_window(range_key, now_ms)
+    window_ms, bucket_ms, bucket = _SPECS[range_key]
+    bucket_count = max(round(window_ms / bucket_ms), 1)
+    start = _align_bucket(now_ms, bucket_ms) - (bucket_count - 1) * bucket_ms
+    return bucket, bucket_ms, start, bucket_count
+
+
+def bucket_label(at_ms: int, bucket: str, bucket_ms: int) -> str:
+    """桶标签（与 usage 图表同源；标签口径只此一处）。"""
+    return _format_label(at_ms, bucket, bucket_ms)
+
+
 def summarize(rows: list[dict[str, Any]], range_key: str, now_ms: int | None = None) -> dict[str, Any]:
     now = now_ms if now_ms is not None else int(datetime.now().timestamp() * 1000)
     if range_key in _CENTERED:

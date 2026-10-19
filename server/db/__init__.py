@@ -103,6 +103,8 @@ class RequestRecord:
     output_tokens: int = 0
     reasoning_tokens: int = 0
     cached_tokens: int = 0
+    # 上游计费量（积分；见 schema.py 的同名列注释）：None = 未观测、0 = 实测免费
+    credit: float | None = None
     # 来源
     client_ip: str = ""            # 发起端 IP（优先 X-Forwarded-For/X-Real-IP）
     egress_ip: str = ""            # 出口 IP：上游看到的地址（探测缓存回填；空 = 当时还没探到）

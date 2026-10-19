@@ -123,12 +123,20 @@ function expiresIn(ms: number): string {
  * 不再有 head 行：那一行只有一个数字，白白把这一格撑成三行，明细并进 foot 一行说完。
  * 两条窗口各画一根条会让这一列变成全行最重的部分，所以副窗口只给数字。
  */
+/** 小时数的短文案：不足一天给小时（一位小数），超过给天。 */
+function fmtHours(hours: number): string {
+  if (!Number.isFinite(hours)) return "—";
+  return hours < 24 ? `${hours.toFixed(1)}h` : `${(hours / 24).toFixed(1)}天`;
+}
+
 function QuotaCell({
   rateLimit,
   estimate,
+  projection,
 }: {
   rateLimit?: CodexAccount["rate_limit"];
   estimate?: CodexAccount["quota_estimate"];
+  projection?: CodexAccount["quota_projection"];
 }) {
   const primary = rateLimit?.primary;
   const secondary = rateLimit?.secondary;
@@ -168,6 +176,15 @@ function QuotaCell({
   // 百分比那句：百分比只是过程量，容量才是能用来判断的数；估值与百分比二选一，
   // 不并列（并列会出现两个都在说"还剩多少"的字段）。没数字时才退回百分比。
   const hasCapacity = estimate != null && !estimate.pending && estimate.capacity != null;
+  // 撑到重置投影：只在能出速率时说。pending 时**不**再堆第二个"观察中"——上面
+  // 「容量估算 观察中」已经把"还在攒样本"表达过了。速率是整数百分比的粗判，用"约"。
+  const projectionText =
+    projection && !projection.pending
+      && projection.hours_left != null && projection.hours_to_reset != null
+      ? projection.suffices
+        ? "按当前速率可撑到重置"
+        : `⚠ 按当前速率约 ${fmtHours(projection.hours_left)} 后触顶（重置还有 ${fmtHours(projection.hours_to_reset)}）`
+      : "";
   const detail = [
     primary
       ? hasCapacity
@@ -179,6 +196,7 @@ function QuotaCell({
         : `${windowLabel(primary.window_minutes)} ${exhausted ? "已用尽" : `剩余 ${remaining.toFixed(0)}%`}`
       : "",
     resetIn(primary?.reset_at_ms),
+    projectionText,
     secondaryText,
     // 还没有容量数字时明说在攒样本，别让这一列看着像少了个字段
     estimate?.pending ? "容量估算 观察中" : "",
@@ -365,7 +383,11 @@ export function CodexAccountList({
 
                     {/* 额度（上游响应头回填）*/}
                     <TableCell>
-                      <QuotaCell rateLimit={account.rate_limit} estimate={account.quota_estimate} />
+                      <QuotaCell
+                        rateLimit={account.rate_limit}
+                        estimate={account.quota_estimate}
+                        projection={account.quota_projection}
+                      />
                     </TableCell>
 
                     {/* 操作 */}

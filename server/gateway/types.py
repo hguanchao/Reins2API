@@ -111,6 +111,9 @@ class Usage:
     cached: int = 0
     cache_creation: int = 0
     reasoning: int = 0
+    # 上游计费量（积分；workbuddy 把本次真实扣费放在 usage.credit）。None = 未观测、
+    # 0 = 实测免费（限免期/夜间免费）——两者必须分开，把"没给"当"免费"会让消耗统计失真。
+    credit: float | None = None
 
 
 def new_usage() -> Usage:
@@ -160,4 +163,8 @@ def merge_bridge_usage(destination: Usage, source: Usage) -> None:
         destination.cache_creation = source.cache_creation
     if source.reasoning != 0:
         destination.reasoning = source.reasoning
+    # credit 用「最新非 None 覆盖」而不是 !=0 那套：0 是有效观测（实测免费），
+    # 与"上游没给这个字段"是两件事，只有 None 才该被跳过。
+    if source.credit is not None:
+        destination.credit = source.credit
     destination.total = max(destination.total, destination.input + destination.output)

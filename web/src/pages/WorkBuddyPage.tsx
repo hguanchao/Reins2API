@@ -13,6 +13,7 @@ import {
   Check,
   CircleUserRound,
   Clock,
+  Coins,
   Copy,
   Inbox,
   MoreHorizontal,
@@ -79,6 +80,7 @@ import {
   type WorkBuddyTaskKind,
 } from "@/lib/api";
 import { TokenUsageChart, UsageRangeSelect } from "@/components/charts/TokenUsageChart";
+import { CreditsBurnPanel } from "@/components/credits/CreditsBurnPanel";
 import { RequestsTable } from "@/components/requests/RequestsTable";
 import { RequestsFilters } from "@/components/requests/RequestsFilters";
 import { PoolKpiStrip } from "@/components/accounts/PoolKpiStrip";
@@ -508,6 +510,8 @@ export function WorkBuddyPage() {
   const [query, setQuery] = useState<RequestQuery>(REQUEST_QUERY_DEFAULT);
   /** 用量图表时间范围(今日/7天/14天/30天,默认 7 天) */
   const [usageRange, setUsageRange] = useState<UsageRange>("7d");
+  /** 积分消耗面板的时间范围（与用量图分开：看"钱"和看"量"的窗口常常不是同一个） */
+  const [burnRange, setBurnRange] = useState<UsageRange>("7d");
   /** 手动「获取模型」进行中 */
   /** 目录表点开的模型详情 */
   const [detail, setDetail] = useState<ModelInfo | null>(null);
@@ -1157,6 +1161,20 @@ export function WorkBuddyPage() {
         </section>
 
       </div>
+
+        {/* ── 积分消耗与续航（请求口径的消耗 + 余额观测现算，与 token 图各自独立取数） ── */}
+        <section className="gw-panel">
+          <div className="gw-panel-head">
+            <Coins className="size-3.5 ico-amber" strokeWidth={1.6} aria-hidden />
+            <h2 className="gw-panel-title">积分消耗与续航</h2>
+            <UsageRangeSelect value={burnRange} onChange={setBurnRange} className="ml-auto" />
+          </div>
+          <CreditsBurnPanel
+            range={burnRange}
+            labelFor={(uid) => accountLabels.get(uid)}
+            key={burnRange}
+          />
+        </section>
 
         {/* ── 最近请求 ── */}
         <section className="gw-panel">

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from gateway.jsonutil import first_non_zero, int_at, map_at
+from gateway.jsonutil import first_non_zero, int_at, map_at, number_at
 from gateway.types import PROTOCOL_ANTHROPIC, Usage, new_usage
 
 
@@ -39,6 +39,9 @@ def decode_openai_usage(usage: dict[str, Any]) -> Usage:
         cached=cached,
         cache_creation=cache_creation,
         reasoning=reasoning,
+        # 上游计费量（积分；workbuddy 的 usage.credit）。缺字段 = None（未观测），
+        # 不能落成 0——0 是"实测免费"这条正面证据（限免期/夜间免费）。
+        credit=number_at(usage, "credit"),
     )
 
 

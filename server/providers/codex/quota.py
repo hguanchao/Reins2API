@@ -19,12 +19,19 @@ token）。所以：
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 # 低于这个已服务量不出估算：整数百分比下，几万 token 的样本算出来的容量毫无意义
 MIN_SERVED_TOKENS = 200_000
 # 低于这个百分比跨度不出估算：Δ=1 的区间宽一倍，读数只会误导
 MIN_PERCENT_SPAN = 2.0
+
+# ── 「撑到重置」投影（project_to_reset）的两个门槛 ──
+# 观测时长下限：刚进窗口几分钟的样本外推到几小时，方向可能对、量级不可信
+MIN_PROJECT_HOURS = 0.25
+# 百分比跨度下限：整数百分比下 Δ<1 个点没有速率可言（0/0 或四舍五入噪声）
+MIN_PROJECT_SPAN = 1.0
 
 
 def sent_tokens(total: dict[str, Any] | None) -> int:
@@ -143,3 +150,68 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def project_to_reset(
+    rate_limit: dict[str, Any] | None, now_ms: int | None = None
+) -> dict[str, Any] | None:
+    """按窗口内**实测的百分比爬升速率**，推算能否撑到窗口重置。
+
+    速率的两端都在快照里：基线（窗口内最早一次观测的百分比与时刻，见 codex provider
+    的 _mark_window）与当前百分比——所以这条投影不需要任何历史表，是"零 schema 改动"
+    的那条路。
+
+    返回 None = 根本没有可用快照（或窗口已过、快照陈旧）；`{"pending": True, ...}` =
+    有快照但还出不了速率（基线未建立 / 观测时长或跨度不够），界面显示「观察中」而不是
+    拿瞎猜的数糊上去。出速率时的字段：rate_pct_per_h / hours_left / hours_to_reset /
+    suffices（能否撑到重置）。
+
+    精度限制与 estimate() 同源、且更强：百分比是整数，跨度只差 1 个点时速率差一倍
+    量级；同一账号在别处被使用会把速率推高、结论偏保守。所以这只是"够不够用"的
+    粗判，不拿它做"精确会在几点触顶"的承诺。
+    """
+    if not isinstance(rate_limit, dict):
+        return None
+    primary = rate_limit.get("primary")
+    if not isinstance(primary, dict):
+        return None
+    used = _number(primary.get("used_percent"))
+    if used is None:
+        return None
+    reset_at = _number(primary.get("reset_at_ms")) or _number(reset_at_ms(rate_limit))
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    if not reset_at or reset_at <= now:
+        return None  # 窗口已过（快照陈旧）：说不清，等下一次刷新再说
+    hours_to_reset = (reset_at - now) / 3_600_000.0
+    baseline = rate_limit.get("window")
+    if (
+        not isinstance(baseline, dict)
+        or baseline.get("reset_at_ms") != primary.get("reset_at_ms")
+    ):
+        # 基线缺失或属于上一个窗口（下一次观测会重立）：现在给不出速率
+        return {"pending": True, "reason": "baseline", "hours_to_reset": round(hours_to_reset, 2)}
+    base_percent = _number(baseline.get("used_percent"))
+    base_at = _number(baseline.get("at_ms"))
+    if base_percent is None or not base_at:
+        return {"pending": True, "reason": "baseline", "hours_to_reset": round(hours_to_reset, 2)}
+    elapsed_h = (now - int(base_at)) / 3_600_000.0
+    span = used - base_percent
+    if elapsed_h < MIN_PROJECT_HOURS or span < MIN_PROJECT_SPAN:
+        return {
+            "pending": True,
+            "reason": "samples",
+            "hours_to_reset": round(hours_to_reset, 2),
+            "elapsed_h": round(max(elapsed_h, 0.0), 2),
+            "span_percent": round(span, 1),
+        }
+    rate = span / elapsed_h
+    hours_left = max(0.0, 100.0 - used) / rate
+    return {
+        "pending": False,
+        "rate_pct_per_h": round(rate, 2),
+        "hours_left": round(hours_left, 1),
+        "hours_to_reset": round(hours_to_reset, 2),
+        "suffices": hours_left >= hours_to_reset,
+        "span_percent": round(span, 1),
+        "elapsed_h": round(elapsed_h, 2),
+    }

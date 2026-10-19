@@ -924,18 +924,19 @@ class CodexProvider(AccountRuntime):
     # ── 运维面（管理端点用）──
 
     def account_summaries(self) -> list[dict[str, Any]]:
-        """账号行 + 额度容量估算。
+        """账号行 + 额度容量估算 + 撑到重置投影。
 
-        估算按需算（纯函数、无副作用）：容量的输入是"窗口基线的累积 token"与"当前
-        累积 token"，两者都从 requests 库现取——比把推算结果写回
+        估算与投影都按需算（纯函数、无副作用）：容量的输入是"窗口基线的累积 token"
+        与"当前累积 token"，两者都从 requests 库现取——比把推算结果写回
         快照更省心，也不会出现"存下来的估算与实际用量脱节"。整表聚合一次，别在循环
-        里逐账号查库。
+        里逐账号查库。投影（能否撑到窗口重置）只读快照里的基线，不查库。
         """
         totals = self._account_totals()
         summaries = []
         for account in self._store.list_accounts():
             item = account.public_dict()
             item["quota_estimate"] = quota.estimate(account.rate_limit, totals.get(account.uid))
+            item["quota_projection"] = quota.project_to_reset(account.rate_limit)
             summaries.append(item)
         return summaries
 

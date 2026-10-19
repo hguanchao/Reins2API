@@ -108,6 +108,27 @@ def int_at(obj: Any, *path: str) -> int:
     return 0
 
 
+def number_at(obj: Any, *path: str) -> float | None:
+    """取数值；缺失/不可解析返回 None（bool 不算数）。
+
+    与 int_at 的区别是"没有"与"是 0"必须能分开——积分口径里 0 是有内容的观测
+    （实测免费），None 才是"上游没给这个字段"；混起来会让扣费统计失真。
+    """
+    value = any_at(obj, *path)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        try:
+            number = float(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return None if math.isnan(number) or math.isinf(number) else number
+
+
 def first_string(*values: str) -> str:
     for value in values:
         if (value or "").strip() != "":
