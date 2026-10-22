@@ -101,13 +101,19 @@ class _FirstChunkStamp:
 
 
 class UpstreamResponse:
-    """provider 拥有的上游 HTTP 响应的统一视图（内部持有 curl_cffi Response）。"""
+    """provider 拥有的上游 HTTP 响应的统一视图（内部持有 curl_cffi Response）。
 
-    def __init__(self, status: int, headers: dict[str, str], raw: Any, *, account: str = ""):
+    rejection 是 provider 对错误响应的可选归因（provider 自决其类型；gateway 只
+    把它当不透明值记进遥测/日志，不做解释）。错误体已被 provider 读掉时 raw 是
+    provider 自备的缓冲替身（实现 content/iter_content/header/close 即可）。
+    """
+
+    def __init__(self, status: int, headers: dict[str, str], raw: Any, *, account: str = "", rejection: Any = None):
         self.status = status
         self.headers = headers
         self._raw = raw
         self.account = account  # 服务本响应的账号 uid（provider 填写；遥测分账用）
+        self.rejection = rejection
 
     def stamp_first_chunk(self, stamp: Callable[[], None]) -> None:
         """给 raw 包一层：首个非空块到达时回调一次 stamp()（用于首字耗时打点）。

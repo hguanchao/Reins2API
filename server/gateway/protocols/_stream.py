@@ -188,6 +188,15 @@ class StreamEmitterBase:
         """
         return any(self.tools[key].started for key in self.order)
 
+    def said_anything(self) -> bool:
+        """这条流到目前为止是否说过任何实质内容（文本/思考/工具）。
+
+        空回复判定用它：收尾时一个字、一块工具都没有的"完成"不是完成。
+        """
+        return bool(
+            self.text != "" or self.reasoning != "" or self.reasoning_encrypted != ""
+        ) or self._any_tool_started()
+
     def _emit_text(self, delta: str) -> None:
         self._before_text()
         self._text_frame(delta)

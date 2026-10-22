@@ -120,6 +120,17 @@ def new_usage() -> Usage:
     return Usage()
 
 
+def counted_nothing(usage: Usage) -> bool:
+    """这次用量是否一个 token 都没计。
+
+    "计了费"是上游真的处理过内容的旁证：Anthropic 的 message_start 计 prompt，
+    Responses 的 response.completed 计全部——这类协议的一条回复若什么都没说、
+    也一个 token 都没计，就不是一条回复（对照 magpie 的 uncounted）。chat 协议
+    的 usage 只在尾部给一次，缺它不算数，所以这里只看观测值是否全零。
+    """
+    return usage.input + usage.output + usage.cached + usage.cache_creation == 0
+
+
 @dataclass
 class BridgeResponse:
     id: str = ""

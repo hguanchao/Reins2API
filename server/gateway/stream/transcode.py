@@ -10,7 +10,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from gateway.protocols import stream_emitter, stream_parser
+from gateway.stream.empty import assert_not_empty
 from gateway.stream.errors import (
+    EmptyReply,
     SseUnexpectedEof,
     StreamTerminated,
     UpstreamStreamFailure,
@@ -60,6 +62,11 @@ def transcode_stream(
                 state["termination"] = "normal"
             elif event.kind == "error":
                 state["termination"] = "error"
+            if event.kind == "finish":
+                # 终止承诺到了、内容还没发（emitter 攒着等 done 才收尾）：
+                # 空回复判定在这里做——等 done 之后再判就晚了，done 的处理
+                # 会立刻 raise StreamTerminated 停读上游。
+                assert_not_empty(emitter.said_anything(), emitter.stop, emitter.usage)
             emitter.emit(event)
             if event.kind == "done":
                 # 终止事件已写出：停读上游，把 done 后面的噪声挡掉。
@@ -73,6 +80,13 @@ def transcode_stream(
     if read_error is not None:
         if isinstance(read_error, StreamTerminated):
             return StreamOutcome(usage=emitter.usage)
+        if isinstance(read_error, EmptyReply):
+            # 空回复：终止事件还没写出（判定发生在 finish 处理前），
+            # 用客户端协议补一条错误帧再收尾。
+            emit_error = emit_unexpected_stream_error(emitter, read_error)
+            return StreamOutcome(
+                usage=emitter.usage, error=emit_error if emit_error is not None else read_error
+            )
         if client_canceled(read_error):
             # 客户端已断连：不再往死连接上补任何事件，把这个异常带回去。
             return StreamOutcome(usage=emitter.usage, error=read_error)

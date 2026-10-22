@@ -1,4 +1,4 @@
-# 观察透传流以收集 usage，同时不改动客户端收到的字节：按完整帧采样 usage，
+# 观察透传流以收集 usage 与内容摘要，同时不改动客户端收到的字节：按完整帧采样，
 # 客户端拿到的字节一个都不动。
 
 from __future__ import annotations
@@ -15,6 +15,10 @@ class StreamUsageObserver:
         self._normal = False
         self._error = False
         self._parse_err: Exception | None = None
+        # 空回复判定的材料：说过什么、以什么停止原因收尾。都只从事件读，
+        # 不参与转发。
+        self._said = False
+        self._stop = ""
         # 帧处理器跑在 splitter 的回调里：解析失败只记第一次，之后静默跳过。
         self._splitter = SseFrameSplitter(self._on_frame)
 
@@ -30,6 +34,11 @@ class StreamUsageObserver:
                 self._normal = True
             elif event.kind == "error":
                 self._error = True
+            elif event.kind == "finish":
+                self._stop = event.stop or ""
+            elif event.kind in ("text", "reasoning", "tool_start", "tool_delta"):
+                if (event.text or "") != "" or (event.encrypted or "") != "":
+                    self._said = True
             if event.usage is not None:
                 merge_bridge_usage(self._usage, event.usage)
 
@@ -50,3 +59,9 @@ class StreamUsageObserver:
 
     def parse_error(self) -> Exception | None:
         return self._parse_err
+
+    def said_anything(self) -> bool:
+        return self._said
+
+    def stop(self) -> str:
+        return self._stop

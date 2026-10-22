@@ -10,7 +10,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from gateway.protocols import stream_emitter
+from gateway.stream.empty import assert_not_empty
 from gateway.stream.errors import (
+    EmptyReply,
     SseUnexpectedEof,
     UpstreamStreamFailure,
     client_canceled,
@@ -55,6 +57,12 @@ def forward_stream(
             error=copy_error if copy_error is not None else UpstreamStreamFailure(),
         )
     if observer.normal_termination() and observer.parse_error() is None:
+        # 空回复守卫：字节已原样交给客户端（撤销不了），但判定照做——outcome.error
+        # 非空让推理层知道这条流可疑（记日志 + 完成行留痕），而不是装作一切正常。
+        try:
+            assert_not_empty(observer.said_anything(), observer.stop(), usage)
+        except EmptyReply as error:
+            return StreamOutcome(usage=usage, error=error)
         return StreamOutcome(usage=usage, error=copy_error)
     if client_canceled(copy_error):
         # 客户端已断连：绝不往死连接上补写错误事件。

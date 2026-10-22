@@ -35,6 +35,7 @@ from gateway.base import (
     registry,
 )
 from gateway.bridge import convert_response, prepare_request, response_usage
+from gateway.bridge.format import body_format, format_instruction
 from gateway.errors import BridgeError, error_payload
 from gateway.jsonutil import encode_json_body, string_at
 from gateway.stream import (
@@ -43,6 +44,7 @@ from gateway.stream import (
     forward_stream,
     transcode_stream,
 )
+from gateway.stream.keepalive import KeepalivePump
 from gateway.stream.errors import UpstreamHttpError
 from gateway.stream.retry import StreamStats, retrying_chunks
 from gateway.types import (
@@ -190,6 +192,9 @@ def _serve_inner(
         _send_error(handler, external, 400, "request body must be a JSON object",
                     "invalid_request_error")
         return 400
+    # 客户端是否要结构化输出：响应侧剥 markdown 围栏的判据（只有跨协议回译
+    # 用得上；同协议透传不经过转换，天然不受影响）。
+    wants_json = format_instruction(body_format(external, body)) is not None
 
     headers = _lower_headers(handler)
     # 前缀路由：workbuddy/xxx → workbuddy provider；裸名 → default。
@@ -369,7 +374,8 @@ def _buffered_response(
             send_json(handler, result.status, collapsed, extra_headers=extra)
             return result.status
         try:
-            payload = convert_response(route.protocol, external, collapsed)
+            payload = convert_response(route.protocol, external, collapsed,
+                                       wants_json=wants_json)
         except BridgeError as exc:
             record.error_message = str(exc)[:255]
             logger.warning(f"[推理] request={record.id} 响应转换失败: {record.error_message}")
@@ -393,7 +399,8 @@ def _buffered_response(
                    "application/json; charset=utf-8", extra_headers=extra)
         return result.status
     try:
-        converted = convert_response(route.protocol, external, payload)
+        converted = convert_response(route.protocol, external, payload,
+                                     wants_json=wants_json)
     except BridgeError as exc:
         record.error_message = str(exc)[:255]
         logger.warning(f"[推理] request={record.id} 响应转换失败: {record.error_message}")
@@ -408,16 +415,23 @@ def _buffered_response(
 
 
 class _HandlerSink:
-    """下游 SSE 写出口：每个事件写完即 flush，不攒批。written 供掐流遥测用。"""
+    """下游 SSE 写出口：每个事件写完即 flush，不攒批。written 供掐流遥测用。
+
+    last_write_at 是 keepalive 线程的下游静默时钟（monotonic）；write 与
+    keepalive 线程分属两条线程，但 float 赋值在 CPython 下是原子的，这里
+    不加锁（理由见 gateway/stream/keepalive.py 头注）。
+    """
 
     def __init__(self, handler: BaseHTTPRequestHandler):
         self._handler = handler
         self.written = 0
+        self.last_write_at = time.monotonic()
 
     def write(self, chunk: bytes) -> None:
         self._handler.wfile.write(chunk)
         self._handler.wfile.flush()
         self.written += len(chunk)
+        self.last_write_at = time.monotonic()
 
     def flush(self) -> None:
         self._handler.wfile.flush()
@@ -469,6 +483,9 @@ def _pump_stream(
     """
     sink: _HandlerSink = _HandlerSink(handler)
     stats = StreamStats()
+    # 下游 keepalive：思考型模型长时间不出可见事件时，防客户端/中间层的读空闲
+    # 超时掐连接。线程随转发结束（含异常路径）一并收停。
+    pump = KeepalivePump(sink, stats)
 
     def _on_retry(attempt: int, cause: Exception | None) -> None:
         detail = f": {cause}" if cause is not None else "(上游未产出任何字节)"
@@ -485,6 +502,7 @@ def _pump_stream(
         stats=stats,
         on_retry=_on_retry,
     )
+    pump.start()
     try:
         if external == route.protocol:
             outcome = forward_stream(sink, chunks, route.protocol, record.model)
@@ -499,6 +517,9 @@ def _pump_stream(
         record.error_message = str(exc)[:255]
         logger.warning(f"[推理] request={record.id} 下游流异常: {type(exc).__name__}: {exc}")
         return status
+    finally:
+        # 转发结束（含异常/断连路径）都收停 keepalive 线程，别让它挂在死 sink 上。
+        pump.stop()
 
     _apply_usage(record, outcome.usage)
     # 掐流/重发日志的 key=value 尾巴：停止在哪、静默多久、重发过几次都留痕
@@ -526,6 +547,39 @@ def _pump_stream(
 # ── 上游错误透传 ─────────────────────────────────────────────────
 
 
+# 上游"模型存在但不在这个 API 上服务"的错误短语（对照 magpie wrongEndpoint 的实战
+# 词表，上游原文都是英文，按小写子串匹配）。命中说明网关的模型→协议映射与上游现实
+# 不符：客户端看到的错误里附一句可读说明，并当场告警，别让一条光秃秃的 400 糊脸。
+_WRONG_ENDPOINT_PHRASES = (
+    "not a chat model",
+    "not supported in the v1/chat/completions",
+    "not supported in /v1/chat/completions",
+    "not supported in the v1/responses",
+    "not supported in /v1/responses",
+    "only supported in v1/responses",
+    "only supported in /v1/responses",
+    "use v1/completions",
+    "use /v1/completions",
+    "use v1/responses",
+    "use /v1/responses",
+    "use v1/chat/completions",
+    "use /v1/chat/completions",
+    "not accessible via the",
+    "unsupported_api_for_model",
+    "no model endpoints available given user constraints",
+    "is not supported for format",
+    "does not support this protocol",
+    "requires responses",
+)
+
+
+def _wrong_endpoint_note(upstream_protocol: str) -> str:
+    return (
+        f" (upstream says it does not serve this model on {protocol_path(upstream_protocol)};"
+        f" the gateway's protocol mapping for it may need attention)"
+    )
+
+
 def _copy_upstream_error(
     handler: BaseHTTPRequestHandler,
     external: str,
@@ -546,6 +600,16 @@ def _copy_upstream_error(
             f"[推理] request={record.id} opencode 免费档身份门拦截：会话编码非官方或"
             f"缺官方头。若官方编码的请求也开始这样报，说明上游校验策略变了，"
             f"identity 重编码层要复审"
+        )
+    lowered = message.lower()
+    if 400 <= result.status < 500 and any(
+        phrase in lowered for phrase in _WRONG_ENDPOINT_PHRASES
+    ):
+        note = _wrong_endpoint_note(record.upstream_protocol)
+        message += note
+        logger.warning(
+            f"[推理] request={record.id} 上游疑似不在此端点服务该模型 "
+            f"proto={record.upstream_protocol} model={record.upstream_model}: {message}"
         )
     record.error_message = message[:255]
     logger.warning(f"[推理] request={record.id} 上游返回错误 status={result.status}: {message}")

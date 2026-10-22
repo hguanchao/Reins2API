@@ -10,6 +10,7 @@
 #   transcode_stream   跨协议转码（parser → BridgeStreamEvent → emitter）
 #   collapse_stream    把整条上游流折叠成单个响应 dict（非流式回包用）
 #   client_canceled    客户端是否已断连
+#   EmptyReply         空回复判定抛出的异常（零内容 + 零 token + 非截断停止）
 # 四个异常类在 gateway.stream.errors：SseUnexpectedEof / StreamTerminated /
 # UpstreamStreamFailure / UpstreamHttpError。
 #
@@ -20,6 +21,7 @@
 from __future__ import annotations
 
 from gateway.stream.errors import (
+    EmptyReply,
     SseUnexpectedEof,
     StreamTerminated,
     UpstreamHttpError,
@@ -46,6 +48,7 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "EmptyReply",
     "SseUnexpectedEof",
     "StreamOutcome",
     "StreamSink",

@@ -12,6 +12,7 @@ from collections.abc import Iterable
 
 from gateway.jsonutil import first_non_empty
 from gateway.protocols import encode_bridge_response, stream_parser
+from gateway.stream.empty import assert_not_empty, response_said_anything
 from gateway.stream.errors import SseUnexpectedEof, StreamTerminated, UpstreamStreamFailure
 from gateway.stream.sse import read_sse
 from gateway.types import (
@@ -65,6 +66,11 @@ def collapse_stream(chunks: Iterable[bytes], protocol: str, model: str) -> dict:
         if stream_error is not None:
             raise stream_error
         raise SseUnexpectedEof()
+    # 空回复守卫：上游"正常结束"却零内容、零 token 计量、非截断/拦截停止——
+    # 这不是一条回复，交出去客户端会静默结束回合。
+    assert_not_empty(
+        response_said_anything(acc.response), acc.response.stop, acc.response.usage
+    )
     return encode_bridge_response(protocol, acc.response)
 
 

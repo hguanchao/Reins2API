@@ -906,6 +906,10 @@
         {
           "text": "dev",
           "type": "text"
+        },
+        {
+          "text": "Respond with a single JSON value and nothing else, matching this JSON schema:\n{\"type\": \"object\"}.",
+          "type": "text"
         }
       ],
       "temperature": 0.5,
@@ -1188,6 +1192,10 @@
       "system": [
         {
           "text": "sys",
+          "type": "text"
+        },
+        {
+          "text": "Respond with a single JSON value and nothing else, matching this JSON schema:\n{\"type\": \"object\"}.",
           "type": "text"
         }
       ],

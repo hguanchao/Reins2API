@@ -27,6 +27,15 @@ class UpstreamStreamFailure(Exception):
         super().__init__(message)
 
 
+class EmptyReply(Exception):
+    """上游"正常结束"但什么都没说：零内容 + 零 token 计量 + 非主动停止。
+
+    三条件全占的"完成"不是完成——严格客户端会静默结束回合且不重试（真实事故：
+    某代理给 Codex 的回合只带 stop、不带任何 token 与消息，客户端以为模型答完了
+    就不再问）。宁可在网关这里报 502/错误帧让客户端重试，也不把空回合当答案交出去。
+    """
+
+
 class SseUnexpectedEof(Exception):
     def __init__(self, message: str = "unexpected end of SSE stream") -> None:
         super().__init__(message)
