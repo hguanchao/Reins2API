@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from typing import Any
 
 from core.logger import logger
@@ -36,7 +37,8 @@ from net import outbound as crequests
 from net.proxy import proxies_for
 from providers import parts, profiles
 from providers.identity import opencode_project_id
-from providers.opencode import tools
+from providers.opencode import rejects, tools
+from providers.opencode.rejects import RejectionKind
 
 ZEN_BASE = "https://opencode.ai/zen"
 # 推理走自己的主机：无凭证的免费通道已从 /zen 迁到 /inference，密钥通道才留在
@@ -68,18 +70,26 @@ def build_upstream_headers(protocol: str, key: str, ids: RequestIDs) -> dict[str
     带父会话时官方同时发 x-opencode-parent-session-id 与 x-parent-session-id 两个
     名字（官方会话运行器的「uses parent cache affinity」用例即此形态），这里
     跟随官方形态；不带父会话时二者都不出现。
+
+    会话亲和绑**规范化后的父会话**而不是子会话（对照 opencode2api 2026-10-20 对
+    真实 2.x CLI 流量的抓包对齐，#c780e68/#f0f064f）：官方客户端的分叉会话把
+    x-session-affinity / x-opencode-session / X-Session-Id 三个亲和/会话头都钉在
+    规范化父会话上，只有 x-opencode-session-id 留子会话自己的值。2026-10-20 前后
+    上游按亲和头做 free-tier 记账与缓存亲和——子会话每轮新铸，钉子会话会打散
+    亲和；本网关的子会话在无父信号时与父会话同值（derive_request_ids 的信号同源），
+    所以"亲和 = 父 ?? 子"在两种情况下都退化到同一个稳定值。
     """
+    affinity = ids.parent_session if ids.parent_session != "" else ids.session
     headers: dict[str, str] = {
         "content-type": "application/json",
         "accept": "application/json, text/event-stream",
         "user-agent": USER_AGENT,
         "x-opencode-client": "cli",
+        # 会话 id 头留子会话；亲和三头钉父会话（见上注）。
         "x-opencode-session-id": ids.session,
-        "x-opencode-session": ids.session,
-        # 亲和头是官方客户端头集合的一部分：实测可省，但跟随官方形态让请求在任何
-        # 方向上都不会比"像客户端"差一点。
-        "x-session-affinity": ids.session,
-        "X-Session-Id": ids.session,
+        "x-opencode-session": affinity,
+        "x-session-affinity": affinity,
+        "X-Session-Id": affinity,
         "x-opencode-project": opencode_project_id(ids.project),
     }
     if ids.parent_session != "":
@@ -318,8 +328,19 @@ def send_upstream(
     全通。单凭证没有换号可换，不重试就是客户端可见的 502。重发最多多耗一次上游额度，
     不会造成客户端可见的重复副作用（推理请求无写侧效应）；响应头一到就不再重发——
     那时错误由推理层按协议报给客户端（流式还有"首包前"这一层，由流式层的重试逻辑兜住）。
+
+    响应头到了但上游拒绝（4xx/5xx）时立即整包读体分类：错误体是短 JSON，不是 SSE
+    流，且 curl 在 stream=True 下也能立刻从 iter_content 读全——在发送循环里读掉
+    它（再以非流式 UpstreamResponse 返回）才能在**重发预算内**识别确定性拒绝并
+    停手，否则 IP 封禁会被当线路抖动重发 4 次、每次都顶着拉黑 IP 撞上游。分类
+    判据见 rejects.classify_free_rejection；非流式化对推理层透明（它本来就先读体
+    再透传/转码，4xx 永远不该有"流"语义）。
     """
     url = f"{INFERENCE_BASE.rstrip('/')}{protocol_path(protocol)}"
+    if protocol == PROTOCOL_ANTHROPIC:
+        # 官方 2.x 客户端的 anthropic 请求带 ?beta=true 查询参数（对照 opencode2api
+        # #889 的实测对齐：真实 CLI 恒发，v2 门把它算进形态）。
+        url += "?beta=true"
     headers = build_upstream_headers(protocol, PUBLIC_KEY, ids)
     body = _with_client_cache_key(protocol, body, ids.client)
     # 代理决策查一次就够：几次尝试相隔只有几秒，注册表/环境变量不会变（TTL 30s）。
@@ -347,9 +368,63 @@ def send_upstream(
             )
             time.sleep(wait)
             continue
+        status = int(response.status_code)
+        if status < 400:
+            return UpstreamResponse(
+                status=status,
+                headers=dict(response.headers),
+                raw=response,
+            )
+        # 错误路径：整包读掉短 JSON 错误体并分类。确定性拒绝（IP 封禁/免费额度/
+        # 形态门）立刻停发——同一出口上重发只会重复同一个答案。
+        error_body = b"".join(chunk for chunk in response.iter_content(chunk_size=8192) if chunk)
+        rejection = rejects.classify_free_rejection(status, error_body)
+        if not rejection.retryable:
+            logger.warning(
+                f"[opencode] 上游确定性拒绝 status={status} kind={rejection.kind} "
+                f"hint={rejection.hint} — 停止重发"
+            )
+        elif attempt < OPENCODE_TRANSPORT_ATTEMPTS:
+            # 可重试的上游错误（5xx、瞬时限流）：按传输失败同样的预算再试。
+            logger.warning(
+                f"[opencode] 上游错误 status={status}, 退避后重发"
+                f" attempt={attempt}/{OPENCODE_TRANSPORT_ATTEMPTS - 1}"
+            )
+            time.sleep(_retry_backoff(attempt))
+            continue
         return UpstreamResponse(
-            status=int(response.status_code),
+            status=status,
             headers=dict(response.headers),
-            raw=response,
+            raw=_BufferedBody(error_body, dict(response.headers)),
+            rejection=rejection if not rejection.retryable else None,
         )
     raise AssertionError("unreachable: 发送循环必然 return 或 raise")
+
+
+class _BufferedBody:
+    """已整包读出的错误体，包成 UpstreamResponse.raw 期待的接口。
+
+    只实现错误路径用到的方法：read_body()（推理层透传前取文案）与 close()。
+    错误体是内存里的一段 bytes，没有连接要释放。
+    """
+
+    def __init__(self, body: bytes, headers: dict[str, str]) -> None:
+        self._body = body
+        self._headers = headers
+
+    @property
+    def content(self) -> bytes:
+        return self._body
+
+    def iter_content(self, chunk_size: int = 8192) -> Iterator[bytes]:
+        yield self._body
+
+    def header(self, name: str) -> str | None:
+        lowered = name.lower()
+        for key, value in self._headers.items():
+            if key.lower() == lowered:
+                return value
+        return None
+
+    def close(self) -> None:
+        return None

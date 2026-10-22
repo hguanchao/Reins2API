@@ -134,7 +134,8 @@ def test_project_id_is_bare_40_hex():
 def test_headers_mirror_client_and_drop_rejected_fields():
     headers = upstream.build_upstream_headers(PROTOCOL_CHAT, "public", _ids())
     # 实测必需项
-    assert headers["user-agent"] == "opencode/latest/2.0.29/cli"
+    assert headers["user-agent"] == "opencode/latest/2.0.32/cli"
+    # 无父会话时亲和头与子会话同值（derive 的信号同源）；带父会话时亲和钉父
     assert headers["x-opencode-session-id"] == headers["x-opencode-session"]
     assert len(headers["x-opencode-project"]) == 40
     # 实测被拒项：网关自己的关联头不能出网
@@ -173,6 +174,12 @@ def test_parent_session_headers_mirror_official_pair():
     headers = upstream.build_upstream_headers(PROTOCOL_CHAT, "public", parent)
     assert headers["x-parent-session-id"] == _OFFICIAL_SESSION
     assert headers["x-opencode-parent-session-id"] == _OFFICIAL_SESSION
+    # 会话亲和绑规范化父会话（对照 opencode2api 2026-10-20 对真实 CLI 的抓包）：
+    # 只有 x-opencode-session-id 留子会话，三个亲和/会话头都钉父会话。
+    assert headers["x-opencode-session"] == _OFFICIAL_SESSION
+    assert headers["x-session-affinity"] == _OFFICIAL_SESSION
+    assert headers["X-Session-Id"] == _OFFICIAL_SESSION
+    assert headers["x-opencode-session-id"] == base.session
 
 
 def test_parent_session_is_reencoded_to_official_form():
@@ -213,7 +220,8 @@ def test_inference_traffic_uses_inference_host():
         upstream.send_upstream(PROTOCOL_CHAT, b"{}", _ids(), stream=True)
         assert captured["url"] == "https://opencode.ai/inference/v1/chat/completions"
         upstream.send_upstream(PROTOCOL_ANTHROPIC, b"{}", _ids(), stream=True)
-        assert captured["url"] == "https://opencode.ai/inference/v1/messages"
+        # anthropic 请求带官方 CLI 恒发的 ?beta=true 查询参数
+        assert captured["url"] == "https://opencode.ai/inference/v1/messages?beta=true"
     finally:
         upstream.crequests.post = original
     # 发现与模型清单仍留在 /zen（两端点清单一致）
@@ -445,7 +453,7 @@ def test_provider_class_wires_the_fixed_modules():
     # 上游拒 x-opencode-request：包装层发出去的头里也不能有
     headers = upstream.build_upstream_headers(PROTOCOL_CHAT, "public", ids)
     assert "x-opencode-request" not in headers
-    assert headers["user-agent"] == "opencode/latest/2.0.29/cli"
+    assert headers["user-agent"] == "opencode/latest/2.0.32/cli"
 
 
 # ── 内建运行入口（无 pytest 环境直接跑）──

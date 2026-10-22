@@ -30,7 +30,9 @@ CORE_TOOLS = ("shell", "edit", "glob", "grep", "read")
 # 这份快照对应哪个官方 CLI 版本。上游按**同版本 CLI** 的工具定义逐字段比对，
 # 版本漂移（UA 升了、快照没重抓）= 定义过时 = 整批 403；capture_gap() 在 provider
 # 启动时对账。改 UA 版本（settings.OPENCODE_CLI_VERSION）时必须同步更新这里。
-CAPTURED_CLI_VERSION = "2.0.29"
+# 2.0.32 快照来源：opencode2api #c780e68/#f0f064f 的官方抓取（patch 工具并入，
+# shell 的平台措辞保留本机 Windows 抓包版——官方 CLI 按 OS 发对应描述）。
+CAPTURED_CLI_VERSION = "2.0.32"
 
 _TOOLS_FILE = Path(__file__).with_name("opencode_tools.json")
 
